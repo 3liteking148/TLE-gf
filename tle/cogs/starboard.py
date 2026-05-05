@@ -307,8 +307,13 @@ class Starboard(BackfillMixin, commands.Cog):
 
         logger.debug(f'Message {message.id}: {emoji_str} (family={emoji_family}) '
                      f'union_count={reaction_count} threshold={threshold}')
+        # Below threshold blocks the *initial* post but must not block updates
+        # to a message that's already on the starboard — otherwise re-adding a
+        # reaction after the count fell below threshold leaves the displayed
+        # count frozen at its last value.
         if reaction_count < threshold:
-            return
+            if not cf_common.user_db.check_exists_starboard_message_v1(message.id, emoji_str):
+                return
 
         lock = self.locks.get(payload.guild_id)
         if lock is None:
