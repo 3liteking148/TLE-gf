@@ -695,6 +695,170 @@ class TestBuildStarboardMessage:
 
 
 # =====================================================================
+# Multi-image gallery rendering
+# =====================================================================
+
+
+class TestImageGallery:
+    """Multiple non-spoiler images on the original message should all appear
+    in the starboard render. Discord groups embeds that share the same `url`
+    field into one visual gallery, so additional images are emitted as extra
+    embeds with `url=jump_url` matching the main embed.
+    """
+
+    JUMP = 'https://discord.com/channels/111/222/333'
+
+    def test_single_image_no_gallery_embeds_added(self):
+        """One image → one embed (existing behaviour, no extras, no url set)."""
+        att = _FakeAttachment('photo.png', url='https://cdn.example.com/a.png')
+        msg = _FakeMessage(attachments=[att])
+        content, embeds, files = _run(
+            Starboard.build_starboard_message(msg, '\N{WHITE MEDIUM STAR}', 5, 0xffaa10))
+        assert len(embeds) == 1
+        assert embeds[0].image_url == 'https://cdn.example.com/a.png'
+        # No grouping URL needed for a single image
+        assert embeds[0].url is None
+
+    def test_two_images_produce_gallery(self):
+        atts = [
+            _FakeAttachment('a.png', url='https://cdn.example.com/a.png'),
+            _FakeAttachment('b.png', url='https://cdn.example.com/b.png'),
+        ]
+        msg = _FakeMessage(attachments=atts)
+        content, embeds, files = _run(
+            Starboard.build_starboard_message(msg, '\N{WHITE MEDIUM STAR}', 5, 0xffaa10))
+        assert len(embeds) == 2
+        # Main embed has the first image; gallery embed has the second.
+        assert embeds[0].image_url == 'https://cdn.example.com/a.png'
+        assert embeds[1].image_url == 'https://cdn.example.com/b.png'
+        # Both embeds must share the same `url` so Discord groups them.
+        assert embeds[0].url == self.JUMP
+        assert embeds[1].url == self.JUMP
+
+    def test_four_images_produce_full_gallery(self):
+        atts = [_FakeAttachment(f'img{i}.png', url=f'https://cdn.example.com/{i}.png')
+                for i in range(4)]
+        msg = _FakeMessage(attachments=atts)
+        content, embeds, files = _run(
+            Starboard.build_starboard_message(msg, '\N{WHITE MEDIUM STAR}', 5, 0xffaa10))
+        assert len(embeds) == 4
+        urls = [e.image_url for e in embeds]
+        assert urls == [f'https://cdn.example.com/{i}.png' for i in range(4)]
+        for e in embeds:
+            assert e.url == self.JUMP
+
+    def test_gallery_preserves_image_order(self):
+        atts = [
+            _FakeAttachment('z.png', url='https://cdn.example.com/z.png'),
+            _FakeAttachment('a.png', url='https://cdn.example.com/a.png'),
+            _FakeAttachment('m.png', url='https://cdn.example.com/m.png'),
+        ]
+        msg = _FakeMessage(attachments=atts)
+        content, embeds, files = _run(
+            Starboard.build_starboard_message(msg, '\N{WHITE MEDIUM STAR}', 5, 0xffaa10))
+        assert [e.image_url for e in embeds] == [
+            'https://cdn.example.com/z.png',
+            'https://cdn.example.com/a.png',
+            'https://cdn.example.com/m.png',
+        ]
+
+    def test_gallery_with_text_keeps_description_on_main(self):
+        """Description and author belong on the main embed only — extras stay minimal."""
+        atts = [
+            _FakeAttachment('a.png', url='https://cdn.example.com/a.png'),
+            _FakeAttachment('b.png', url='https://cdn.example.com/b.png'),
+        ]
+        msg = _FakeMessage(content='look at these', attachments=atts)
+        content, embeds, files = _run(
+            Starboard.build_starboard_message(msg, '\N{WHITE MEDIUM STAR}', 5, 0xffaa10))
+        assert embeds[0].description == 'look at these'
+        assert embeds[0].author_data is not None
+        # Extra gallery embeds should have no author/description duplicating the main.
+        assert embeds[1].description is None
+        assert embeds[1].author_data is None
+
+    def test_spoiler_images_dont_count_toward_gallery(self):
+        """Spoilers are uploaded as files, not gallery embeds."""
+        atts = [
+            _FakeAttachment('a.png', url='https://cdn.example.com/a.png'),
+            _FakeAttachment('SPOILER_secret.png', url='https://cdn.example.com/s.png'),
+            _FakeAttachment('b.png', url='https://cdn.example.com/b.png'),
+        ]
+        msg = _FakeMessage(attachments=atts)
+        content, embeds, files = _run(
+            Starboard.build_starboard_message(msg, '\N{WHITE MEDIUM STAR}', 5, 0xffaa10))
+        # Two non-spoiler images → main + 1 gallery embed
+        gallery_embeds = [e for e in embeds if e.image_url and not e.description]
+        assert len(gallery_embeds) >= 1
+        gallery_urls = [e.image_url for e in embeds]
+        assert 'https://cdn.example.com/a.png' in gallery_urls
+        assert 'https://cdn.example.com/b.png' in gallery_urls
+        # Spoiler must be uploaded as file, never embedded
+        for e in embeds:
+            assert e.image_url != 'https://cdn.example.com/s.png'
+        assert any('SPOILER_secret.png' in str(f) for f in files)
+
+    def test_gallery_with_video_and_extra_images(self):
+        """Video → uploaded as file. Non-spoiler images still gallery."""
+        atts = [
+            _FakeAttachment('clip.mp4', url='https://cdn.example.com/clip.mp4'),
+            _FakeAttachment('a.png', url='https://cdn.example.com/a.png'),
+            _FakeAttachment('b.png', url='https://cdn.example.com/b.png'),
+        ]
+        msg = _FakeMessage(attachments=atts)
+        content, embeds, files = _run(
+            Starboard.build_starboard_message(msg, '\N{WHITE MEDIUM STAR}', 5, 0xffaa10))
+        image_urls = [e.image_url for e in embeds if e.image_url]
+        assert 'https://cdn.example.com/a.png' in image_urls
+        assert 'https://cdn.example.com/b.png' in image_urls
+        assert any('clip.mp4' in str(f) for f in files)
+
+    def test_gallery_respects_10_embed_cap(self):
+        """Even with many images, the total embeds stay under Discord's 10-embed cap."""
+        atts = [_FakeAttachment(f'img{i}.png', url=f'https://cdn.example.com/{i}.png')
+                for i in range(15)]
+        msg = _FakeMessage(attachments=atts)
+        content, embeds, files = _run(
+            Starboard.build_starboard_message(msg, '\N{WHITE MEDIUM STAR}', 5, 0xffaa10))
+        assert len(embeds) <= 10
+
+    def test_multiple_url_paste_image_embeds_become_gallery(self):
+        """When user pastes multiple image URLs, Discord auto-creates image
+        embeds. Carry all of them into the starboard gallery."""
+        class FakeImageEmbed:
+            def __init__(self, url):
+                self.type = 'image'
+                self.url = url
+                self.image = None
+                self.thumbnail = None
+
+        msg = _FakeMessage(content='check these',
+                           embeds=[FakeImageEmbed('https://example.com/1.png'),
+                                   FakeImageEmbed('https://example.com/2.png'),
+                                   FakeImageEmbed('https://example.com/3.png')])
+        content, embeds, files = _run(
+            Starboard.build_starboard_message(msg, '\N{WHITE MEDIUM STAR}', 5, 0xffaa10))
+        gallery_image_urls = [e.image_url for e in embeds if e.image_url]
+        assert 'https://example.com/1.png' in gallery_image_urls
+        assert 'https://example.com/2.png' in gallery_image_urls
+        assert 'https://example.com/3.png' in gallery_image_urls
+
+    def test_no_gallery_when_only_url_paste_image(self):
+        """A single URL-paste image should still work the old way."""
+        class FakeImageEmbed:
+            type = 'image'
+            url = 'https://example.com/only.png'
+            image = None
+            thumbnail = None
+
+        msg = _FakeMessage(content='one', embeds=[FakeImageEmbed()])
+        content, embeds, files = _run(
+            Starboard.build_starboard_message(msg, '\N{WHITE MEDIUM STAR}', 5, 0xffaa10))
+        assert len(embeds) == 1
+        assert embeds[0].image_url == 'https://example.com/only.png'
+
+
+# =====================================================================
 # Default emoji parameter on all starboard commands
 # =====================================================================
 

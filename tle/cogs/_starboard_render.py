@@ -100,7 +100,7 @@ async def build_starboard_message(message, emoji_str, count, color):
     files = []
 
     # Scan attachments to categorise them
-    image_url = None
+    image_urls = []  # all non-spoiler image URLs in the order they appear
     video_attachments = []
     audio_attachments = []
     spoiler_image_attachments = []
@@ -110,14 +110,15 @@ async def build_starboard_message(message, emoji_str, count, color):
         if ext in _IMAGE_EXTENSIONS:
             if att.is_spoiler():
                 spoiler_image_attachments.append(att)
-            elif image_url is None:
-                image_url = att.url
+            else:
+                image_urls.append(att.url)
         elif ext in _VIDEO_EXTENSIONS:
             video_attachments.append(att)
         elif ext in _AUDIO_EXTENSIONS:
             audio_attachments.append(att)
         else:
             other_attachments.append(att)
+    image_url = image_urls[0] if image_urls else None
 
     has_video = bool(video_attachments)
     has_audio = bool(audio_attachments)
@@ -248,12 +249,18 @@ async def build_starboard_message(message, emoji_str, count, color):
                 name='Attachment', value=f'`{safe_name}`', inline=False
             )
 
-        # Pull an image from the original message's embeds if we don't
-        # already have one from attachments.
-        if not image_url and message.embeds:
+        # Pull image(s) from the original message's embeds if we don't
+        # already have any from attachments. For URL pastes that produce
+        # multiple image-type embeds, collect all of them so the gallery
+        # logic below can render them.
+        if not image_urls and message.embeds:
             for e in message.embeds:
                 if e.type == 'image' and e.url:
-                    embed.set_image(url=e.url)
+                    image_urls.append(e.url)
+                    continue
+                if image_urls:
+                    # Once we've started collecting plain image URLs,
+                    # don't mix in special-case fallbacks below.
                     break
                 if e.type == 'gifv':
                     # Tenor gifv embeds: thumbnail.url is a static PNG like
@@ -272,16 +279,30 @@ async def build_starboard_message(message, emoji_str, count, color):
                     else:
                         chosen = thumb_url or None
                     if chosen:
-                        embed.set_image(url=chosen)
+                        image_urls.append(chosen)
                     break
                 if e.type == 'rich' and e.image and e.image.url:
-                    embed.set_image(url=e.image.url)
+                    image_urls.append(e.image.url)
                     break
                 if e.thumbnail and e.thumbnail.url:
-                    embed.set_image(url=e.thumbnail.url)
+                    image_urls.append(e.thumbnail.url)
                     break
+            if image_urls:
+                embed.set_image(url=image_urls[0])
+                image_url = image_urls[0]
 
         embeds.append(embed)
+
+    # Gallery: if the message has multiple non-spoiler images, append an
+    # extra embed per additional image. Discord groups embeds that share
+    # the same `url` field into a single visual gallery, so we set
+    # `url=jump_url` on the main embed and on each extra image embed.
+    if len(image_urls) > 1 and need_embed:
+        embed.url = message.jump_url
+        for extra_url in image_urls[1:]:
+            extra = discord.Embed(color=color, url=message.jump_url)
+            extra.set_image(url=extra_url)
+            embeds.append(extra)
 
     # Carry over rich and link embeds from the original message (bot
     # embeds like Codeforces problem cards, and URL previews like blog
