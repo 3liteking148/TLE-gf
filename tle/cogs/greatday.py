@@ -26,6 +26,19 @@ _STATS_PER_PAGE = 15
 # limits message edits to ~5/5s — 250 is a comfortable cadence even for
 # multi-thousand-message channels.
 _BACKFILL_PROGRESS_INTERVAL = 250
+# Stop the backfill once we've walked this far past the most recent
+# greatday match without finding another one. Greatday runs ~daily, so
+# a 5-day gap means we've collected the full history.
+_BACKFILL_STOP_GAP_SECONDS = 5 * 24 * 3600
+
+
+def _should_stop_backfill(last_match_ts, current_msg_ts, max_gap_seconds):
+    """True if the gap between the most recent matched greatday and the
+    current (older) message exceeds the threshold. last_match_ts is None
+    until the first match — we must keep scanning until then."""
+    if last_match_ts is None:
+        return False
+    return last_match_ts - current_msg_ts > max_gap_seconds
 
 # Greatday message template: "I hope <@id> <@id> ... having a great day!"
 # Anchors: prefix "I hope " and the trailing "having a great day!" — anything
@@ -369,16 +382,24 @@ class GreatDay(commands.Cog):
         scanned = 0
         matched = 0
         inserted = 0
+        last_match_ts = None
+        stopped_early = False
         # Newest first — leaderboard updates with recent picks immediately,
         # and if the admin aborts (bot restart) the most relevant history
         # is already saved.
         async for msg in channel.history(limit=None, oldest_first=False):
             scanned += 1
+            msg_ts = msg.created_at.timestamp()
             uids = _parse_greatday_message(msg, bot_user_id)
             if uids is not None:
                 matched += 1
                 inserted += cf_common.user_db.greatday_record_picks(
-                    ctx.guild.id, uids, msg.id, msg.created_at.timestamp())
+                    ctx.guild.id, uids, msg.id, msg_ts)
+                last_match_ts = msg_ts
+            elif _should_stop_backfill(last_match_ts, msg_ts,
+                                        _BACKFILL_STOP_GAP_SECONDS):
+                stopped_early = True
+                break
 
             if scanned % _BACKFILL_PROGRESS_INTERVAL == 0:
                 try:
@@ -390,9 +411,14 @@ class GreatDay(commands.Cog):
                     # Rate-limited or message deleted — keep scanning either way.
                     pass
 
+        gap_days = _BACKFILL_STOP_GAP_SECONDS // 86400
+        tail = (f' Stopped early after a {gap_days}-day gap with no further '
+                'greatday messages — assumed full history captured.'
+                if stopped_early else '')
         await progress.edit(embed=discord_common.embed_success(
             f'Backfill complete. Scanned **{scanned}** message(s), '
-            f'matched **{matched}**, inserted **{inserted}** new pick row(s).'))
+            f'matched **{matched}**, inserted **{inserted}** new pick row(s).'
+            + tail))
         # Fresh ping so the invoker sees completion even if the progress
         # message has scrolled out of view.
         await ctx.send(f'{ctx.author.mention} `;greatday backfill` finished — '

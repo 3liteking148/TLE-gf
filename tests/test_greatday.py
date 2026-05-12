@@ -677,3 +677,47 @@ class TestBackfillAuthorCheck:
         m = _FakeMessage('I hope <@111> is having a great day!')
         # _FakeMessage has no .author — must not crash
         assert _parse_greatday_message(m, bot_user_id=42) is None
+
+
+class TestBackfillStopHeuristic:
+    """The backfill scans newest-first and stops early once we've walked
+    past the most recent match by more than the gap threshold. Greatday
+    runs daily, so a multi-day gap means we've recovered the full
+    history and further scanning is wasted bandwidth."""
+
+    def _stop(self):
+        from tle.cogs.greatday import _should_stop_backfill
+        return _should_stop_backfill
+
+    def test_does_not_stop_before_first_match(self):
+        """No anchor yet — must keep scanning even if many days have
+        passed (otherwise channels with a long no-greatday prefix would
+        never get backfilled)."""
+        stop = self._stop()
+        assert stop(None, 1000.0, 60) is False
+        assert stop(None, 0.0, 60) is False
+
+    def test_does_not_stop_within_gap_window(self):
+        stop = self._stop()
+        # Match at t=1000, currently scanning t=950 → gap=50 < 60
+        assert stop(1000.0, 950.0, 60) is False
+        # Boundary: gap == threshold → keep scanning (strict >)
+        assert stop(1000.0, 940.0, 60) is False
+
+    def test_stops_when_gap_exceeds_threshold(self):
+        stop = self._stop()
+        # Match at t=1000, currently scanning t=939 → gap=61 > 60
+        assert stop(1000.0, 939.0, 60) is True
+
+    def test_five_day_threshold(self):
+        """Cross-check the production threshold."""
+        from tle.cogs.greatday import _BACKFILL_STOP_GAP_SECONDS
+        assert _BACKFILL_STOP_GAP_SECONDS == 5 * 24 * 3600
+        stop = self._stop()
+        last_match = 1_000_000.0
+        # 4 days, 23 hrs → keep going
+        assert stop(last_match, last_match - 4 * 86400 - 23 * 3600,
+                    _BACKFILL_STOP_GAP_SECONDS) is False
+        # 5 days, 1 sec → stop
+        assert stop(last_match, last_match - 5 * 86400 - 1,
+                    _BACKFILL_STOP_GAP_SECONDS) is True
