@@ -87,6 +87,37 @@ class TestSharedRateLimitBudget:
         assert after_b != after_a, (
             'second call did not update shared deque — budgets are NOT shared')
 
+    def test_concurrent_wrappers_serialize_correctly(self):
+        """Two coroutines entering @cf_ratelimit concurrently must space
+        themselves ≥1s apart. asyncio is single-threaded so the
+        read-compute-mutate sequence is already atomic (no await between
+        the deque ops), but the test pins that contract — if anyone
+        later adds an await in the critical section the race opens up
+        and this test catches it."""
+        cf = _load_real_cf_api()
+        call_times = []
+
+        @cf.cf_ratelimit
+        async def probe():
+            call_times.append(asyncio.get_event_loop().time())
+            return None
+
+        async def main():
+            cf._cf_ratelimit_last.clear()
+            cf._cf_ratelimit_last.extend([0.0] * cf._CF_RATELIMIT_PER_SECOND)
+            # Five concurrent calls; with 1 rps budget they must finish
+            # spread across ≥4 seconds.
+            await asyncio.gather(*(probe() for _ in range(5)))
+
+        _run(main())
+        assert len(call_times) == 5
+        call_times.sort()
+        for i in range(1, len(call_times)):
+            spacing = call_times[i] - call_times[i - 1]
+            assert spacing >= 0.95, (
+                f'Calls {i-1} and {i} fired only {spacing:.3f}s apart — '
+                f'rate limiter does not serialize concurrent callers.')
+
     def test_existing_module_wrappers_advance_the_shared_deque(self):
         """Sanity: invoking the actual production wrappers _query_api and
         _query_api_anonymous_get must advance the *same* deque, not two

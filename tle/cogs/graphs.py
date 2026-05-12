@@ -324,17 +324,14 @@ def _estimate_perf_from_cache(contest_id, virtual_rank):
 async def _build_cfvc_rows(handle, dlo=0, dhi=10**10):
     """Build performance rows for CF virtual participations (not TLE VCs).
 
-    Caching strategy:
-      - cfvc_cache stores (handle, contest_id, rank) — the per-user data that
-        requires an API call to contest.standings.
-      - Performance is computed on-the-fly from the shared rating_changes_cache,
-        so all users benefit from the same cached rating data.
-      - Only contest.standings calls for NEW virtual participations are made;
-        already-cached ranks are reused instantly.
+    Under CF's May 2026 contest.standings restriction, anonymous callers
+    only see CONTESTANT rows — VIRTUAL ranks cannot be fetched, so this
+    function no longer writes to cfvc_cache. Existing cached entries are
+    still served (computed pre-restriction); uncached contests are
+    counted as missing. Performance is computed from the shared
+    rating_changes_cache so all users benefit from one cache.
 
-    Returns (rows, missing_count). Under CF's May 2026 standings restriction,
-    contest.standings returns CONTESTANT-only rows, so VIRTUAL ranks cannot
-    be recovered from there; rows for uncached contests count as missing.
+    Returns (rows, missing_count).
     """
     submissions = await cf.user.status(handle=handle)
     virtual_cids = set()

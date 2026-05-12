@@ -69,14 +69,20 @@ def _load_apply_helper():
 
 # ── Helpers to build minimal stand-ins ────────────────────────────────
 
-class _FakePartyType:
-    def __init__(self, participantType):
+class _FakeMember:
+    def __init__(self, handle):
+        self.handle = handle
+
+
+class _FakeParty:
+    def __init__(self, participantType, handle='someone'):
         self.participantType = participantType
+        self.members = [_FakeMember(handle)]
 
 
 class _FakeRow:
-    def __init__(self, participantType):
-        self.party = _FakePartyType(participantType)
+    def __init__(self, participantType, handle='someone'):
+        self.party = _FakeParty(participantType, handle)
 
 
 class _FakeRanklist:
@@ -127,7 +133,11 @@ class TestApplyVcDeltas:
 
     def test_applies_deltas_when_virtual_rows_present(self):
         ranklist = _FakeRanklist(
-            standings=[_FakeRow('CONTESTANT'), _FakeRow('VIRTUAL'), _FakeRow('VIRTUAL')],
+            standings=[
+                _FakeRow('CONTESTANT', handle='someone'),
+                _FakeRow('VIRTUAL', handle='alice'),
+                _FakeRow('VIRTUAL', handle='bob'),
+            ],
             delta_by_handle={'alice': 25, 'bob': -10},
         )
         db = _FakeDb(vc_ratings={'1': 1500, '2': 1600})
@@ -146,11 +156,14 @@ class TestApplyVcDeltas:
         assert sorted(db.updates) == [(42, '1', 1525), (42, '2', 1590)]
 
     def test_removes_non_participating_handle(self):
-        """When VIRTUAL rows exist but a specific handle has no delta,
-        that one user is treated as 'did not participate' and removed —
-        existing behavior, must not regress."""
+        """When VIRTUAL rows for at least one VC participant are present
+        but a specific handle has no delta, that one user is treated as
+        'did not participate' and removed."""
         ranklist = _FakeRanklist(
-            standings=[_FakeRow('VIRTUAL'), _FakeRow('VIRTUAL')],
+            standings=[
+                _FakeRow('VIRTUAL', handle='alice'),
+                _FakeRow('VIRTUAL', handle='bob'),
+            ],
             delta_by_handle={'alice': 25},  # bob missing
         )
         db = _FakeDb(vc_ratings={'1': 1500, '2': 1600})
@@ -164,10 +177,11 @@ class TestApplyVcDeltas:
         assert db.updates == [(42, '1', 1525)]
 
     def test_empty_handles_list(self):
-        """Edge case: no participants. Should return an empty dict (not None)
-        as long as VIRTUAL rows exist."""
+        """Edge case: no participants. Helper returns None because the
+        guard 'any VIRTUAL row for our handles' is vacuously false when
+        the handles set is empty."""
         ranklist = _FakeRanklist(
-            standings=[_FakeRow('VIRTUAL')],
+            standings=[_FakeRow('VIRTUAL', handle='someone')],
             delta_by_handle={},
         )
         db = _FakeDb(vc_ratings={})
@@ -175,6 +189,29 @@ class TestApplyVcDeltas:
         result = self._apply_vc_deltas(
             db, vc_id=42, handles=[], member_ids=[], ranklist=ranklist)
 
-        assert result == {}
+        assert result is None
         assert db.removed == []
+        assert db.updates == []
+
+    def test_returns_none_when_virtual_rows_are_for_other_handles(self):
+        """If the standings happen to contain VIRTUAL rows for handles OTHER
+        than our VC participants, the broad 'any VIRTUAL row' guard would
+        let the code proceed and wipe everyone via the delta-is-None
+        branch. The guard must be specific to OUR handles."""
+        ranklist = _FakeRanklist(
+            standings=[
+                _FakeRow('CONTESTANT', handle='alice'),
+                _FakeRow('CONTESTANT', handle='bob'),
+                _FakeRow('VIRTUAL', handle='stranger'),  # not a VC participant
+            ],
+            delta_by_handle={},
+        )
+        db = _FakeDb(vc_ratings={'1': 1500, '2': 1600})
+
+        result = self._apply_vc_deltas(
+            db, vc_id=42, handles=['alice', 'bob'],
+            member_ids=['1', '2'], ranklist=ranklist)
+
+        assert result is None
+        assert db.removed == [], 'No participations should be removed'
         assert db.updates == []

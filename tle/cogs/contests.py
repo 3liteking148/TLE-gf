@@ -43,16 +43,25 @@ def _apply_vc_deltas(db, vc_id, handles, member_ids, ranklist):
     """Apply rated-VC rating deltas after a contest finishes.
 
     Returns a {handle: _VcRatingChange} dict on success, or None if the
-    ranklist contains no VIRTUAL participation rows — under CF's May 2026
-    restriction on contest.standings, ordinary callers only see
-    CONTESTANT rows, so we cannot compute deltas. The caller is expected
-    to finish the VC and notify users without touching VC ratings in
-    that case (silently treating every None delta as 'did not
-    participate' would wipe everyone's history).
+    ranklist contains no VIRTUAL participation rows *for our VC
+    handles* — under CF's May 2026 restriction on contest.standings,
+    ordinary callers only see CONTESTANT rows, so we cannot compute
+    deltas. The caller is expected to finish the VC and notify users
+    without touching VC ratings in that case (silently treating every
+    None delta as 'did not participate' would wipe everyone's history).
+
+    The check is specific to our handles: even if CF's API ever starts
+    surfacing VIRTUAL rows for strangers (e.g. due to a partial
+    rollback), that alone shouldn't unlock the rating loop — it has to
+    include the actual VC participants.
     """
-    has_virtual = any(
-        row.party.participantType == 'VIRTUAL' for row in ranklist.standings)
-    if not has_virtual:
+    handle_set = set(handles)
+    has_our_virtual = any(
+        row.party.participantType == 'VIRTUAL'
+        and row.party.members
+        and row.party.members[0].handle in handle_set
+        for row in ranklist.standings)
+    if not has_our_virtual:
         return None
     rating_change_by_handle = {}
     for handle, member_id in zip(handles, member_ids):
