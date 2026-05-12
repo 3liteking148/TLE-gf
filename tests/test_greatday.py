@@ -254,6 +254,26 @@ class TestSendGreatDayIntegration:
         assert result is True
         assert ' are having a great day!' in channel.sent[0]
 
+    def test_record_pick_failure_still_returns_true(self, db, monkeypatch):
+        """If recording the picks raises, the message was already sent — we
+        must still report success so the caller stamps the kvs sentinel and
+        the 60s loop doesn't re-send every minute."""
+        monkeypatch.setattr(cf_common, 'user_db', db)
+        db.set_guild_config(GUILD, 'greatday_channel', '999')
+        db.greatday_signup(GUILD, USER_A)
+
+        def _raise(*a, **kw):
+            raise RuntimeError('simulated DB failure')
+        monkeypatch.setattr(db, 'greatday_record_picks', _raise)
+
+        channel = _FakeChannel()
+        guild = _FakeGuild(int(GUILD), channel)
+
+        cog = self._make_cog(db)
+        result = self._run(cog._send_greatday(guild))
+        assert result is True
+        assert len(channel.sent) == 1  # message was sent exactly once
+
     def test_no_channel_returns_false(self, db, monkeypatch):
         monkeypatch.setattr(cf_common, 'user_db', db)
         # No greatday_channel config set
@@ -612,3 +632,48 @@ class TestBackfillRegex:
 
     def test_tolerates_trailing_whitespace(self):
         assert self._matches('I hope <@111> is having a great day! ') == ['111']
+
+
+class TestBackfillAuthorCheck:
+    """The backfill helper must reject otherwise-matching messages whose
+    author isn't the bot — anyone could spoof '... having a great day!'."""
+
+    def _msg(self, content, author_id):
+        class _Author:
+            pass
+        a = _Author()
+        a.id = author_id
+        m = _FakeMessage(content)
+        m.author = a
+        return m
+
+    def test_accepts_bot_authored_message(self):
+        from tle.cogs.greatday import _parse_greatday_message
+        m = self._msg('I hope <@111> is having a great day!', author_id=42)
+        assert _parse_greatday_message(m, bot_user_id=42) == ['111']
+
+    def test_rejects_non_bot_authored_message(self):
+        from tle.cogs.greatday import _parse_greatday_message
+        m = self._msg('I hope <@999> is having a great day!', author_id=7)
+        assert _parse_greatday_message(m, bot_user_id=42) is None
+
+    def test_rejects_when_bot_user_id_unknown(self):
+        from tle.cogs.greatday import _parse_greatday_message
+        m = self._msg('I hope <@111> is having a great day!', author_id=42)
+        assert _parse_greatday_message(m, bot_user_id=None) is None
+
+    def test_rejects_bot_authored_non_template(self):
+        from tle.cogs.greatday import _parse_greatday_message
+        m = self._msg('hello world', author_id=42)
+        assert _parse_greatday_message(m, bot_user_id=42) is None
+
+    def test_rejects_bot_authored_template_with_no_mentions(self):
+        from tle.cogs.greatday import _parse_greatday_message
+        m = self._msg('I hope they are having a great day!', author_id=42)
+        assert _parse_greatday_message(m, bot_user_id=42) is None
+
+    def test_handles_message_without_author(self):
+        from tle.cogs.greatday import _parse_greatday_message
+        m = _FakeMessage('I hope <@111> is having a great day!')
+        # _FakeMessage has no .author — must not crash
+        assert _parse_greatday_message(m, bot_user_id=42) is None

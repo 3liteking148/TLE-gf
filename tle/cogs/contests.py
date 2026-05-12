@@ -36,6 +36,38 @@ class ContestCogError(commands.CommandError):
     pass
 
 
+_VcRatingChange = namedtuple('VcRatingChange', 'handle oldRating newRating')
+
+
+def _apply_vc_deltas(db, vc_id, handles, member_ids, ranklist):
+    """Apply rated-VC rating deltas after a contest finishes.
+
+    Returns a {handle: _VcRatingChange} dict on success, or None if the
+    ranklist contains no VIRTUAL participation rows — under CF's May 2026
+    restriction on contest.standings, ordinary callers only see
+    CONTESTANT rows, so we cannot compute deltas. The caller is expected
+    to finish the VC and notify users without touching VC ratings in
+    that case (silently treating every None delta as 'did not
+    participate' would wipe everyone's history).
+    """
+    has_virtual = any(
+        row.party.participantType == 'VIRTUAL' for row in ranklist.standings)
+    if not has_virtual:
+        return None
+    rating_change_by_handle = {}
+    for handle, member_id in zip(handles, member_ids):
+        delta = ranklist.delta_by_handle.get(handle)
+        if delta is None:
+            db.remove_last_ratedvc_participation(member_id)
+            continue
+        old_rating = db.get_vc_rating(member_id)
+        new_rating = old_rating + delta
+        rating_change_by_handle[handle] = _VcRatingChange(
+            handle=handle, oldRating=old_rating, newRating=new_rating)
+        db.update_vc_rating(vc_id, member_id, new_rating)
+    return rating_change_by_handle
+
+
 def _contest_start_time_format(contest, tz):
     start = dt.datetime.fromtimestamp(contest.startTimeSeconds, tz)
     return f'{start.strftime("%d %b %y, %H:%M")} {tz}'
@@ -641,18 +673,15 @@ class Contests(commands.Cog):
             await channel.send(embed=self._make_contest_embed_for_vc_ranklist(ranklist, vc.start_time, vc.finish_time), delete_after=_WATCHING_RATED_VC_WAIT_TIME)
             await self._show_ranklist(channel, vc.contest_id, handles, ranklist=ranklist, vc=True, delete_after=_WATCHING_RATED_VC_WAIT_TIME)
             return
-        rating_change_by_handle = {}
-        RatingChange = namedtuple('RatingChange', 'handle oldRating newRating')
-        for handle, member_id in zip(handles, member_ids):
-            delta = ranklist.delta_by_handle.get(handle)
-            if delta is None:  # The user did not participate.
-                cf_common.user_db.remove_last_ratedvc_participation(member_id)
-                continue
-            old_rating = cf_common.user_db.get_vc_rating(member_id)
-            new_rating = old_rating + delta
-            rating_change_by_handle[handle] = RatingChange(handle=handle, oldRating=old_rating, newRating=new_rating)
-            cf_common.user_db.update_vc_rating(vc_id, member_id, new_rating)
+        rating_change_by_handle = _apply_vc_deltas(
+            cf_common.user_db, vc_id, handles, member_ids, ranklist)
         cf_common.user_db.finish_rated_vc(vc_id)
+        if rating_change_by_handle is None:
+            await channel.send(embed=discord_common.embed_alert(
+                "Rated VC complete, but rating changes can't be applied — "
+                "CF's standings API no longer returns virtual participations "
+                "for ordinary callers. VC ratings have been preserved."))
+            return
         await channel.send(embed=self._make_vc_rating_changes_embed(channel.guild, vc.contest_id, rating_change_by_handle))
         await self._show_ranklist(channel, vc.contest_id, handles, ranklist=ranklist, vc=True)
 

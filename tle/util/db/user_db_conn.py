@@ -1773,11 +1773,16 @@ class UserDbConn(MinigameDbMixin, StarboardDbMixin, MigrationDbMixin):
         return cur.rowcount
 
     def count_recent_complaints(self, guild_id, user_id, since):
-        """Count active complaints by a user in a guild since a timestamp."""
+        """Count complaints by a user in a guild filed since a timestamp.
+
+        Includes soft-deleted (withdrawn/removed) complaints so that the
+        rate limit cannot be bypassed by withdrawing and immediately
+        refiling. The rate limit caps *filings*, not active complaints.
+        """
         guild_id, user_id = str(guild_id), str(user_id)
         row = self.conn.execute(
             'SELECT COUNT(*) AS cnt FROM complaint '
-            'WHERE guild_id = ? AND user_id = ? AND created_at >= ? AND active = 1',
+            'WHERE guild_id = ? AND user_id = ? AND created_at >= ?',
             (guild_id, user_id, since)
         ).fetchone()
         return row.cnt

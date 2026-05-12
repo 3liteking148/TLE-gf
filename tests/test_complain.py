@@ -169,12 +169,24 @@ class TestCountRecentComplaints:
         assert db.count_recent_complaints(GUILD, USER_A, since) == 2
         assert db.count_recent_complaints(GUILD, USER_B, since) == 1
 
-    def test_excludes_soft_deleted(self, db):
-        cid = db.add_complaint(GUILD, USER_A, 'will remove')
+    def test_counts_soft_deleted_for_rate_limit(self, db):
+        """Soft-deleted (withdrawn/removed) complaints still count toward the
+        rate-limit window. Otherwise a user at the 5/6h cap could `;complain
+        withdraw <id>` to free a slot and immediately refile, bypassing the
+        limit entirely."""
+        cid = db.add_complaint(GUILD, USER_A, 'will withdraw')
         db.add_complaint(GUILD, USER_A, 'stays')
         db.delete_complaint(cid)
         since = time.time() - 10
-        assert db.count_recent_complaints(GUILD, USER_A, since) == 1
+        assert db.count_recent_complaints(GUILD, USER_A, since) == 2
+
+    def test_withdraw_then_refile_does_not_reset_window(self, db):
+        """Full bypass scenario: fill the window, withdraw one, attempt to
+        refile — count must still report the original number of filings."""
+        ids = [db.add_complaint(GUILD, USER_A, f'c{i}') for i in range(5)]
+        db.delete_complaint(ids[2])
+        since = time.time() - 10
+        assert db.count_recent_complaints(GUILD, USER_A, since) == 5
 
     def test_excludes_old(self, db):
         # Manually insert an old complaint

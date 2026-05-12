@@ -370,20 +370,24 @@ def _sign_params(method: str, params: Optional[Dict[str, Any]]) -> Optional[Dict
     return signed
 
 
-def cf_ratelimit(f):
-    tries = 3
-    per_second = 1
-    last = deque([0.0]*per_second)
+# Shared rate-limit state across ALL @cf_ratelimit wrappers. CF allows
+# ~1 rps in aggregate; giving each wrapper its own deque would let
+# _query_api and _query_api_anonymous_get burn through 2 rps together.
+_CF_RATELIMIT_TRIES = 3
+_CF_RATELIMIT_PER_SECOND = 1
+_cf_ratelimit_last = deque([0.0] * _CF_RATELIMIT_PER_SECOND)
 
+
+def cf_ratelimit(f):
     @functools.wraps(f)
     async def wrapped(*args, **kwargs):
         for i in itertools.count():
             now = time.time()
 
             # Next valid slot is 1s after the `per_second`th last request
-            next_valid = max(now, 1 + last[0])
-            last.append(next_valid)
-            last.popleft()
+            next_valid = max(now, 1 + _cf_ratelimit_last[0])
+            _cf_ratelimit_last.append(next_valid)
+            _cf_ratelimit_last.popleft()
 
             # Delay as needed
             delay = next_valid - now
@@ -393,9 +397,9 @@ def cf_ratelimit(f):
             try:
                 return await f(*args, **kwargs)
             except (ClientError, CallLimitExceededError) as e:
-                logger.info(f'Try {i+1}/{tries} at query failed.')
+                logger.info(f'Try {i+1}/{_CF_RATELIMIT_TRIES} at query failed.')
                 logger.info(repr(e))
-                if i < tries - 1:
+                if i < _CF_RATELIMIT_TRIES - 1:
                     logger.info('Retrying...')
                 else:
                     logger.info('Aborting.')

@@ -30,6 +30,20 @@ _GREATDAY_RE = re.compile(r'^I hope .*having a great day!\s*$')
 _MENTION_RE = re.compile(r'<@!?(\d+)>')
 
 
+def _parse_greatday_message(msg, bot_user_id):
+    """If the message is a real bot-authored greatday post, return the list
+    of mentioned user IDs; otherwise return None. Trusting any author would
+    let users (or webhooks) spoof picks into the leaderboard.
+    """
+    author_id = getattr(getattr(msg, 'author', None), 'id', None)
+    if author_id != bot_user_id:
+        return None
+    if not _GREATDAY_RE.match(msg.content or ''):
+        return None
+    uids = _MENTION_RE.findall(msg.content)
+    return uids or None
+
+
 def _target_datetime(now, time_str):
     """Return today's target time as a timezone-aware datetime."""
     hour, minute = map(int, time_str.split(':'))
@@ -134,8 +148,16 @@ class GreatDay(commands.Cog):
         mentions = ' '.join(f'<@{uid}>' for uid in picked)
         verb = 'is' if len(picked) == 1 else 'are'
         msg = await channel.send(f'I hope {mentions} {verb} having a great day!')
-        cf_common.user_db.greatday_record_picks(
-            guild.id, picked, msg.id, msg.created_at.timestamp())
+        # Record picks best-effort. Once the message is sent, the day is
+        # 'done' from the user's perspective — if recording fails the caller
+        # must still stamp the kvs sentinel, otherwise the 60s scheduler
+        # will keep re-sending.
+        try:
+            cf_common.user_db.greatday_record_picks(
+                guild.id, picked, msg.id, msg.created_at.timestamp())
+        except Exception:
+            logger.exception('Failed to record greatday picks for guild=%s msg=%s',
+                             guild.id, msg.id)
         return True
 
     # ── Commands ───────────────────────────────────────────────────────
@@ -339,15 +361,14 @@ class GreatDay(commands.Cog):
         progress = await ctx.send(embed=discord_common.embed_neutral(
             f'Backfilling from {channel.mention}…'))
 
+        bot_user_id = self.bot.user.id if self.bot and self.bot.user else None
         scanned = 0
         matched = 0
         inserted = 0
         async for msg in channel.history(limit=None, oldest_first=True):
             scanned += 1
-            if not _GREATDAY_RE.match(msg.content or ''):
-                continue
-            uids = _MENTION_RE.findall(msg.content)
-            if not uids:
+            uids = _parse_greatday_message(msg, bot_user_id)
+            if uids is None:
                 continue
             matched += 1
             inserted += cf_common.user_db.greatday_record_picks(
