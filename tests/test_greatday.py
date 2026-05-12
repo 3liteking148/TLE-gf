@@ -679,6 +679,59 @@ class TestBackfillAuthorCheck:
         assert _parse_greatday_message(m, bot_user_id=42) is None
 
 
+class TestPersonalRankLine:
+    """;greatday stats should show the invoker's own rank/count on every
+    page so they don't have to scan the whole leaderboard to find
+    themselves."""
+
+    def _row(self, user_id, cnt):
+        class _R:
+            pass
+        r = _R()
+        r.user_id = str(user_id)
+        r.cnt = cnt
+        return r
+
+    def test_user_at_top(self):
+        from tle.cogs.greatday import _personal_rank_line
+        rows = [self._row(100, 10), self._row(200, 5), self._row(300, 2)]
+        line = _personal_rank_line(rows, 100)
+        assert '#1' in line
+        assert '10' in line
+
+    def test_user_in_middle(self):
+        from tle.cogs.greatday import _personal_rank_line
+        rows = [self._row(100, 10), self._row(200, 5), self._row(300, 2)]
+        line = _personal_rank_line(rows, 200)
+        assert '#2' in line
+        assert '**5**' in line
+
+    def test_user_at_bottom(self):
+        from tle.cogs.greatday import _personal_rank_line
+        rows = [self._row(100, 10), self._row(200, 5), self._row(300, 2)]
+        line = _personal_rank_line(rows, 300)
+        assert '#3' in line
+
+    def test_user_not_in_leaderboard(self):
+        from tle.cogs.greatday import _personal_rank_line
+        rows = [self._row(100, 10), self._row(200, 5)]
+        line = _personal_rank_line(rows, 999)
+        assert "haven't" in line
+        assert '#' not in line
+
+    def test_user_id_type_coercion(self):
+        """user_id stored as TEXT in SQLite; ctx.author.id is int. Must
+        compare correctly regardless of which side is which type."""
+        from tle.cogs.greatday import _personal_rank_line
+        rows = [self._row('100', 10)]
+        assert '#1' in _personal_rank_line(rows, 100)
+        assert '#1' in _personal_rank_line(rows, '100')
+
+    def test_empty_rows(self):
+        from tle.cogs.greatday import _personal_rank_line
+        assert "haven't" in _personal_rank_line([], 100)
+
+
 class TestBackfillStopHeuristic:
     """The backfill scans newest-first and stops early once we've walked
     past the most recent match by more than the gap threshold. Greatday

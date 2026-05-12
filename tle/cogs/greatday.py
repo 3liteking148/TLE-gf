@@ -32,6 +32,19 @@ _BACKFILL_PROGRESS_INTERVAL = 250
 _BACKFILL_STOP_GAP_SECONDS = 5 * 24 * 3600
 
 
+def _personal_rank_line(rows, user_id):
+    """Render the 'Your rank: #N — great-day'd K times' suffix for the
+    stats leaderboard. `rows` is sorted desc-by-count (the natural
+    output of greatday_get_stats). Returns a leading-newline string so
+    it can be appended directly to the embed description."""
+    user_id_str = str(user_id)
+    for i, row in enumerate(rows):
+        if str(row.user_id) == user_id_str:
+            return (f"\nYour rank: **#{i + 1}** — great-day'd "
+                    f'**{row.cnt}** time(s).')
+    return "\nYou haven't been great-day'd yet."
+
+
 def _should_stop_backfill(last_match_ts, current_msg_ts, max_gap_seconds):
     """True if the gap between the most recent matched greatday and the
     current (older) message exceeds the threshold. last_match_ts is None
@@ -341,6 +354,7 @@ class GreatDay(commands.Cog):
                 'No picks recorded yet. Admins can run `;greatday backfill` '
                 'to seed history from the channel.')
 
+        personal = _personal_rank_line(rows, ctx.author.id)
         chunks = paginator.chunkify(rows, _STATS_PER_PAGE)
         pages = []
         for page_idx, chunk in enumerate(chunks):
@@ -350,6 +364,7 @@ class GreatDay(commands.Cog):
                 m = ctx.guild.get_member(int(row.user_id))
                 name = m.mention if m is not None else f'`{row.user_id}`'
                 lines.append(f'**#{rank}** {name} — **{row.cnt}**')
+            lines.append(personal)
             embed = discord.Embed(
                 title='Great Day leaderboard',
                 description='\n'.join(lines),
