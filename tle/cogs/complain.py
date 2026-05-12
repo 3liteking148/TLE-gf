@@ -24,6 +24,9 @@ class Complain(commands.Cog):
     async def complain(self, ctx, *, text: str = None):
         """Add a complaint or list subcommands.
 
+        This feature is used for admins to track improvements for the server,
+        please don't abuse.
+
         Usage:
           ;complain <text>             — file a complaint
           ;complain list               — view all complaints
