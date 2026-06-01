@@ -9,6 +9,16 @@ from logging.handlers import TimedRotatingFileHandler
 from os import environ
 from pathlib import Path
 
+# Make image rendering use the repo's bundled fonts (Noto Sans CJK + monochrome
+# Noto Emoji) even when the bot is launched directly (e.g. by a systemd unit)
+# rather than through run.sh -- run.sh is otherwise the only launcher that points
+# FONTCONFIG_FILE at extra/fonts.conf. Must be set before any fontconfig/Pango
+# use, i.e. before importing the rendering stack below.
+os.environ.setdefault(
+    'FONTCONFIG_FILE',
+    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'extra', 'fonts.conf'),
+)
+
 import seaborn as sns
 from discord.ext import commands
 from matplotlib import pyplot as plt

@@ -7,18 +7,19 @@ from tle import constants
 # Fonts are fetched as raw files from upstream font repos. Cairo+Pango selects
 # them by their embedded family name, not the file name, so only their presence
 # in FONTS_DIR matters. The sans/CJK collections cover Latin + CJK text; the
-# emoji fonts cover emoji codepoints (color preferred, monochrome outline as a
-# fallback). A failed download only logs a warning rather than aborting startup:
-# without these the image-rendering commands degrade, but the rest of the bot
-# still runs. (The old Noto storage bucket these came from is now defunct, which
-# is why fresh deploys need a live source.)
+# monochrome Noto Emoji covers emoji codepoints. We deliberately use the
+# monochrome emoji font rather than Noto Color Emoji because the color (CBDT
+# bitmap) font does not render on older Cairo (e.g. 1.16 on Ubuntu 20.04); the
+# outline glyphs of Noto Emoji render reliably everywhere. A failed download
+# only logs a warning rather than aborting startup: without these the
+# image-rendering commands degrade, but the rest of the bot still runs. (The old
+# Noto storage bucket these came from is now defunct, which is why fresh deploys
+# need a live source.)
 _FONTS = [
     (constants.NOTO_SANS_CJK_BOLD_FONT_PATH,
      'https://github.com/notofonts/noto-cjk/raw/main/Sans/OTC/NotoSansCJK-Bold.ttc'),
     (constants.NOTO_SANS_CJK_REGULAR_FONT_PATH,
      'https://github.com/notofonts/noto-cjk/raw/main/Sans/OTC/NotoSansCJK-Regular.ttc'),
-    (constants.NOTO_COLOR_EMOJI_FONT_PATH,
-     'https://github.com/googlefonts/noto-emoji/raw/main/fonts/NotoColorEmoji.ttf'),
     (constants.NOTO_EMOJI_FONT_PATH,
      'https://github.com/google/fonts/raw/main/ofl/notoemoji/NotoEmoji%5Bwght%5D.ttf'),
 ]
