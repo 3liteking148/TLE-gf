@@ -15,6 +15,8 @@ FONTS_DIR = os.path.join(ASSETS_DIR, 'fonts')
 
 NOTO_SANS_CJK_BOLD_FONT_PATH = os.path.join(FONTS_DIR, 'NotoSansCJK-Bold.ttc')
 NOTO_SANS_CJK_REGULAR_FONT_PATH = os.path.join(FONTS_DIR, 'NotoSansCJK-Regular.ttc')
+NOTO_COLOR_EMOJI_FONT_PATH = os.path.join(FONTS_DIR, 'NotoColorEmoji.ttf')
+NOTO_EMOJI_FONT_PATH = os.path.join(FONTS_DIR, 'NotoEmoji.ttf')
 
 CONTEST_WRITERS_JSON_FILE_PATH = os.path.join(MISC_DIR, 'contest_writers.json')
 
