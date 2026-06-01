@@ -2,24 +2,21 @@ import logging
 import os
 import urllib.request
 
-from zipfile import ZipFile
-from io import BytesIO
-
 from tle import constants
 
-URL_BASE = 'https://noto-website-2.storage.googleapis.com/pkgs/'
-
-# Fonts packaged as zip archives on the legacy Noto bucket.
-_ZIP_FONTS = [constants.NOTO_SANS_CJK_BOLD_FONT_PATH,
-              constants.NOTO_SANS_CJK_REGULAR_FONT_PATH]
-
-# Emoji fonts served as raw .ttf files. Cairo+Pango selects these by their
-# embedded family name ('Noto Color Emoji' / 'Noto Emoji'), not the file
-# name, so only their presence in FONTS_DIR matters. The color font (a CBDT
-# bitmap font) is preferred; the monochrome outline font is a fallback for
-# renderers that can't draw color glyphs. These are non-essential, so a
-# failed download only logs a warning rather than aborting startup.
-_DIRECT_FONTS = [
+# Fonts are fetched as raw files from upstream font repos. Cairo+Pango selects
+# them by their embedded family name, not the file name, so only their presence
+# in FONTS_DIR matters. The sans/CJK collections cover Latin + CJK text; the
+# emoji fonts cover emoji codepoints (color preferred, monochrome outline as a
+# fallback). A failed download only logs a warning rather than aborting startup:
+# without these the image-rendering commands degrade, but the rest of the bot
+# still runs. (The old Noto storage bucket these came from is now defunct, which
+# is why fresh deploys need a live source.)
+_FONTS = [
+    (constants.NOTO_SANS_CJK_BOLD_FONT_PATH,
+     'https://github.com/notofonts/noto-cjk/raw/main/Sans/OTC/NotoSansCJK-Bold.ttc'),
+    (constants.NOTO_SANS_CJK_REGULAR_FONT_PATH,
+     'https://github.com/notofonts/noto-cjk/raw/main/Sans/OTC/NotoSansCJK-Regular.ttc'),
     (constants.NOTO_COLOR_EMOJI_FONT_PATH,
      'https://github.com/googlefonts/noto-emoji/raw/main/fonts/NotoColorEmoji.ttf'),
     (constants.NOTO_EMOJI_FONT_PATH,
@@ -29,21 +26,7 @@ _DIRECT_FONTS = [
 logger = logging.getLogger(__name__)
 
 
-def _unzip(font, archive):
-    with ZipFile(archive) as zipfile:
-        if font not in zipfile.namelist():
-            raise KeyError(f'Expected font file {font} not present in downloaded zip archive.')
-        zipfile.extract(font, constants.FONTS_DIR)
-
-
-def _download_zip(font_path):
-    font = os.path.basename(font_path)
-    logger.info(f'Downloading font `{font}`.')
-    with urllib.request.urlopen(f'{URL_BASE}{font}.zip') as resp:
-        _unzip(font, BytesIO(resp.read()))
-
-
-def _download_direct(font_path, url):
+def _download(font_path, url):
     font = os.path.basename(font_path)
     logger.info(f'Downloading font `{font}`.')
     with urllib.request.urlopen(url) as resp:
@@ -61,13 +44,11 @@ def _download_direct(font_path, url):
 
 
 def maybe_download():
-    for font_path in _ZIP_FONTS:
-        if not os.path.isfile(font_path):
-            _download_zip(font_path)
-    for font_path, url in _DIRECT_FONTS:
-        if not os.path.isfile(font_path):
-            try:
-                _download_direct(font_path, url)
-            except Exception:
-                logger.warning(f'Failed to download emoji font `{os.path.basename(font_path)}`; '
-                               'emoji in rendered images may not display.', exc_info=True)
+    for font_path, url in _FONTS:
+        if os.path.isfile(font_path):
+            continue
+        try:
+            _download(font_path, url)
+        except Exception:
+            logger.warning(f'Failed to download font `{os.path.basename(font_path)}`; '
+                           'rendered images may not display correctly.', exc_info=True)
