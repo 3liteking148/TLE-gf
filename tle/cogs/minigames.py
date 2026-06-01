@@ -1,11 +1,18 @@
 import asyncio
 import datetime as dt
+import html
+import io
 import logging
 from typing import Optional
 
+import cairo
 import discord
+import gi
 from discord import app_commands
 from discord.ext import commands
+gi.require_version('Pango', '1.0')
+gi.require_version('PangoCairo', '1.0')
+from gi.repository import Pango, PangoCairo
 
 from tle import constants
 from tle.util import codeforces_common as cf_common
@@ -27,6 +34,29 @@ logger = logging.getLogger(__name__)
 
 _IMPORT_BATCH_SIZE = 500
 _IMPORT_RATE_DELAY = 0.5
+_AKARI_IMAGE_MAX_ROWS = 40
+_AKARI_IMAGE_WIDTH = 760
+_AKARI_IMAGE_MARGIN = 20
+_AKARI_IMAGE_ROW_HEIGHT = 36
+_AKARI_IMAGE_HEADER_SPACING = 1.25
+_AKARI_IMAGE_COLUMN_MARGIN = 10
+_AKARI_IMAGE_COLS = (54, 420, 150, 96)
+_AKARI_IMAGE_FONTS = [
+    'Noto Sans',
+    'Noto Sans CJK JP',
+    'Noto Sans CJK SC',
+    'Noto Sans CJK TC',
+    'Noto Sans CJK HK',
+    'Noto Sans CJK KR',
+    # Keep this in sync with the Cairo/Pango renderers in handles/training.
+    # extra/fonts.conf rejects Noto Color Emoji so older Cairo uses this
+    # monochrome fallback instead of rendering emoji as tofu.
+    'Noto Emoji',
+]
+_DISCORD_GRAY = (.212, .244, .247)
+_TABLE_ROW_COLORS = ((0.95, 0.95, 0.95), (0.9, 0.9, 0.9))
+_BLACK = (0, 0, 0)
+_SMOKE_WHITE = (250, 250, 250)
 
 
 class MinigameCogError(commands.CommandError):
@@ -110,7 +140,7 @@ class _FollowupChannel:
     async def send(self, content=None, *, embed=None, view=None,
                    delete_after=None, **kw):
         return await self._interaction.followup.send(
-            content, embed=embed, view=view, wait=True)
+            content, embed=embed, view=view, wait=True, **kw)
 
 
 class _SlashCtx:
@@ -130,7 +160,7 @@ class _SlashCtx:
 
     async def send(self, content=None, *, embed=None, **kw):
         return await self.interaction.followup.send(
-            content, embed=embed, wait=True)
+            content, embed=embed, wait=True, **kw)
 
     async def send_help(self, command=None):
         pass
@@ -197,14 +227,70 @@ def _format_akari_puzzle_table(guild, rows):
     return str(t)
 
 
-def _format_akari_puzzle_table_pages(guild, rows):
-    style = table.Style('{:>}  {:<}  {:<}  {:>}')
-    return table.format_table_pages(
-        style,
-        ('#', 'Name', 'Result', 'Time'),
-        _akari_puzzle_table_rows(guild, rows),
-        flexible_cols=(1,),
+def _get_akari_puzzle_table_image(table_rows):
+    height = int(
+        (len(table_rows) + _AKARI_IMAGE_HEADER_SPACING) * _AKARI_IMAGE_ROW_HEIGHT
+        + 2 * _AKARI_IMAGE_MARGIN
     )
+
+    surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, _AKARI_IMAGE_WIDTH, height)
+    context = cairo.Context(surface)
+    context.set_source_rgb(*_DISCORD_GRAY)
+    context.rectangle(0, 0, _AKARI_IMAGE_WIDTH, height)
+    context.fill()
+
+    layout = PangoCairo.create_layout(context)
+    layout.set_font_description(
+        Pango.font_description_from_string(','.join(_AKARI_IMAGE_FONTS) + ' 18'))
+    layout.set_ellipsize(Pango.EllipsizeMode.END)
+
+    def draw_bg(y, color):
+        context.set_source_rgb(*color)
+        context.rectangle(0, y, _AKARI_IMAGE_WIDTH, _AKARI_IMAGE_ROW_HEIGHT)
+        context.fill()
+
+    def draw_cell(text, width, *, align=Pango.Alignment.LEFT, bold=False):
+        text = html.escape(str(text))
+        if bold:
+            text = f'<b>{text}</b>'
+        layout.set_width(max(1, int((width - _AKARI_IMAGE_COLUMN_MARGIN) * Pango.SCALE)))
+        layout.set_alignment(align)
+        layout.set_markup(text, -1)
+        PangoCairo.show_layout(context, layout)
+        context.rel_move_to(width, 0)
+
+    def draw_row(row, y, color, *, bold=False):
+        context.set_source_rgb(*(component / 255 for component in color))
+        context.move_to(_AKARI_IMAGE_MARGIN, y)
+        draw_cell(row[0], _AKARI_IMAGE_COLS[0], align=Pango.Alignment.RIGHT, bold=bold)
+        draw_cell(row[1], _AKARI_IMAGE_COLS[1], bold=bold)
+        draw_cell(row[2], _AKARI_IMAGE_COLS[2], bold=bold)
+        draw_cell(row[3], _AKARI_IMAGE_COLS[3], align=Pango.Alignment.RIGHT, bold=bold)
+
+    y = _AKARI_IMAGE_MARGIN
+    draw_row(('#', 'Name', 'Result', 'Time'), y, _SMOKE_WHITE, bold=True)
+    y += int(_AKARI_IMAGE_ROW_HEIGHT * _AKARI_IMAGE_HEADER_SPACING)
+
+    for i, row in enumerate(table_rows):
+        draw_bg(y, _TABLE_ROW_COLORS[i % 2])
+        draw_row(row, y, _BLACK)
+        y += _AKARI_IMAGE_ROW_HEIGHT
+
+    image_data = io.BytesIO()
+    surface.write_to_png(image_data)
+    image_data.seek(0)
+    return discord.File(image_data, filename='akari-results.png')
+
+
+def _get_akari_puzzle_table_image_embed(guild, rows, title):
+    table_rows = _akari_puzzle_table_rows(guild, rows)
+    displayed_rows = table_rows[:_AKARI_IMAGE_MAX_ROWS]
+    discord_file = _get_akari_puzzle_table_image(displayed_rows)
+    embed = discord_common.cf_color_embed(title=title)
+    if len(table_rows) > len(displayed_rows):
+        embed.set_footer(text=f'Showing top {len(displayed_rows)} of {len(table_rows)} results')
+    discord_common.attach_image(embed, discord_file)
+    return embed, discord_file
 
 
 class Minigames(commands.Cog):
@@ -789,12 +875,9 @@ class Minigames(commands.Cog):
                 if not rows:
                     raise MinigameCogError(f'No {game.display_name} results found for `{args[0]}`.')
 
-                table_pages = _format_akari_puzzle_table_pages(ctx.guild, rows)
-                await discord_common.send_paginated_embeds(
-                    ctx,
-                    table_pages,
-                    title=title,
-                )
+                embed, discord_file = _get_akari_puzzle_table_image_embed(
+                    ctx.guild, rows, title)
+                await ctx.send(embed=embed, file=discord_file)
                 return
 
         filter_args = list(args)
