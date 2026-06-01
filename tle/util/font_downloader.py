@@ -48,8 +48,16 @@ def _download_direct(font_path, url):
     logger.info(f'Downloading font `{font}`.')
     with urllib.request.urlopen(url) as resp:
         data = resp.read()
-    with open(font_path, 'wb') as f:
-        f.write(data)
+    # Write to a temp file and rename into place so an interrupted write can't
+    # leave a truncated font that the isfile() check would treat as complete.
+    tmp_path = font_path + '.part'
+    try:
+        with open(tmp_path, 'wb') as f:
+            f.write(data)
+        os.replace(tmp_path, font_path)
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
 
 
 def maybe_download():
