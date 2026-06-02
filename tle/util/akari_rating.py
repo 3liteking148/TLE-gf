@@ -51,6 +51,15 @@ RatingState = namedtuple(
 )
 
 
+# One point on a user's rating history.  Emitted only for days the user actually
+# played — decay days between plays modify ``rating`` but don't produce their own
+# entry; their net effect shows up in the next played day's ``rating``.
+HistoryPoint = namedtuple(
+    'HistoryPoint',
+    'puzzle_number puzzle_date rating delta is_perfect accuracy time_seconds',
+)
+
+
 def _result_sort_key(row):
     """Ranking key for one day's result — smaller is better.
 
@@ -184,7 +193,7 @@ def _decay_rate(skip_streak, decay_base, decay_max, decay_grace):
 
 def compute_ratings(rows, start_rating=None, damping=None,
                     decay_base=None, decay_max=None, decay_grace=None,
-                    max_puzzle=None):
+                    max_puzzle=None, histories=None):
     """Replay every Akari day in order and return ``{user_id: RatingState}``.
 
     ``rows`` is any iterable of result rows, each exposing ``user_id``,
@@ -208,6 +217,12 @@ def compute_ratings(rows, start_rating=None, damping=None,
     The "days" counted are days the guild was active (puzzles in the data), so
     decay advances as others keep playing, not by wall-clock; it is therefore a
     pure, deterministic function of the result rows.
+
+    **History capture:** pass an empty dict as ``histories`` to receive
+    ``{user_id: [HistoryPoint, ...]}`` covering every day each user actually
+    played.  Decay days don't produce their own entries — their effect surfaces
+    in the next played day's rating, so the line a caller plots through the
+    points already accounts for any intervening inactivity.
     """
     if start_rating is None:
         start_rating = float(constants.AKARI_START_RATING)
@@ -263,11 +278,27 @@ def compute_ratings(rows, start_rating=None, damping=None,
                 last_delta[user_id] = delta
                 if ratings[user_id] > peak[user_id]:
                     peak[user_id] = ratings[user_id]
+        else:
+            # Solo days produce no contest delta but still record a history point
+            # so a lone early result shows up on the user's graph.
+            deltas = {user_id: 0.0 for user_id in day_rows}
 
         # Everyone who showed up resets their skip streak and records the day.
         for user_id in day_rows:
             skip_streak[user_id] = 0
             last_puzzle[user_id] = puzzle_number
+
+        if histories is not None:
+            for user_id, row in day_rows.items():
+                histories.setdefault(user_id, []).append(HistoryPoint(
+                    puzzle_number=puzzle_number,
+                    puzzle_date=getattr(row, 'puzzle_date', None),
+                    rating=ratings[user_id],
+                    delta=deltas.get(user_id, 0.0),
+                    is_perfect=bool(row.is_perfect),
+                    accuracy=int(getattr(row, 'accuracy', 0)),
+                    time_seconds=int(getattr(row, 'time_seconds', 0)),
+                ))
 
         # Absent previously-seen players accrue a skipped day and decay toward
         # the default rating (independent per user, so order is irrelevant).

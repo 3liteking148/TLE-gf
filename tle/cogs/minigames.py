@@ -28,7 +28,9 @@ from tle.cogs._minigame_common import (
 )
 from tle.cogs._minigame_akari import AKARI_GAME, expected_puzzle_number
 from tle.cogs._minigame_guessgame import GUESSGAME_GAME
-from tle.cogs._minigame_stats import plot_akari_stats, plot_guessgame_stats
+from tle.cogs._minigame_stats import (
+    plot_akari_rating, plot_akari_stats, plot_guessgame_stats,
+)
 from tle.cogs._migrate_retry import discord_retry, RetryExhaustedError
 from tle.util.akari_rating import compute_ratings
 
@@ -1020,29 +1022,9 @@ class Minigames(commands.Cog):
             f'Removed {game.display_name} result for '
             f'`{_safe_member_name(member)}` on puzzle `{puzzle_id}`.'))
 
-    async def _cmd_akari_ratings(self, ctx, member=None):
-        """Mod-gated rating display — the *only* place a rating is shown."""
+    async def _cmd_akari_ratings(self, ctx):
+        """Mod-gated guild leaderboard — top ratings as a single image."""
         self._require_enabled(ctx.guild.id, AKARI_GAME)
-        if member is not None:
-            row = cf_common.user_db.get_akari_rating(ctx.guild.id, member.id)
-            if row is None:
-                raise MinigameCogError(
-                    f'No {AKARI_GAME.display_name} rating for '
-                    f'`{_safe_member_name(member)}` yet.')
-            registered = cf_common.user_db.is_minigame_registered(
-                ctx.guild.id, member.id)
-            embed = discord.Embed(
-                title=f'{AKARI_GAME.display_name} rating — {_safe_member_name(member)}',
-                color=discord_common.random_cf_color(),
-            )
-            embed.add_field(name='Rating', value=str(round(row.rating)))
-            embed.add_field(name='Games', value=str(row.games))
-            embed.add_field(name='Peak', value=str(round(row.peak)))
-            embed.add_field(name='Last change', value=f'{row.last_delta:+.0f}')
-            embed.add_field(name='Registered', value='yes' if registered else 'no')
-            await ctx.send(embed=embed)
-            return
-
         rows = cf_common.user_db.get_akari_ratings(ctx.guild.id)
         if not rows:
             raise MinigameCogError(
@@ -1057,6 +1039,42 @@ class Minigames(commands.Cog):
         discord_file = _get_akari_rating_table_image_file(
             ctx.guild, active, registrants)
         await ctx.send(file=discord_file)
+
+    async def _cmd_akari_rating(self, ctx, member):
+        """Mod-gated per-user rating graph (``;plot rating`` style)."""
+        self._require_enabled(ctx.guild.id, AKARI_GAME)
+        row = cf_common.user_db.get_akari_rating(ctx.guild.id, member.id)
+        if row is None:
+            raise MinigameCogError(
+                f'No {AKARI_GAME.display_name} rating for '
+                f'`{_safe_member_name(member)}` yet.')
+
+        # Replay the full guild history to get this user's per-day rating points.
+        # The snapshot is a pure function of the result rows, so replaying here
+        # produces the same rating values that ;mg akari ratings shows.
+        result_rows = cf_common.user_db.get_minigame_results_for_guild(
+            ctx.guild.id, AKARI_GAME.name)
+        max_puzzle = (expected_puzzle_number(dt.date.today())
+                      + constants.AKARI_MAX_PUZZLE_LOOKAHEAD)
+        histories = {}
+        compute_ratings(result_rows, max_puzzle=max_puzzle, histories=histories)
+        history = histories.get(str(member.id), [])
+        if not history:
+            raise MinigameCogError(
+                f'`{_safe_member_name(member)}` has no rated '
+                f'{AKARI_GAME.display_name} days to plot yet.')
+
+        discord_file = plot_akari_rating(history, _safe_member_name(member))
+        embed = discord.Embed(
+            title=f'{AKARI_GAME.display_name} rating — {_safe_member_name(member)}',
+            color=discord_common.random_cf_color(),
+        )
+        embed.add_field(name='Rating', value=str(round(row.rating)))
+        embed.add_field(name='Games', value=str(row.games))
+        embed.add_field(name='Peak', value=str(round(row.peak)))
+        embed.add_field(name='Last change', value=f'{row.last_delta:+.0f}')
+        discord_common.attach_image(embed, discord_file)
+        await ctx.send(embed=embed, file=discord_file)
 
     async def _cmd_akari_ratings_debug(self, ctx):
         """Mod testing dump: ALL rated users with exact, unrounded values."""
@@ -1380,11 +1398,19 @@ class Minigames(commands.Cog):
     async def akari_reparse(self, ctx):
         await self._cmd_reparse(ctx, AKARI_GAME)
 
-    @akari.group(name='ratings', aliases=['rating'], brief='(Mod) Show Akari ratings',
-                 usage='[@user]', invoke_without_command=True)
+    @akari.group(name='ratings', brief='(Mod) Show Akari rating leaderboard',
+                 invoke_without_command=True)
     @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
-    async def akari_ratings(self, ctx, member: CaseInsensitiveMember = None):
-        await self._cmd_akari_ratings(ctx, member)
+    async def akari_ratings(self, ctx):
+        await self._cmd_akari_ratings(ctx)
+
+    @akari.command(name='rating', brief='(Mod) Show one user\'s Akari rating graph',
+                   usage='[@user]')
+    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    async def akari_rating(self, ctx, member: CaseInsensitiveMember = None):
+        if member is None:
+            member = ctx.author
+        await self._cmd_akari_rating(ctx, member)
 
     @akari_ratings.command(name='recompute', brief='(Mod) Rebuild the rating snapshot')
     @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
@@ -1600,6 +1626,43 @@ class Minigames(commands.Cog):
             await self._cmd_stats(ctx, AKARI_GAME, *args)
         except MinigameCogError as e:
             await self._slash_send_error(interaction, e)
+
+    @akari_slash.command(name='ratings', description='(Mod) Show Akari rating leaderboard')
+    async def slash_akari_ratings(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        if not self._has_mod_role(interaction):
+            return await self._slash_send_error(
+                interaction,
+                f'You need the `{constants.TLE_ADMIN}` or '
+                f'`{constants.TLE_MODERATOR}` role.')
+        try:
+            await self._cmd_akari_ratings(_SlashCtx(interaction))
+        except MinigameCogError as e:
+            await self._slash_send_error(interaction, e)
+        except Exception:
+            logger.exception('Unhandled error in slash command')
+            await self._slash_send_error(interaction, 'An unexpected error occurred.')
+
+    @akari_slash.command(name='rating', description="(Mod) Show one user's Akari rating graph")
+    @app_commands.describe(member='Player (defaults to you)')
+    async def slash_akari_rating(
+        self, interaction: discord.Interaction,
+        member: Optional[discord.Member] = None,
+    ):
+        await interaction.response.defer()
+        if not self._has_mod_role(interaction):
+            return await self._slash_send_error(
+                interaction,
+                f'You need the `{constants.TLE_ADMIN}` or '
+                f'`{constants.TLE_MODERATOR}` role.')
+        target = member or interaction.user
+        try:
+            await self._cmd_akari_rating(_SlashCtx(interaction), target)
+        except MinigameCogError as e:
+            await self._slash_send_error(interaction, e)
+        except Exception:
+            logger.exception('Unhandled error in slash command')
+            await self._slash_send_error(interaction, 'An unexpected error occurred.')
 
     @akari_slash.command(name='here', description='Set the Daily Akari channel')
     async def slash_akari_here(self, interaction: discord.Interaction):
