@@ -29,7 +29,8 @@ from tle.cogs._minigame_common import (
 from tle.cogs._minigame_akari import AKARI_GAME, expected_puzzle_number
 from tle.cogs._minigame_guessgame import GUESSGAME_GAME
 from tle.cogs._minigame_stats import (
-    plot_akari_rating, plot_akari_stats, plot_guessgame_stats,
+    plot_akari_performance, plot_akari_rating,
+    plot_akari_stats, plot_guessgame_stats,
 )
 from tle.cogs._migrate_retry import discord_retry, RetryExhaustedError
 from tle.util.akari_rating import compute_ratings, rank_for_rating
@@ -1064,6 +1065,20 @@ class Minigames(commands.Cog):
             ctx.guild, active, registrants)
         await ctx.send(file=discord_file)
 
+    def _akari_user_history(self, guild_id, user_id):
+        """Replay the guild's results and return one user's per-day history.
+
+        Shared by the rating and performance graphs — the replay is the same;
+        each caller picks the field it needs off the :class:`HistoryPoint`s.
+        """
+        result_rows = cf_common.user_db.get_minigame_results_for_guild(
+            guild_id, AKARI_GAME.name)
+        max_puzzle = (expected_puzzle_number(dt.date.today())
+                      + constants.AKARI_MAX_PUZZLE_LOOKAHEAD)
+        histories = {}
+        compute_ratings(result_rows, max_puzzle=max_puzzle, histories=histories)
+        return histories.get(str(user_id), [])
+
     async def _cmd_akari_rating(self, ctx, member):
         """Mod-gated per-user rating graph (``;plot rating`` style)."""
         self._require_enabled(ctx.guild.id, AKARI_GAME)
@@ -1073,16 +1088,7 @@ class Minigames(commands.Cog):
                 f'No {AKARI_GAME.display_name} rating for '
                 f'`{_safe_member_name(member)}` yet.')
 
-        # Replay the full guild history to get this user's per-day rating points.
-        # The snapshot is a pure function of the result rows, so replaying here
-        # produces the same rating values that ;mg akari ratings shows.
-        result_rows = cf_common.user_db.get_minigame_results_for_guild(
-            ctx.guild.id, AKARI_GAME.name)
-        max_puzzle = (expected_puzzle_number(dt.date.today())
-                      + constants.AKARI_MAX_PUZZLE_LOOKAHEAD)
-        histories = {}
-        compute_ratings(result_rows, max_puzzle=max_puzzle, histories=histories)
-        history = histories.get(str(member.id), [])
+        history = self._akari_user_history(ctx.guild.id, member.id)
         if not history:
             raise MinigameCogError(
                 f'`{_safe_member_name(member)}` has no rated '
@@ -1091,6 +1097,12 @@ class Minigames(commands.Cog):
         rating = round(row.rating)
         rank = rank_for_rating(rating)
         peak_rank = rank_for_rating(round(row.peak))
+        # Last contest day's performance (skip solo-day Nones).
+        last_perf = next((h.performance for h in reversed(history)
+                          if h.performance is not None), None)
+        last_perf_str = (f'{round(last_perf)} '
+                         f'({rank_for_rating(round(last_perf)).title_abbr})'
+                         if last_perf is not None else '—')
         discord_file = plot_akari_rating(history, _safe_member_name(member))
         embed = discord.Embed(
             title=f'{AKARI_GAME.display_name} rating — {_safe_member_name(member)}',
@@ -1100,6 +1112,46 @@ class Minigames(commands.Cog):
         embed.add_field(name='Peak', value=f'{round(row.peak)} ({peak_rank.title_abbr})')
         embed.add_field(name='Games', value=str(row.games))
         embed.add_field(name='Last change', value=f'{row.last_delta:+.0f}')
+        embed.add_field(name='Last performance', value=last_perf_str)
+        discord_common.attach_image(embed, discord_file)
+        await ctx.send(embed=embed, file=discord_file)
+
+    async def _cmd_akari_performance(self, ctx, member):
+        """Mod-gated per-user performance graph.
+
+        Performance is the rating that, given the day's field, would seed the
+        player at exactly their actual rank — i.e. their "rating-equivalent
+        finish" for that contest, independent of their incoming rating.  Solo
+        days have no field and are dropped from the plot.
+        """
+        self._require_enabled(ctx.guild.id, AKARI_GAME)
+        row = cf_common.user_db.get_akari_rating(ctx.guild.id, member.id)
+        if row is None:
+            raise MinigameCogError(
+                f'No {AKARI_GAME.display_name} rating for '
+                f'`{_safe_member_name(member)}` yet.')
+
+        history = self._akari_user_history(ctx.guild.id, member.id)
+        contest_history = [h for h in history if h.performance is not None]
+        if not contest_history:
+            raise MinigameCogError(
+                f'`{_safe_member_name(member)}` has no contested '
+                f'{AKARI_GAME.display_name} days to plot performance for yet.')
+
+        discord_file = plot_akari_performance(history, _safe_member_name(member))
+        last_perf = contest_history[-1].performance
+        last_rank = rank_for_rating(round(last_perf))
+        best_perf = max(h.performance for h in contest_history)
+        best_rank = rank_for_rating(round(best_perf))
+        embed = discord.Embed(
+            title=f'{AKARI_GAME.display_name} performance — {_safe_member_name(member)}',
+            color=last_rank.color_embed,
+        )
+        embed.add_field(name='Last performance',
+                        value=f'{round(last_perf)} ({last_rank.title_abbr})')
+        embed.add_field(name='Best performance',
+                        value=f'{round(best_perf)} ({best_rank.title_abbr})')
+        embed.add_field(name='Contests', value=str(len(contest_history)))
         discord_common.attach_image(embed, discord_file)
         await ctx.send(embed=embed, file=discord_file)
 
@@ -1439,6 +1491,15 @@ class Minigames(commands.Cog):
             member = ctx.author
         await self._cmd_akari_rating(ctx, member)
 
+    @akari.command(name='performance', aliases=['perf'],
+                   brief='(Mod) Show one user\'s Akari performance graph',
+                   usage='[@user]')
+    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    async def akari_performance(self, ctx, member: CaseInsensitiveMember = None):
+        if member is None:
+            member = ctx.author
+        await self._cmd_akari_performance(ctx, member)
+
     @akari_ratings.command(name='recompute', brief='(Mod) Rebuild the rating snapshot')
     @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
     async def akari_ratings_recompute(self, ctx):
@@ -1685,6 +1746,27 @@ class Minigames(commands.Cog):
         target = member or interaction.user
         try:
             await self._cmd_akari_rating(_SlashCtx(interaction), target)
+        except MinigameCogError as e:
+            await self._slash_send_error(interaction, e)
+        except Exception:
+            logger.exception('Unhandled error in slash command')
+            await self._slash_send_error(interaction, 'An unexpected error occurred.')
+
+    @akari_slash.command(name='performance', description="(Mod) Show one user's Akari performance graph")
+    @app_commands.describe(member='Player (defaults to you)')
+    async def slash_akari_performance(
+        self, interaction: discord.Interaction,
+        member: Optional[discord.Member] = None,
+    ):
+        await interaction.response.defer()
+        if not self._has_mod_role(interaction):
+            return await self._slash_send_error(
+                interaction,
+                f'You need the `{constants.TLE_ADMIN}` or '
+                f'`{constants.TLE_MODERATOR}` role.')
+        target = member or interaction.user
+        try:
+            await self._cmd_akari_performance(_SlashCtx(interaction), target)
         except MinigameCogError as e:
             await self._slash_send_error(interaction, e)
         except Exception:

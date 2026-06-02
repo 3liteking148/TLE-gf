@@ -142,6 +142,28 @@ def plot_akari_stats(rows, display_name):
     return discord_file
 
 
+def _plot_akari_series(dates, values, display_name):
+    """Shared body for the rating and performance graphs.
+
+    Renders one line + markers, paints the Akari tier bands underneath, sets
+    a reasonable y-window, and labels the legend with the latest value.
+    """
+    plt.clf()
+    plt.axes().set_prop_cycle(gc.rating_color_cycler)
+    plt.plot(dates, values, linestyle='-', marker='o', markersize=3,
+             markerfacecolor='white', markeredgewidth=0.5)
+
+    plt.ylim(min(min(values) - 50, 1100), max(max(values) + 50, 1500))
+    gc.plot_rating_bg(AKARI_RANKS)
+
+    plt.gcf().autofmt_xdate()
+    label = gc.StrWrap(f'{display_name} ({round(values[-1])})')
+    plt.legend([label], bbox_to_anchor=(0, 1, 1, 0), loc='lower left',
+               mode='expand', ncol=1)
+
+    return gc.get_current_figure_as_file()
+
+
 def plot_akari_rating(history, display_name):
     """Plot one user's Daily Akari rating over time (``;plot rating`` style).
 
@@ -152,25 +174,22 @@ def plot_akari_rating(history, display_name):
     """
     dates = [normalize_puzzle_date(h.puzzle_date) for h in history]
     ratings = [h.rating for h in history]
+    return _plot_akari_series(dates, ratings, display_name)
 
-    plt.clf()
-    plt.axes().set_prop_cycle(gc.rating_color_cycler)
-    plt.plot(dates, ratings, linestyle='-', marker='o', markersize=3,
-             markerfacecolor='white', markeredgewidth=0.5)
 
-    # Akari rating bands give the same coloured-tier look as ;plot rating.
-    # Pad the y-window first so plot_rating_bg's axhspan covers it cleanly.
-    min_rating = min(ratings)
-    max_rating = max(ratings)
-    plt.ylim(min(min_rating - 50, 1100), max(max_rating + 50, 1500))
-    gc.plot_rating_bg(AKARI_RANKS)
+def plot_akari_performance(history, display_name):
+    """Plot one user's per-contest performance over time.
 
-    plt.gcf().autofmt_xdate()
-    label = gc.StrWrap(f'{display_name} ({round(ratings[-1])})')
-    plt.legend([label], bbox_to_anchor=(0, 1, 1, 0), loc='lower left',
-               mode='expand', ncol=1)
-
-    return gc.get_current_figure_as_file()
+    Solo days (where the user was the only player) carry ``performance=None``
+    and are dropped — performance is only defined when there's a field to seed
+    against.  Raises ``ValueError`` if no contest days remain.
+    """
+    points = [(normalize_puzzle_date(h.puzzle_date), h.performance)
+              for h in history if h.performance is not None]
+    if not points:
+        raise ValueError('No contest days to plot performance for.')
+    dates, perfs = zip(*points)
+    return _plot_akari_series(list(dates), list(perfs), display_name)
 
 
 # ── GuessThe.Game ──────────────────────────────────────────────────────

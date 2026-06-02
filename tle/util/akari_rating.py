@@ -95,9 +95,18 @@ RatingState = namedtuple(
 # One point on a user's rating history.  Emitted only for days the user actually
 # played — decay days between plays modify ``rating`` but don't produce their own
 # entry; their net effect shows up in the next played day's ``rating``.
+# ``performance`` is the Codeforces-style per-contest performance: ``2*need -
+# rating``, where ``need`` is the geometric-mean target ``compute_round``
+# binary-searches for.  The substitution comes from the assumption that ``need``
+# is the arithmetic midpoint between the player's current rating and their
+# performance — i.e. ``need = (rating + performance) / 2``, rearranged.  This
+# matches what CF's ``correct_rating_changes`` recovers from public deltas, and
+# stays bounded for clean wins (the rank-exact definition asymptotes at 1).
+# ``None`` for solo days (no field → no contest).
 HistoryPoint = namedtuple(
     'HistoryPoint',
-    'puzzle_number puzzle_date rating delta is_perfect accuracy time_seconds',
+    'puzzle_number puzzle_date rating delta performance '
+    'is_perfect accuracy time_seconds',
 )
 
 
@@ -171,12 +180,18 @@ def _needed_rating(pow_others, target_seed):
     return (lo + hi) / 2.0
 
 
-def compute_round(ratings, ranks, damping=None):
+def compute_round(ratings, ranks, damping=None, needs=None):
     """Run one Codeforces rating round and return ``{user_id: delta}``.
 
     ``ratings``: ``{user_id: float}`` pre-contest ratings of the participants.
     ``ranks``:   ``{user_id: int}`` actual ranks (1-based, ties share a rank).
     Returned deltas are already damped; add them to ``ratings`` to advance.
+
+    ``needs`` (optional): if a dict is passed in, it is populated with each
+    user's geometric-mean target rating — the rating that would seed them at
+    ``sqrt(actual_rank * expected_rank)`` — which Codeforces uses as the
+    "performance" of that contest.  We compute this value here anyway to derive
+    the delta, so capturing it costs nothing.
 
     Users are processed in a stable sorted order so floating-point summation is
     deterministic regardless of dict insertion order.
@@ -196,6 +211,8 @@ def compute_round(ratings, ranks, damping=None):
         seed = _expected_seed(pows[user], pow_others)
         mid_rank = math.sqrt(ranks[user] * seed)
         need = _needed_rating(pow_others, mid_rank)
+        if needs is not None:
+            needs[user] = need
         deltas[user] = (need - ratings[user]) / 2.0
 
     # CF correction 1: shift everyone so the field loses a tiny, fixed amount of
@@ -309,16 +326,28 @@ def compute_ratings(rows, start_rating=None, damping=None,
                 last_puzzle[user_id] = puzzle_number
 
         # Contest among the day's players (needs at least two to be a contest).
+        performances = {}
         if len(day_rows) >= 2:
             day_ratings = {user_id: ratings[user_id] for user_id in day_rows}
             ranks = rank_participants(day_rows.values())
-            deltas = compute_round(day_ratings, ranks, damping=damping)
+            # When the caller wants history, harvest the geometric-mean "need"
+            # values that compute_round computes anyway, then convert to the
+            # CF-style performance ``2*need - rating``: assuming ``need`` is the
+            # arithmetic midpoint between the user's rating and their performance
+            # (the same implicit assumption CF's UI makes), this is bounded by
+            # the field's spread and matches what ``;plot perf`` displays.
+            round_needs = {} if histories is not None else None
+            deltas = compute_round(
+                day_ratings, ranks, damping=damping, needs=round_needs)
             for user_id, delta in deltas.items():
                 ratings[user_id] += delta
                 games[user_id] += 1
                 last_delta[user_id] = delta
                 if ratings[user_id] > peak[user_id]:
                     peak[user_id] = ratings[user_id]
+            if round_needs is not None:
+                for user_id, need in round_needs.items():
+                    performances[user_id] = 2.0 * need - day_ratings[user_id]
         else:
             # Solo days produce no contest delta but still record a history point
             # so a lone early result shows up on the user's graph.
@@ -336,6 +365,7 @@ def compute_ratings(rows, start_rating=None, damping=None,
                     puzzle_date=getattr(row, 'puzzle_date', None),
                     rating=ratings[user_id],
                     delta=deltas.get(user_id, 0.0),
+                    performance=performances.get(user_id),
                     is_perfect=bool(row.is_perfect),
                     accuracy=int(getattr(row, 'accuracy', 0)),
                     time_seconds=int(getattr(row, 'time_seconds', 0)),
