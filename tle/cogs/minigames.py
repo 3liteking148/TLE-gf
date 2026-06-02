@@ -1021,7 +1021,7 @@ class Minigames(commands.Cog):
             f'`{_safe_member_name(member)}` on puzzle `{puzzle_id}`.'))
 
     async def _cmd_akari_ratings(self, ctx, member=None):
-        """Admin-only rating display — the *only* place a rating is shown."""
+        """Mod-gated rating display — the *only* place a rating is shown."""
         self._require_enabled(ctx.guild.id, AKARI_GAME)
         if member is not None:
             row = cf_common.user_db.get_akari_rating(ctx.guild.id, member.id)
@@ -1059,7 +1059,7 @@ class Minigames(commands.Cog):
         await ctx.send(file=discord_file)
 
     async def _cmd_akari_ratings_debug(self, ctx):
-        """Admin testing dump: ALL rated users with exact, unrounded values."""
+        """Mod testing dump: ALL rated users with exact, unrounded values."""
         self._require_enabled(ctx.guild.id, AKARI_GAME)
         rows = cf_common.user_db.get_akari_ratings(ctx.guild.id)
         if not rows:
@@ -1310,12 +1310,12 @@ class Minigames(commands.Cog):
         await ctx.send_help(ctx.command)
 
     @akari.command(name='here', brief='Set the Daily Akari channel to the current channel')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
     async def akari_here(self, ctx):
         await self._cmd_here(ctx, AKARI_GAME)
 
     @akari.command(name='clear', brief='Clear the Daily Akari channel')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
     async def akari_clear(self, ctx):
         await self._cmd_clear(ctx, AKARI_GAME)
 
@@ -1345,57 +1345,57 @@ class Minigames(commands.Cog):
 
     @akari.command(name='remove', brief='Remove a user result for a puzzle',
                    usage='@user puzzle_id')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
     async def akari_remove(self, ctx, member: CaseInsensitiveMember, puzzle_id: int):
         await self._cmd_remove(ctx, AKARI_GAME, member, puzzle_id)
 
     @akari.group(name='import', brief='Manage imported history',
                  invoke_without_command=True)
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
     async def akari_import(self, ctx):
         await ctx.send_help(ctx.command)
 
     @akari_import.command(name='start', brief='Rebuild imported history')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
     async def akari_import_start(self, ctx, channel: ChannelOrThread = None):
         await self._cmd_import_start(ctx, AKARI_GAME, channel)
 
     @akari_import.command(name='status', brief='Show import status')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
     async def akari_import_status(self, ctx):
         await self._cmd_import_status(ctx, AKARI_GAME)
 
     @akari_import.command(name='cancel', brief='Cancel a running import')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
     async def akari_import_cancel(self, ctx):
         await self._cmd_import_cancel(ctx, AKARI_GAME)
 
     @akari_import.command(name='clear', brief='Delete imported history')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
     async def akari_import_clear(self, ctx):
         await self._cmd_import_clear(ctx, AKARI_GAME)
 
     @akari.command(name='reparse', brief='Reparse all stored raw messages')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
     async def akari_reparse(self, ctx):
         await self._cmd_reparse(ctx, AKARI_GAME)
 
-    @akari.group(name='ratings', aliases=['rating'], brief='(Admin) Show Akari ratings',
+    @akari.group(name='ratings', aliases=['rating'], brief='(Mod) Show Akari ratings',
                  usage='[@user]', invoke_without_command=True)
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
     async def akari_ratings(self, ctx, member: CaseInsensitiveMember = None):
         await self._cmd_akari_ratings(ctx, member)
 
-    @akari_ratings.command(name='recompute', brief='(Admin) Rebuild the rating snapshot')
-    @commands.has_role(constants.TLE_ADMIN)
+    @akari_ratings.command(name='recompute', brief='(Mod) Rebuild the rating snapshot')
+    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
     async def akari_ratings_recompute(self, ctx):
         self._recompute_akari_ratings(ctx.guild.id)
         await ctx.send(embed=discord_common.embed_success(
             f'{AKARI_GAME.display_name} ratings recomputed.'))
 
     @akari_ratings.command(name='debug', aliases=['all', 'raw'],
-                           brief='(Admin) Dump exact ratings for all users')
-    @commands.has_role(constants.TLE_ADMIN)
+                           brief='(Mod) Dump exact ratings for all users')
+    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
     async def akari_ratings_debug(self, ctx):
         await self._cmd_akari_ratings_debug(ctx)
 
@@ -1488,8 +1488,9 @@ class Minigames(commands.Cog):
     akari_slash = app_commands.Group(
         name='akari', description='Daily Akari commands', guild_only=True)
 
-    def _has_admin_role(self, interaction):
-        return any(r.name == constants.TLE_ADMIN for r in interaction.user.roles)
+    def _has_mod_role(self, interaction):
+        allowed = {constants.TLE_ADMIN, constants.TLE_MODERATOR}
+        return any(r.name in allowed for r in interaction.user.roles)
 
     async def _slash_send_error(self, interaction, error):
         try:
@@ -1603,9 +1604,11 @@ class Minigames(commands.Cog):
     @akari_slash.command(name='here', description='Set the Daily Akari channel')
     async def slash_akari_here(self, interaction: discord.Interaction):
         await interaction.response.defer()
-        if not self._has_admin_role(interaction):
+        if not self._has_mod_role(interaction):
             return await self._slash_send_error(
-                interaction, f'You need the `{constants.TLE_ADMIN}` role.')
+                interaction,
+                f'You need the `{constants.TLE_ADMIN}` or '
+                f'`{constants.TLE_MODERATOR}` role.')
         try:
             await self._cmd_here(_SlashCtx(interaction), AKARI_GAME)
         except MinigameCogError as e:
@@ -1617,9 +1620,11 @@ class Minigames(commands.Cog):
     @akari_slash.command(name='clear', description='Clear the Daily Akari channel')
     async def slash_akari_clear(self, interaction: discord.Interaction):
         await interaction.response.defer()
-        if not self._has_admin_role(interaction):
+        if not self._has_mod_role(interaction):
             return await self._slash_send_error(
-                interaction, f'You need the `{constants.TLE_ADMIN}` role.')
+                interaction,
+                f'You need the `{constants.TLE_ADMIN}` or '
+                f'`{constants.TLE_MODERATOR}` role.')
         try:
             await self._cmd_clear(_SlashCtx(interaction), AKARI_GAME)
         except MinigameCogError as e:
@@ -1635,9 +1640,11 @@ class Minigames(commands.Cog):
         member: discord.Member, puzzle_id: int,
     ):
         await interaction.response.defer()
-        if not self._has_admin_role(interaction):
+        if not self._has_mod_role(interaction):
             return await self._slash_send_error(
-                interaction, f'You need the `{constants.TLE_ADMIN}` role.')
+                interaction,
+                f'You need the `{constants.TLE_ADMIN}` or '
+                f'`{constants.TLE_MODERATOR}` role.')
         try:
             await self._cmd_remove(
                 _SlashCtx(interaction), AKARI_GAME, member, puzzle_id)
@@ -1650,9 +1657,11 @@ class Minigames(commands.Cog):
     @akari_slash.command(name='reparse', description='Reparse all stored raw messages')
     async def slash_akari_reparse(self, interaction: discord.Interaction):
         await interaction.response.defer()
-        if not self._has_admin_role(interaction):
+        if not self._has_mod_role(interaction):
             return await self._slash_send_error(
-                interaction, f'You need the `{constants.TLE_ADMIN}` role.')
+                interaction,
+                f'You need the `{constants.TLE_ADMIN}` or '
+                f'`{constants.TLE_MODERATOR}` role.')
         try:
             await self._cmd_reparse(_SlashCtx(interaction), AKARI_GAME)
         except MinigameCogError as e:
@@ -1668,9 +1677,11 @@ class Minigames(commands.Cog):
         channel: Optional[discord.TextChannel] = None,
     ):
         await interaction.response.defer()
-        if not self._has_admin_role(interaction):
+        if not self._has_mod_role(interaction):
             return await self._slash_send_error(
-                interaction, f'You need the `{constants.TLE_ADMIN}` role.')
+                interaction,
+                f'You need the `{constants.TLE_ADMIN}` or '
+                f'`{constants.TLE_MODERATOR}` role.')
         ctx = _SlashCtx(interaction)
         try:
             original = await interaction.original_response()
@@ -1685,9 +1696,11 @@ class Minigames(commands.Cog):
     @akari_slash.command(name='import-status', description='Show import status')
     async def slash_akari_import_status(self, interaction: discord.Interaction):
         await interaction.response.defer()
-        if not self._has_admin_role(interaction):
+        if not self._has_mod_role(interaction):
             return await self._slash_send_error(
-                interaction, f'You need the `{constants.TLE_ADMIN}` role.')
+                interaction,
+                f'You need the `{constants.TLE_ADMIN}` or '
+                f'`{constants.TLE_MODERATOR}` role.')
         try:
             await self._cmd_import_status(_SlashCtx(interaction), AKARI_GAME)
         except MinigameCogError as e:
@@ -1699,9 +1712,11 @@ class Minigames(commands.Cog):
     @akari_slash.command(name='import-cancel', description='Cancel a running import')
     async def slash_akari_import_cancel(self, interaction: discord.Interaction):
         await interaction.response.defer()
-        if not self._has_admin_role(interaction):
+        if not self._has_mod_role(interaction):
             return await self._slash_send_error(
-                interaction, f'You need the `{constants.TLE_ADMIN}` role.')
+                interaction,
+                f'You need the `{constants.TLE_ADMIN}` or '
+                f'`{constants.TLE_MODERATOR}` role.')
         try:
             await self._cmd_import_cancel(_SlashCtx(interaction), AKARI_GAME)
         except MinigameCogError as e:
@@ -1713,9 +1728,11 @@ class Minigames(commands.Cog):
     @akari_slash.command(name='import-clear', description='Delete imported history')
     async def slash_akari_import_clear(self, interaction: discord.Interaction):
         await interaction.response.defer()
-        if not self._has_admin_role(interaction):
+        if not self._has_mod_role(interaction):
             return await self._slash_send_error(
-                interaction, f'You need the `{constants.TLE_ADMIN}` role.')
+                interaction,
+                f'You need the `{constants.TLE_ADMIN}` or '
+                f'`{constants.TLE_MODERATOR}` role.')
         try:
             await self._cmd_import_clear(_SlashCtx(interaction), AKARI_GAME)
         except MinigameCogError as e:

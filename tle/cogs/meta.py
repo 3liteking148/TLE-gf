@@ -94,7 +94,7 @@ class Meta(commands.Cog):
             cf_common.user_db.kvs_delete('restart_message')
 
     @meta.command(brief='Restarts TLE')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
     async def restart(self, ctx):
         """Restarts the bot."""
         now = datetime.datetime.now().strftime('%H:%M:%S')
