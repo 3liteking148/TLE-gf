@@ -195,7 +195,7 @@ def _maybe_parse_puzzle_selector(arg):
         return None
     try:
         day_start = int(cf_common.parse_date(arg))
-    except cf_common.ParamParseError:
+    except (cf_common.ParamParseError, ValueError, OverflowError):
         if arg.isdigit():
             return ('puzzle', int(arg))
         return None
@@ -757,7 +757,7 @@ class Minigames(commands.Cog):
         return 'no green'
 
     def _make_guessgame_vs_pages(self, ctx, game, member1, member2, stats, matchups, scoring_name):
-        title_suffix = ' (Raw)' if scoring_name else ''
+        title_suffix = f' ({scoring_name.title()})' if scoring_name else ''
         summary_lines = [
             f'`{_safe_member_name(member1)}`: **{_format_score(stats["score1"])}** points, **{stats["wins1"]}** wins',
             f'`{_safe_member_name(member2)}`: **{_format_score(stats["score2"])}** points, **{stats["wins2"]}** wins',
@@ -842,7 +842,7 @@ class Minigames(commands.Cog):
             raise MinigameCogError(
                 f'These users have no {game.display_name} puzzles to compare.')
 
-        title_suffix = ' (Raw)' if scoring_name else ''
+        title_suffix = f' ({scoring_name.title()})' if scoring_name else ''
         description = '\n'.join([
             f'`{_safe_member_name(member1)}`: **{stats["score1"]:g}** points, **{stats["wins1"]}** wins',
             f'`{_safe_member_name(member2)}`: **{stats["score2"]:g}** points, **{stats["wins2"]}** wins',
@@ -967,7 +967,7 @@ class Minigames(commands.Cog):
             raise MinigameCogError(
                 f'No {game.display_name} winners found for this range.')
 
-        title_suffix = ' (Raw)' if scoring_name else ''
+        title_suffix = f' ({scoring_name.title()})' if scoring_name else ''
         pages = []
         per_page = 10
         for page_idx, chunk in enumerate(paginator.chunkify(winners, per_page)):
