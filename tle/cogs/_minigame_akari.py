@@ -34,6 +34,15 @@ def expected_puzzle_number(on_date):
     return _puzzle_number_from_date(on_date)
 
 
+def puzzle_date_for(puzzle_number):
+    """Inverse of :func:`expected_puzzle_number` — date for a puzzle number.
+
+    Used when manually adding a result (``;mg akari add``) so the saved row's
+    ``puzzle_date`` matches what a real ingested message would have used.
+    """
+    return _ANCHOR_DATE + dt.timedelta(days=int(puzzle_number) - _ANCHOR_NUMBER)
+
+
 def _parse_time(time_text):
     parts = [int(part) for part in time_text.split(':')]
     if len(parts) == 2:

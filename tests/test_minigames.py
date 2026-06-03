@@ -954,7 +954,7 @@ class TestFormatting:
     def test_akari_puzzle_table_image_file_is_bounded(self, monkeypatch):
         monkeypatch.setattr(
             minigames_module, '_get_akari_puzzle_table_image',
-            lambda rows, *, title=None, footer=None: SimpleNamespace(
+            lambda rows, *, title=None, footer=None, **_: SimpleNamespace(
                 rows=rows, title=title, footer=footer, filename='akari-results.png'))
         handle_lookups = []
         monkeypatch.setattr(cf_common, 'user_db', SimpleNamespace(
@@ -988,7 +988,7 @@ class TestFormatting:
         image_file = SimpleNamespace(filename='akari-results.png')
         monkeypatch.setattr(
             minigames_module, '_get_akari_puzzle_table_image_file',
-            lambda guild, rows, title: image_file)
+            lambda guild, rows, title, **_: image_file)
 
         sent = {}
 
@@ -1021,6 +1021,7 @@ def test_slash_context_forwards_file_kwarg():
             captured['kw'] = kw
 
     interaction = SimpleNamespace(
+        id=999,
         guild=object(),
         user=object(),
         channel_id=123,

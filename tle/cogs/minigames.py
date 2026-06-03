@@ -26,7 +26,7 @@ from tle.cogs._minigame_common import (
     pick_best_results, format_duration, normalize_puzzle_date, parse_date_args,
     resolve_scoring, strip_codeblock,
 )
-from tle.cogs._minigame_akari import AKARI_GAME, expected_puzzle_number
+from tle.cogs._minigame_akari import AKARI_GAME, expected_puzzle_number, puzzle_date_for
 from tle.cogs._minigame_guessgame import GUESSGAME_GAME
 from tle.cogs._minigame_stats import (
     plot_akari_performance, plot_akari_rating,
@@ -162,7 +162,11 @@ class _SlashCtx:
         self.author = interaction.user
         self.channel = _FollowupChannel(interaction)
         self.bot = interaction.client
-        self.message = type('_Msg', (), {'id': 0})()
+        # Discord interaction IDs are globally unique snowflakes, so they're
+        # safe to use anywhere a per-invocation message_id is expected (e.g.
+        # /akari add storing the row keyed on this id).  ``import-start``
+        # overrides this with the real bot reply's id after deferring.
+        self.message = type('_Msg', (), {'id': interaction.id})()
 
     async def send(self, content=None, *, embed=None, **kw):
         return await self.interaction.followup.send(
@@ -240,17 +244,29 @@ def _sort_akari_puzzle_results(rows):
     )
 
 
-def _akari_puzzle_table_rows(guild, rows):
-    return [
-        (
+def _akari_puzzle_table_rows(guild, rows, *, pre_ratings=None, registrants=None):
+    """Build display rows for a per-puzzle table.
+
+    When ``pre_ratings`` and ``registrants`` are both supplied, each opted-in
+    user's name cell gets ``(<rating> <tier>)`` appended — the rating they had
+    *before* this puzzle.  Unregistered users get the plain name (privacy).
+    """
+    result = []
+    for index, row in enumerate(_sort_akari_puzzle_results(rows), start=1):
+        name = _safe_user_name(guild, row.user_id)
+        if (pre_ratings is not None and registrants is not None
+                and row.user_id in registrants
+                and row.user_id in pre_ratings):
+            r = round(pre_ratings[row.user_id])
+            name = f'{name} ({r} {rank_for_rating(r).title_abbr})'
+        result.append((
             index,
-            _safe_user_name(guild, row.user_id),
+            name,
             _safe_cf_handle(guild, row.user_id),
             _format_akari_result_status(row),
             format_duration(row.time_seconds),
-        )
-        for index, row in enumerate(_sort_akari_puzzle_results(rows), start=1)
-    ]
+        ))
+    return result
 
 
 def _format_akari_puzzle_table(guild, rows):
@@ -343,13 +359,26 @@ def _get_akari_puzzle_table_image(table_rows, *, title=None, footer=None,
     return discord.File(image_data, filename='akari-results.png')
 
 
-def _get_akari_puzzle_table_image_file(guild, rows, title):
+def _get_akari_puzzle_table_image_file(guild, rows, title,
+                                       *, pre_ratings=None, registrants=None):
     rows = _sort_akari_puzzle_results(rows)
-    displayed_rows = _akari_puzzle_table_rows(guild, rows[:_AKARI_IMAGE_MAX_ROWS])
+    displayed = rows[:_AKARI_IMAGE_MAX_ROWS]
+    displayed_rows = _akari_puzzle_table_rows(
+        guild, displayed, pre_ratings=pre_ratings, registrants=registrants)
+    row_colors = None
+    if pre_ratings is not None and registrants is not None:
+        # Only opted-in users get a tier colour; the rest stay default-black.
+        row_colors = [
+            _akari_row_text_color(pre_ratings[row.user_id])
+            if row.user_id in registrants and row.user_id in pre_ratings
+            else _BLACK
+            for row in displayed
+        ]
     footer = None
     if len(rows) > len(displayed_rows):
         footer = f'Showing top {len(displayed_rows)} of {len(rows)} results'
-    return _get_akari_puzzle_table_image(displayed_rows, title=title, footer=footer)
+    return _get_akari_puzzle_table_image(
+        displayed_rows, title=title, footer=footer, row_colors=row_colors)
 
 
 def _akari_rating_table_rows(guild, rating_rows, registrants, *, mark_registered=True):
@@ -1102,6 +1131,84 @@ class Minigames(commands.Cog):
             f'Removed {game.display_name} result for '
             f'`{_safe_member_name(member)}` on puzzle `{puzzle_id}`.'))
 
+    async def _cmd_akari_add(self, ctx, member, puzzle_number, result_text, time_text):
+        """Mod-only: manually insert an Akari result for a (user, puzzle) pair.
+
+        For backfilling missed posts or posts that landed in the wrong channel.
+        The row goes into the live result table keyed on the command/interaction
+        message id, so deleting the originating message removes the row (the
+        same path the normal ingestion uses for edits/deletes).
+        """
+        self._require_enabled(ctx.guild.id, AKARI_GAME)
+
+        # ── Parse result ───────────────────────────────────────────────
+        cleaned = result_text.strip().lower().lstrip('\U0001f31f').strip()
+        if cleaned in ('perfect', '\U0001f31f'):
+            is_perfect, accuracy = True, 100
+        else:
+            cleaned = cleaned.rstrip('%').strip()
+            try:
+                n = int(cleaned)
+            except ValueError:
+                raise MinigameCogError(
+                    f'Could not parse result `{result_text}` \N{EM DASH} '
+                    f'expected `perfect` or `N%`.')
+            if not 0 <= n <= 100:
+                raise MinigameCogError(
+                    f'Accuracy must be between 0 and 100, got `{n}`.')
+            is_perfect = n == 100
+            accuracy = n
+
+        # ── Parse time (mirrors _minigame_akari._parse_time) ──────────
+        try:
+            parts = [int(p) for p in time_text.split(':')]
+        except ValueError:
+            raise MinigameCogError(f'Could not parse time `{time_text}`.')
+        if len(parts) == 2:
+            time_seconds = parts[0] * 60 + parts[1]
+        elif len(parts) == 3:
+            time_seconds = parts[0] * 3600 + parts[1] * 60 + parts[2]
+        else:
+            raise MinigameCogError(
+                f'Time `{time_text}` must be `M:SS` or `H:MM:SS`.')
+        if time_seconds < 0:
+            raise MinigameCogError(f'Time must be non-negative.')
+
+        # ── Validate puzzle number ─────────────────────────────────────
+        today_puzzle = expected_puzzle_number(dt.date.today())
+        if puzzle_number < 1 or puzzle_number > today_puzzle + constants.AKARI_MAX_PUZZLE_LOOKAHEAD:
+            raise MinigameCogError(
+                f'Puzzle number `{puzzle_number}` is out of range '
+                f'(today\'s puzzle is `{today_puzzle}`).')
+        puzzle_date = puzzle_date_for(puzzle_number)
+
+        existing = cf_common.user_db.get_minigame_result_for_user_puzzle(
+            ctx.guild.id, AKARI_GAME.name, member.id, puzzle_number)
+        if existing is not None:
+            raise MinigameCogError(
+                f'`{_safe_member_name(member)}` already has a result for '
+                f'puzzle `{puzzle_number}`. Use `;mg akari remove` first.')
+
+        result_label = 'perfect' if is_perfect else f'{accuracy}%'
+        raw_content = (
+            f'Daily Akari {puzzle_number}\n'
+            f'{puzzle_date.isoformat()}\n'
+            f'\U0001f3af {result_label} \U0001f553 {time_text}\n'
+            f'[manually added by {ctx.author}]'
+        )
+        cf_common.user_db.save_minigame_result(
+            ctx.message.id, ctx.guild.id, AKARI_GAME.name, ctx.channel.id,
+            member.id, puzzle_number, puzzle_date.isoformat(),
+            accuracy, time_seconds, is_perfect, raw_content)
+
+        self._recompute_akari_ratings(ctx.guild.id)
+
+        await ctx.send(embed=discord_common.embed_success(
+            f'Added {AKARI_GAME.display_name} result for '
+            f'`{_safe_member_name(member)}` on puzzle `{puzzle_number}` '
+            f'({puzzle_date.isoformat()}): **{result_label}** in '
+            f'**{format_duration(time_seconds)}**.'))
+
     async def _cmd_akari_ratings(self, ctx):
         """Mod-gated guild leaderboard — registered, recently-active players only."""
         self._require_enabled(ctx.guild.id, AKARI_GAME)
@@ -1139,6 +1246,30 @@ class Minigames(commands.Cog):
         histories = {}
         compute_ratings(result_rows, max_puzzle=max_puzzle, histories=histories)
         return histories.get(str(user_id), [])
+
+    def _akari_pre_puzzle_ratings(self, guild_id, puzzle_number):
+        """Map ``user_id -> rating immediately before they played puzzle N``.
+
+        Replays the full guild history once and pulls each user's HistoryPoint
+        for the target puzzle; the pre-contest rating is the post-contest one
+        minus the day's delta (so first-timers get the seed value, 1200).
+        Used by ``;mg akari stats <puzzle>`` to colour each row by the
+        player's pre-puzzle tier — coloring by the *post*-puzzle rating would
+        be circular (the contest itself is what shaped it).
+        """
+        result_rows = cf_common.user_db.get_minigame_results_for_guild(
+            guild_id, AKARI_GAME.name)
+        max_puzzle = (expected_puzzle_number(dt.date.today())
+                      + constants.AKARI_MAX_PUZZLE_LOOKAHEAD)
+        histories = {}
+        compute_ratings(result_rows, max_puzzle=max_puzzle, histories=histories)
+        pre = {}
+        for user_id, points in histories.items():
+            for point in points:
+                if point.puzzle_number == puzzle_number:
+                    pre[user_id] = point.rating - point.delta
+                    break
+        return pre
 
     async def _cmd_akari_rating(self, ctx, member, *, require_registered=True):
         """Per-user rating graph (``;plot rating`` style).
@@ -1309,29 +1440,61 @@ class Minigames(commands.Cog):
         'guessgame': plot_guessgame_stats,
     }
 
+    async def _cmd_akari_stats_puzzle(self, ctx, selector_arg, *, show_all=False):
+        """Render a per-puzzle results image annotated with pre-puzzle ratings.
+
+        ``show_all=False`` (public path): only opted-in users get the rating
+        + tier colour; everyone else stays plain.  ``show_all=True`` (the
+        ``stats debug`` subcommand, mod-only) annotates every player including
+        shadow-rated ones, mirroring how ``ratings debug`` reveals opt-outs.
+        """
+        self._require_enabled(ctx.guild.id, AKARI_GAME)
+        selector = _maybe_parse_puzzle_selector(selector_arg)
+        if selector is None:
+            raise MinigameCogError(
+                f'Expected a puzzle number or date, got `{selector_arg}`.')
+        selector_type, selector_value = selector
+        if selector_type == 'puzzle':
+            rows = cf_common.user_db.get_minigame_results_for_guild(
+                ctx.guild.id, AKARI_GAME.name,
+                plo=selector_value, phi=selector_value + 1)
+            title = f'{AKARI_GAME.display_name} #{selector_value} Results'
+        else:
+            day_start = dt.datetime.combine(selector_value, dt.time.min).timestamp()
+            day_end = day_start + 24 * 60 * 60
+            rows = cf_common.user_db.get_minigame_results_for_guild(
+                ctx.guild.id, AKARI_GAME.name, dlo=day_start, dhi=day_end)
+            title = f'{AKARI_GAME.display_name} {selector_value.isoformat()} Results'
+
+        if not rows:
+            raise MinigameCogError(
+                f'No {AKARI_GAME.display_name} results found for `{selector_arg}`.')
+
+        # Annotation requires a single puzzle worth of rows (1 puzzle/day).
+        # For a multi-puzzle slice (theoretical), fall back to plain rendering.
+        puzzle_numbers = {int(row.puzzle_number) for row in rows}
+        pre_ratings = None
+        registrants = None
+        if len(puzzle_numbers) == 1:
+            pre_ratings = self._akari_pre_puzzle_ratings(
+                ctx.guild.id, next(iter(puzzle_numbers)))
+            if show_all:
+                # Debug: pretend every rated player is registered for display.
+                registrants = set(pre_ratings.keys())
+            else:
+                registrants = cf_common.user_db.get_akari_registrants(
+                    ctx.guild.id)
+
+        discord_file = _get_akari_puzzle_table_image_file(
+            ctx.guild, rows, title,
+            pre_ratings=pre_ratings, registrants=registrants)
+        await ctx.send(file=discord_file)
+
     async def _cmd_stats(self, ctx, game, *args):
         self._require_enabled(ctx.guild.id, game)
         if game.name == 'akari' and len(args) == 1:
-            selector = _maybe_parse_puzzle_selector(args[0])
-            if selector is not None:
-                selector_type, selector_value = selector
-                if selector_type == 'puzzle':
-                    rows = cf_common.user_db.get_minigame_results_for_guild(
-                        ctx.guild.id, game.name, plo=selector_value, phi=selector_value + 1)
-                    title = f'{game.display_name} #{selector_value} Results'
-                else:
-                    day_start = dt.datetime.combine(selector_value, dt.time.min).timestamp()
-                    day_end = day_start + 24 * 60 * 60
-                    rows = cf_common.user_db.get_minigame_results_for_guild(
-                        ctx.guild.id, game.name, dlo=day_start, dhi=day_end)
-                    title = f'{game.display_name} {selector_value.isoformat()} Results'
-
-                if not rows:
-                    raise MinigameCogError(f'No {game.display_name} results found for `{args[0]}`.')
-
-                discord_file = _get_akari_puzzle_table_image_file(
-                    ctx.guild, rows, title)
-                await ctx.send(file=discord_file)
+            if _maybe_parse_puzzle_selector(args[0]) is not None:
+                await self._cmd_akari_stats_puzzle(ctx, args[0])
                 return
 
         filter_args = list(args)
@@ -1643,16 +1806,31 @@ class Minigames(commands.Cog):
     async def akari_top(self, ctx, *args):
         await self._cmd_top(ctx, AKARI_GAME, *args)
 
-    @akari.command(name='stats', brief='Show personal stats with graphs',
-                   usage='[@user] [filters...] | [day | puzzle_id | #puzzle_id]')
+    @akari.group(name='stats', brief='Show personal stats with graphs',
+                 usage='[@user] [filters...] | [day | puzzle_id | #puzzle_id]',
+                 invoke_without_command=True)
     async def akari_stats(self, ctx, *args):
         await self._cmd_stats(ctx, AKARI_GAME, *args)
+
+    @akari_stats.command(name='debug',
+                         brief='(Mod) Puzzle results with ratings for ALL players',
+                         usage='<puzzle_id|date>')
+    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    async def akari_stats_debug(self, ctx, selector: str):
+        await self._cmd_akari_stats_puzzle(ctx, selector, show_all=True)
 
     @akari.command(name='remove', brief='Remove a user result for a puzzle',
                    usage='@user puzzle_id')
     @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
     async def akari_remove(self, ctx, member: CaseInsensitiveMember, puzzle_id: int):
         await self._cmd_remove(ctx, AKARI_GAME, member, puzzle_id)
+
+    @akari.command(name='add', brief='Manually add a result for a user/puzzle',
+                   usage='@user puzzle_id <perfect|N%> <time>')
+    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    async def akari_add(self, ctx, member: CaseInsensitiveMember,
+                        puzzle_id: int, result: str, time: str):
+        await self._cmd_akari_add(ctx, member, puzzle_id, result, time)
 
     @akari.group(name='import', brief='Manage imported history',
                  invoke_without_command=True)
@@ -2080,6 +2258,30 @@ class Minigames(commands.Cog):
         try:
             await self._cmd_remove(
                 _SlashCtx(interaction), AKARI_GAME, member, puzzle_id)
+        except MinigameCogError as e:
+            await self._slash_send_error(interaction, e)
+        except Exception:
+            logger.exception('Unhandled error in slash command')
+            await self._slash_send_error(interaction, 'An unexpected error occurred.')
+
+    @akari_slash.command(name='add', description='Manually add a result for a user/puzzle')
+    @app_commands.describe(
+        member='Player', puzzle_id='Puzzle number',
+        result='`perfect` or `N%` (e.g. 92%)',
+        time='Time as M:SS or H:MM:SS (e.g. 1:34)')
+    async def slash_akari_add(
+        self, interaction: discord.Interaction,
+        member: discord.Member, puzzle_id: int, result: str, time: str,
+    ):
+        await interaction.response.defer()
+        if not self._has_mod_role(interaction):
+            return await self._slash_send_error(
+                interaction,
+                f'You need the `{constants.TLE_ADMIN}` or '
+                f'`{constants.TLE_MODERATOR}` role.')
+        try:
+            await self._cmd_akari_add(
+                _SlashCtx(interaction), member, puzzle_id, result, time)
         except MinigameCogError as e:
             await self._slash_send_error(interaction, e)
         except Exception:
