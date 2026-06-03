@@ -261,6 +261,49 @@ class TestParsing:
     def test_parse_rejects_invalid_message(self):
         assert parse_akari_message('hello world') == []
 
+    def test_parse_rejects_non_pro_mode(self):
+        # Non-pro dailyakari.com share format: header + date + time + ✅ Solved,
+        # but no accuracy % / 🌟 / "perfect" — the real parser must drop it so
+        # the cog can route to the non-pro notice instead of counting a result.
+        results = parse_akari_message(
+            'Daily Akari \U0001f60a 514\n'
+            '2026-06-03 (Wed)\n'
+            '✅ Solved!   \U0001f553 2:49\n'
+            'https://dailyakari.com/'
+        )
+        assert results == []
+
+    def test_looks_like_non_pro_akari_detects_solved_form(self):
+        from tle.cogs._minigame_akari import looks_like_non_pro_akari
+        assert looks_like_non_pro_akari(
+            'Daily Akari \U0001f60a 514\n'
+            '2026-06-03 (Wed)\n'
+            '✅ Solved!   \U0001f553 2:49\n'
+            'https://dailyakari.com/'
+        ) is True
+
+    def test_looks_like_non_pro_akari_rejects_perfect(self):
+        # A real perfect result must not be misclassified as non-pro.
+        from tle.cogs._minigame_akari import looks_like_non_pro_akari
+        assert looks_like_non_pro_akari(
+            'Daily Akari 445\n'
+            '✅2026-03-26 (Thu)✅\n'
+            '\U0001f31f Perfect!   \U0001f553 1:29'
+        ) is False
+
+    def test_looks_like_non_pro_akari_rejects_accuracy(self):
+        # Same for a partial result with an accuracy percentage.
+        from tle.cogs._minigame_akari import looks_like_non_pro_akari
+        assert looks_like_non_pro_akari(
+            'Daily Akari 445\n'
+            '2026-03-26\n'
+            '\U0001f3af 92%   \U0001f553 2:11'
+        ) is False
+
+    def test_looks_like_non_pro_akari_rejects_non_akari(self):
+        from tle.cogs._minigame_akari import looks_like_non_pro_akari
+        assert looks_like_non_pro_akari('just chatting in the channel') is False
+
 
 def _row(message_id, user_id, puzzle_date, is_perfect, time_seconds, accuracy=100, number=1):
     Row = namedtuple(
@@ -682,6 +725,10 @@ class _FakeMessage:
         self.author = _FakeAuthor(user_id)
         self.content = content
         self.created_at = dt.datetime(2026, 3, 26, tzinfo=dt.timezone.utc)
+        self.replies = []  # captures notice / reply embeds for assertions
+
+    async def reply(self, *args, **kwargs):
+        self.replies.append({'args': args, 'kwargs': kwargs})
 
 
 class TestCogIngest:
@@ -2136,6 +2183,86 @@ class TestAkariBan:
             'SELECT 1 FROM minigame_import_result WHERE user_id = ?',
             ('999',)).fetchall()
         assert imported == []
+
+
+class TestAkariNonProMode:
+    """Non-pro Daily Akari submissions get a notice and aren't ingested."""
+
+    _NON_PRO_BODY = (
+        'Daily Akari \U0001f60a 514\n'
+        '2026-06-03 (Wed)\n'
+        '✅ Solved!   \U0001f553 2:49\n'
+        'https://dailyakari.com/'
+    )
+
+    @staticmethod
+    def _capture_embed_text(monkeypatch):
+        """Make embed_alert return its description string so tests can inspect it."""
+        from tle.util import discord_common as _dc
+        monkeypatch.setattr(_dc, 'embed_alert', lambda desc: desc)
+
+    def test_on_message_skips_save_and_replies(self, db, monkeypatch):
+        monkeypatch.setattr(cf_common, 'user_db', db)
+        TestCogRating._enable(db)
+        self._capture_embed_text(monkeypatch)
+        cog = Minigames(bot=None)
+        msg = _FakeMessage(1, 1, 10, 999, self._NON_PRO_BODY)
+        asyncio.run(cog.on_message(msg))
+        # No result row was created.
+        assert db.get_minigame_result(1) is None
+        # A reply was sent to the message.
+        assert len(msg.replies) == 1
+        body = msg.replies[0]['kwargs'].get('embed', '')
+        assert 'Pro Mode' in body
+
+    def test_on_message_keeps_raw_for_future_reparse(self, db, monkeypatch):
+        # Non-pro messages are stored in the raw cache so we can reparse them
+        # later if the format becomes supported.
+        monkeypatch.setattr(cf_common, 'user_db', db)
+        TestCogRating._enable(db)
+        cog = Minigames(bot=None)
+        msg = _FakeMessage(2, 1, 10, 999, self._NON_PRO_BODY)
+        asyncio.run(cog.on_message(msg))
+        raws = db.conn.execute(
+            'SELECT raw_content FROM minigame_raw_message WHERE message_id = ?',
+            ('2',)).fetchall()
+        assert len(raws) == 1
+
+    def test_banned_user_non_pro_still_gets_ban_notice(self, db, monkeypatch):
+        # A banned user posting a non-pro submission should hit the ban notice,
+        # not the Pro Mode notice — bans take precedence.
+        monkeypatch.setattr(cf_common, 'user_db', db)
+        TestCogRating._enable(db)
+        self._capture_embed_text(monkeypatch)
+        db.ban_akari_user(1, 999, 1.0, 7, 'spam')
+        cog = Minigames(bot=None)
+        msg = _FakeMessage(3, 1, 10, 999, self._NON_PRO_BODY)
+        asyncio.run(cog.on_message(msg))
+        assert db.get_minigame_result(3) is None
+        assert len(msg.replies) == 1
+        body = msg.replies[0]['kwargs'].get('embed', '')
+        assert 'banned' in body.lower()
+
+    def test_on_message_edit_to_non_pro_deletes_old_result(self, db, monkeypatch):
+        # If a previously-saved real result is edited into a non-pro shape, the
+        # old row must be dropped and the user notified.
+        monkeypatch.setattr(cf_common, 'user_db', db)
+        TestCogRating._enable(db)
+        cog = Minigames(bot=None)
+
+        # First: real perfect submission saves a row.
+        msg = _FakeMessage(4, 1, 10, 999,
+                           'Daily Akari 514\n'
+                           '2026-06-03\n'
+                           '\U0001f31f Perfect! \U0001f553 2:49')
+        asyncio.run(cog.on_message(msg))
+        assert db.get_minigame_result(4) is not None
+
+        # Then: edit into a non-pro shape removes the row + notifies.
+        edited = _FakeMessage(4, 1, 10, 999, self._NON_PRO_BODY)
+        asyncio.run(cog.on_message_edit(msg, edited))
+        assert db.get_minigame_result(4) is None
+        assert len(edited.replies) == 1
 
 
 class TestRatingDisplayNoLeak:

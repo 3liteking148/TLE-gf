@@ -383,6 +383,21 @@ class MinigameDbMixin:
         ).fetchone()
         return row is not None
 
+    def get_akari_ban(self, guild_id, user_id):
+        """Return a banned user's ``(user_id, banned_at, banned_by, reason)`` row, or None.
+
+        Use this when the caller needs the ban metadata (e.g. the reason for a
+        notice embed); :meth:`is_akari_banned` is the bool-only fast path.
+        """
+        return self.conn.execute(
+            '''
+            SELECT user_id, banned_at, banned_by, reason
+            FROM akari_ban
+            WHERE guild_id = ? AND user_id = ?
+            ''',
+            (str(guild_id), str(user_id))
+        ).fetchone()
+
     def get_akari_bans(self, guild_id):
         """List bans for a guild, newest first.
 

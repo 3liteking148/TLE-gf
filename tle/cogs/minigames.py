@@ -26,7 +26,9 @@ from tle.cogs._minigame_common import (
     pick_best_results, format_duration, normalize_puzzle_date, parse_date_args,
     resolve_scoring, strip_codeblock,
 )
-from tle.cogs._minigame_akari import AKARI_GAME, expected_puzzle_number, puzzle_date_for
+from tle.cogs._minigame_akari import (
+    AKARI_GAME, expected_puzzle_number, looks_like_non_pro_akari, puzzle_date_for,
+)
 from tle.cogs._minigame_guessgame import GUESSGAME_GAME
 from tle.cogs._minigame_stats import (
     plot_akari_performance, plot_akari_rating,
@@ -188,6 +190,20 @@ def _safe_cf_handle(guild, user_id):
         return '-'
     handle = cf_common.user_db.get_handle(user_id, guild.id)
     return handle or '-'
+
+
+def _legend_name_for(guild, member):
+    """Pick a matplotlib-safe display name for the rating/perf graph legend.
+
+    Prefers the user's CF handle (ASCII-only by CF's rules → no emoji → no
+    matplotlib tofu boxes); falls back to their Discord display name when no
+    handle is linked.  See the discussion of why matplotlib can't render emoji
+    the way Pango can in the leaderboard image.
+    """
+    handle = _safe_cf_handle(guild, member.id)
+    if handle != '-':
+        return handle
+    return _safe_member_name(member)
 
 
 def _format_score(score):
@@ -635,6 +651,47 @@ class Minigames(commands.Cog):
         return (game.name == AKARI_GAME.name
                 and cf_common.user_db.is_akari_banned(guild_id, user_id))
 
+    async def _notify_non_pro_mode(self, message):
+        """Reply to a non-pro Daily Akari submission asking the user to enable Pro Mode.
+
+        Same best-effort pattern as :meth:`_notify_banned_submission` —
+        a failed reply is logged and swallowed so the ingestion path can't be
+        broken by a notice failure.
+        """
+        embed = discord_common.embed_alert(
+            "Your result doesn't include accuracy. Please turn on "
+            "Pro Mode \U0001f3af\U0001f31f in the settings and submit "
+            "again for it to count.")
+        try:
+            await discord_retry(
+                lambda: message.reply(embed=embed, mention_author=False))
+        except (RetryExhaustedError, discord.HTTPException):
+            logger.warning('Failed to notify non-pro mode for message %s',
+                           message.id, exc_info=True)
+
+    async def _notify_banned_submission(self, message, game):
+        """Reply to a banned user's parsable Akari post explaining the ban.
+
+        Only called after we've confirmed the message *would have* produced a
+        result — chat messages from banned users in the Akari channel stay
+        silent so we don't spam unrelated conversation.  Best-effort: a failed
+        reply (deleted message, missing perms) is logged and swallowed so the
+        ingestion path can't be broken by a notice failure.
+        """
+        ban = cf_common.user_db.get_akari_ban(message.guild.id, message.author.id)
+        reason = ban.reason if ban is not None else None
+        body = f'You are banned from posting {game.display_name} results.'
+        if reason:
+            body += f'\nReason: {reason}'
+        body += '\nAsk a moderator to lift the ban.'
+        embed = discord_common.embed_alert(body)
+        try:
+            await discord_retry(
+                lambda: message.reply(embed=embed, mention_author=False))
+        except (RetryExhaustedError, discord.HTTPException):
+            logger.warning('Failed to notify banned user for message %s',
+                           message.id, exc_info=True)
+
     @commands.Cog.listener()
     async def on_message(self, message):
         if message.guild is None or message.author.bot or cf_common.user_db is None:
@@ -642,14 +699,28 @@ class Minigames(commands.Cog):
         game = self._game_for_channel(message)
         if game is not None:
             try:
+                cleaned = strip_codeblock(message.content)
+                is_submission = bool(game.parse(cleaned)) or (
+                    game.name == AKARI_GAME.name
+                    and looks_like_non_pro_akari(message.content))
                 if self._is_akari_banned(message.guild.id, message.author.id, game):
-                    return  # silently drop — no raw store, no ingest
+                    # Reply only if this post is a submission attempt — banned
+                    # users chatting in the channel stay silent.
+                    if is_submission:
+                        await self._notify_banned_submission(message, game)
+                    return  # never save/ingest for banned users
                 # Save raw content for future reparse
                 cf_common.user_db.save_raw_message(
                     message.id, message.guild.id, message.channel.id,
                     message.author.id, message.created_at.isoformat(),
                     message.content,
                 )
+                # Non-pro mode submissions look like results but lack accuracy;
+                # ask the user to enable Pro Mode and skip the ingest.
+                if (game.name == AKARI_GAME.name
+                        and looks_like_non_pro_akari(message.content)):
+                    await self._notify_non_pro_mode(message)
+                    return
                 saved = await self._ingest_message(message, game)
                 if saved and game.name == AKARI_GAME.name:
                     self._recompute_akari_ratings(message.guild.id)
@@ -663,11 +734,29 @@ class Minigames(commands.Cog):
         game = self._game_for_channel(after)
         if game is None:
             return
+        is_non_pro = (game.name == AKARI_GAME.name
+                      and looks_like_non_pro_akari(after.content))
         if self._is_akari_banned(after.guild.id, after.author.id, game):
-            return  # silent drop — leave pre-ban data untouched
+            try:
+                if game.parse(strip_codeblock(after.content)) or is_non_pro:
+                    await self._notify_banned_submission(after, game)
+            except Exception:
+                logger.warning('Failed to notify banned edit %s',
+                               after.id, exc_info=True)
+            return  # leave pre-ban data untouched
         try:
             # Update raw content so future reparse uses the edited version
             cf_common.user_db.update_raw_message(after.id, after.content)
+            # An edit into a non-pro shape: drop any prior result for this
+            # message and tell the user.  Same skip-the-ingest path on_message
+            # uses for fresh non-pro posts.
+            if is_non_pro:
+                changed = cf_common.user_db.delete_minigame_result(after.id)
+                changed += cf_common.user_db.delete_imported_minigame_result(after.id)
+                await self._notify_non_pro_mode(after)
+                if changed:
+                    self._recompute_akari_ratings(after.guild.id)
+                return
             # Delete all existing live results for this message, then re-ingest.
             # Handles the case where an edit removes some results from a multi-result message.
             changed = cf_common.user_db.delete_minigame_result(after.id)
@@ -1311,7 +1400,7 @@ class Minigames(commands.Cog):
         last_perf_str = (f'{round(last_contest.performance)} '
                          f'({rank_for_rating(round(last_contest.performance)).title_abbr})'
                          if last_contest is not None else '—')
-        discord_file = plot_akari_rating(history, _safe_member_name(member))
+        discord_file = plot_akari_rating(history, _legend_name_for(ctx.guild, member))
         embed = discord.Embed(
             title=f'{AKARI_GAME.display_name} rating — {_safe_member_name(member)}',
             color=rank.color_embed,
@@ -1357,7 +1446,7 @@ class Minigames(commands.Cog):
                 f'{AKARI_GAME.display_name} days to plot performance for yet.')
 
         discord_file = plot_akari_performance(
-            history, _safe_member_name(member), round(row.rating))
+            history, _legend_name_for(ctx.guild, member), round(row.rating))
         last_perf = contest_history[-1].performance
         last_rank = rank_for_rating(round(last_perf))
         best_perf = max(h.performance for h in contest_history)
