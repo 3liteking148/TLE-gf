@@ -16,6 +16,7 @@ from tle.util import codeforces_common as cf_common
 from tle.util.codeforces_common import pretty_time_format
 from tle.util import discord_common
 from tle.util import tasks
+from tle.util.db.user_db_conn import DummyUserDbConn
 from tle.cogs._starboard_helpers import _parse_jump_url
 
 logger = logging.getLogger(__name__)
@@ -166,6 +167,10 @@ class Meta(commands.Cog):
     async def backup_alert_on(self, ctx):
         """Re-enable admin pings when no backup has run recently."""
         cf_common.user_db.kvs_delete(_BACKUP_ALERT_DISABLED_KEY)
+        # Clear any stale ping timestamp so re-enabling gives a clean slate: if
+        # we're already stale, the next poll alerts immediately instead of being
+        # throttled by a ping recorded before the alerts were turned off.
+        cf_common.user_db.kvs_delete(_BACKUP_ALERT_PING_KEY)
         logger.info(f'CMD backup alert on: by user={ctx.author.id}')
         await ctx.send(embed=discord_common.embed_success(
             'Backup-staleness alerts **enabled**.'))
@@ -234,7 +239,9 @@ class Meta(commands.Cog):
             if cf_common.user_db is not None:
                 break
             await asyncio.sleep(1)
-        if cf_common.user_db is None:
+        if cf_common.user_db is None or isinstance(cf_common.user_db, DummyUserDbConn):
+            # No DB (or DB disabled): nothing to watch, and probing it would just
+            # raise DatabaseDisabledError on every poll. Don't start.
             logger.warning('backup watchdog: user_db unavailable, not starting.')
             return
         self._backup_watchdog_task.start()
@@ -292,6 +299,9 @@ class Meta(commands.Cog):
             f'The off-site backup service may be down - please investigate.')
         role = discord.utils.get(getattr(channel.guild, 'roles', []),
                                  name=constants.TLE_ADMIN)
+        if role is None:
+            logger.warning('backup watchdog: admin role %r not found; '
+                           'alerting without a ping.', constants.TLE_ADMIN)
         try:
             await channel.send(
                 content=role.mention if role else None,
