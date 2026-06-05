@@ -582,9 +582,11 @@ class Minigames(commands.Cog):
         try:
             rows = cf_common.user_db.get_minigame_results_for_guild(
                 guild_id, AKARI_GAME.name)
-            max_puzzle = (expected_puzzle_number(dt.date.today())
-                          + constants.AKARI_MAX_PUZZLE_LOOKAHEAD)
-            states = compute_ratings(rows, max_puzzle=max_puzzle)
+            current_puzzle = expected_puzzle_number(dt.date.today())
+            max_puzzle = current_puzzle + constants.AKARI_MAX_PUZZLE_LOOKAHEAD
+            states = compute_ratings(
+                rows, max_puzzle=max_puzzle,
+                current_puzzle_number=current_puzzle)
             cf_common.user_db.replace_akari_ratings(
                 guild_id, states.values(), time.time())
         except Exception:
@@ -1332,12 +1334,13 @@ class Minigames(commands.Cog):
         """
         result_rows = cf_common.user_db.get_minigame_results_for_guild(
             guild_id, AKARI_GAME.name)
-        max_puzzle = (expected_puzzle_number(dt.date.today())
-                      + constants.AKARI_MAX_PUZZLE_LOOKAHEAD)
+        current_puzzle = expected_puzzle_number(dt.date.today())
+        max_puzzle = current_puzzle + constants.AKARI_MAX_PUZZLE_LOOKAHEAD
         histories = {}
         compute_ratings(
             result_rows, max_puzzle=max_puzzle, histories=histories,
-            include_decay_in_history=include_decay)
+            include_decay_in_history=include_decay,
+            current_puzzle_number=current_puzzle)
         return histories.get(str(user_id), [])
 
     def _akari_pre_puzzle_ratings(self, guild_id, puzzle_number):
@@ -1352,10 +1355,12 @@ class Minigames(commands.Cog):
         """
         result_rows = cf_common.user_db.get_minigame_results_for_guild(
             guild_id, AKARI_GAME.name)
-        max_puzzle = (expected_puzzle_number(dt.date.today())
-                      + constants.AKARI_MAX_PUZZLE_LOOKAHEAD)
+        current_puzzle = expected_puzzle_number(dt.date.today())
+        max_puzzle = current_puzzle + constants.AKARI_MAX_PUZZLE_LOOKAHEAD
         histories = {}
-        compute_ratings(result_rows, max_puzzle=max_puzzle, histories=histories)
+        compute_ratings(
+            result_rows, max_puzzle=max_puzzle, histories=histories,
+            current_puzzle_number=current_puzzle)
         pre = {}
         for user_id, points in histories.items():
             for point in points:

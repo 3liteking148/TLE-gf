@@ -192,21 +192,15 @@ class TestDecay:
         assert state.skip_streak == 0
         assert state.last_puzzle == 0
 
-    def test_short_absence_within_grace_does_not_decay(self):
+    def test_decay_starts_on_first_absent_day(self):
         active = self._winner_then_absent(0)
-        grace = self._winner_then_absent(constants.AKARI_DECAY_GRACE)
-        assert grace.skip_streak == constants.AKARI_DECAY_GRACE
-        assert abs(grace.rating - active.rating) < 1e-9  # free during grace
-
-    def test_decay_starts_after_grace(self):
-        active = self._winner_then_absent(0)
-        past_grace = self._winner_then_absent(constants.AKARI_DECAY_GRACE + 1)
-        assert past_grace.rating < active.rating  # first real decay applied
-        assert past_grace.rating > 1200           # never crosses the default
+        one_day_off = self._winner_then_absent(1)
+        assert one_day_off.rating < active.rating  # decay bites immediately
+        assert one_day_off.rating > 1200           # never crosses the default
 
     def test_decay_strengthens_with_more_skips(self):
-        early = self._winner_then_absent(constants.AKARI_DECAY_GRACE + 2)
-        late = self._winner_then_absent(constants.AKARI_DECAY_GRACE + 11)
+        early = self._winner_then_absent(2)
+        late = self._winner_then_absent(11)
         assert late.skip_streak > early.skip_streak
         # The longer streak removes more rating on its most recent skipped day.
         assert abs(late.last_delta) > abs(early.last_delta)
@@ -280,20 +274,15 @@ class TestHistoryDecayCapture:
         assert [h.puzzle_number for h in a_history] == list(range(1, 14))
 
     def test_decay_points_record_post_decay_rating(self):
-        rows = self._winner_then_absent_rows(
-            constants.AKARI_DECAY_GRACE + 5)
+        rows = self._winner_then_absent_rows(5)
         histories = {}
         states = compute_ratings(
             rows, histories=histories, include_decay_in_history=True)
         decay_points = [h for h in histories['a'] if h.is_decay]
         # Last decay point's rating matches the final RatingState.
         assert decay_points[-1].rating == states['a'].rating
-        # Grace-window absent days are free → delta exactly 0.
-        for h in decay_points[:constants.AKARI_DECAY_GRACE]:
-            assert h.delta == 0.0
-        # First post-grace day pulls 'a' (who was above 1200) downward.
-        first_real_decay = decay_points[constants.AKARI_DECAY_GRACE]
-        assert first_real_decay.delta < 0
+        # First absent day pulls 'a' (who was above 1200) downward immediately.
+        assert decay_points[0].delta < 0
 
     def test_decay_points_have_no_performance(self):
         rows = self._winner_then_absent_rows(5)
@@ -334,3 +323,59 @@ class TestHistoryDecayCapture:
             rows, histories=histories, include_decay_in_history=True)
         assert histories['a'][0].is_decay is False
         assert histories['b'][0].is_decay is False
+
+
+class TestCurrentPuzzleGate:
+    @staticmethod
+    def _two_day_rows():
+        # 'a' wins puzzle 1.  Puzzle 2: 'b' and 'c' play, 'a' is absent.
+        rows = []
+        rows += _day(1, [('a', True, 100, 30), ('b', False, 60, 200)])
+        rows += _day(2, [('b', True, 100, 40), ('c', False, 50, 200)])
+        return rows
+
+    def test_absence_decay_skipped_for_current_puzzle(self):
+        # Puzzle 2 is "today" — 'a' must not be decayed yet.
+        states = compute_ratings(self._two_day_rows(), current_puzzle_number=2)
+        assert states['a'].skip_streak == 0
+        assert states['a'].last_puzzle == 1
+
+    def test_absence_decay_applies_once_day_concluded(self):
+        # Same data, but "today" is puzzle 3 — puzzle 2 is now in the past for 'a'.
+        states = compute_ratings(self._two_day_rows(), current_puzzle_number=3)
+        assert states['a'].skip_streak == 1
+
+    def test_contest_math_still_runs_for_current_puzzle(self):
+        # Players who DID post on the current day still get rating change.
+        rows = _day(1, [('a', True, 100, 30), ('b', False, 60, 200)])
+        states = compute_ratings(rows, current_puzzle_number=1)
+        assert states['a'].rating > 1200 > states['b'].rating
+        assert states['a'].games == 1
+        assert states['b'].games == 1
+
+    def test_history_omits_decay_for_current_puzzle(self):
+        histories = {}
+        compute_ratings(
+            self._two_day_rows(), current_puzzle_number=2,
+            histories=histories, include_decay_in_history=True)
+        # 'a' didn't play puzzle 2 (today) → no decay point for it.
+        assert len(histories['a']) == 1
+        assert not any(h.is_decay for h in histories['a'])
+
+    def test_future_lookahead_puzzles_never_decay_others(self):
+        # A row at puzzle today+1 (within max_puzzle lookahead) is a future day:
+        # absent players must not be decayed for it.
+        rows = []
+        rows += _day(1, [('a', True, 100, 30), ('b', False, 60, 200)])
+        rows += _day(2, [('b', True, 100, 40), ('c', False, 50, 200)])  # future
+        states = compute_ratings(
+            rows, max_puzzle=10, current_puzzle_number=1)
+        # Even though puzzle 2 has rows, it's at/after current_puzzle so 'a'
+        # is not punished for missing it.
+        assert states['a'].skip_streak == 0
+
+    def test_none_disables_the_gate(self):
+        # Default behaviour (used by tests that don't simulate "today") still
+        # decays every concluded puzzle in the data.
+        states = compute_ratings(self._two_day_rows())
+        assert states['a'].skip_streak == 1

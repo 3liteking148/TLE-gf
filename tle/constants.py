@@ -36,14 +36,15 @@ _DEFAULT_STAR = '\N{WHITE MEDIUM STAR}'
 # down (0.25 = a quarter of real CF) so daily play stays low-volatility.
 AKARI_START_RATING = 1200
 AKARI_RATING_DAMPING = 0.25
-# Inactivity decay toward the default rating. The first AKARI_DECAY_GRACE missed
-# days are free; after that each consecutive skipped day pulls the rating toward
-# AKARI_START_RATING by min(AKARI_DECAY_MAX, base*(streak-grace)) of the remaining
-# gap, so short breaks cost nothing and absence bites harder the longer it lasts
-# (ramping to a 5%/day cap). Tune these to make decay gentler/harsher.
+# Inactivity decay toward the default rating. Every consecutive skipped day
+# pulls the rating toward AKARI_START_RATING by min(AKARI_DECAY_MAX,
+# base*(streak-grace)) of the remaining gap, so absence bites harder the
+# longer it lasts (ramping to a 5%/day cap). Grace defaults to zero — decay
+# starts on the first absent day — but the knob is preserved so a server can
+# reintroduce a free window without touching code.
 AKARI_DECAY_BASE = 0.002
 AKARI_DECAY_MAX = 0.05
-AKARI_DECAY_GRACE = 3
+AKARI_DECAY_GRACE = 0
 # A puzzle number more than this many days beyond today's real puzzle is treated
 # as bad data (e.g. a troll posting "Daily Akari 9999999999") and ignored for
 # rating. The small margin tolerates timezones / posting just after midnight.

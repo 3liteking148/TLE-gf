@@ -97,7 +97,7 @@ RatingState = namedtuple(
 # produce their own entry; their net effect shows up in the next played day's
 # ``rating``.  Pass ``include_decay_in_history=True`` to also get one point per
 # absent day, with ``is_decay=True`` and ``delta`` set to that day's decay
-# amount (zero during the grace window).
+# amount.
 # ``performance`` is the Codeforces-style per-contest performance: ``2*need -
 # rating``, where ``need`` is the geometric-mean target ``compute_round``
 # binary-searches for.  The substitution comes from the assumption that ``need``
@@ -243,11 +243,11 @@ def compute_round(ratings, ranks, damping=None, needs=None):
 def _decay_rate(skip_streak, decay_base, decay_max, decay_grace):
     """Fraction of the gap-to-default to close on a skipped day.
 
-    The first ``decay_grace`` missed days are free (rate 0), so short breaks cost
-    nothing. After that the rate grows linearly with the streak — absence bites
-    harder the longer it lasts — up to a ceiling. E.g. base 0.002 / max 0.05 /
-    grace 3 ⇒ 0% for the first 3 skipped days, then 0.2% of the gap on day 4,
-    rising to a 5% cap.
+    The rate grows linearly with the streak — absence bites harder the longer
+    it lasts — up to a ceiling. E.g. base 0.002 / max 0.05 / grace 0 ⇒ 0.2%
+    of the gap on the first absent day, rising to a 5% cap. A non-zero
+    ``decay_grace`` reintroduces the classic "first N days free" window
+    (the rate is forced to 0 for streaks within it).
     """
     effective_streak = max(0, skip_streak - decay_grace)
     return min(decay_max, decay_base * effective_streak)
@@ -256,7 +256,8 @@ def _decay_rate(skip_streak, decay_base, decay_max, decay_grace):
 def compute_ratings(rows, start_rating=None, damping=None,
                     decay_base=None, decay_max=None, decay_grace=None,
                     max_puzzle=None, histories=None,
-                    include_decay_in_history=False):
+                    include_decay_in_history=False,
+                    current_puzzle_number=None):
     """Replay every Akari day in order and return ``{user_id: RatingState}``.
 
     ``rows`` is any iterable of result rows, each exposing ``user_id``,
@@ -274,9 +275,8 @@ def compute_ratings(rows, start_rating=None, damping=None,
     **Inactivity decay:** for every day present in the data, each previously seen
     player who did *not* submit that day has their consecutive-skip streak bumped
     and their rating pulled toward ``start_rating`` by :func:`_decay_rate` of the
-    remaining gap — free for the first few days (grace), then stronger the longer
-    they stay away, and symmetric (under-1200 ratings drift back up).  Playing
-    resets the streak.
+    remaining gap — stronger the longer they stay away, and symmetric (under-1200
+    ratings drift back up).  Playing resets the streak.
     The "days" counted are days the guild was active (puzzles in the data), so
     decay advances as others keep playing, not by wall-clock; it is therefore a
     pure, deterministic function of the result rows.
@@ -293,6 +293,15 @@ def compute_ratings(rows, start_rating=None, damping=None,
     and ``rating`` set to the post-decay value.  A caller can then plot a
     fully day-resolved trajectory — playing days are still distinguishable
     via ``is_decay=False``.
+
+    ``current_puzzle_number`` (optional): the puzzle that is "in progress" on
+    the server's wall clock — i.e. ``expected_puzzle_number(date.today())``.
+    Absence decay (and its history points / skip-streak bumps) is gated on
+    ``puzzle_number < current_puzzle_number``, so the still-open day does not
+    punish anyone who hasn't posted yet.  Contest math among players who *did*
+    post on the current day still runs.  Leave as ``None`` (default) to treat
+    every puzzle day in the data as concluded — useful in tests where there
+    is no "today".
     """
     if start_rating is None:
         start_rating = float(constants.AKARI_START_RATING)
@@ -388,6 +397,13 @@ def compute_ratings(rows, start_rating=None, damping=None,
 
         # Absent previously-seen players accrue a skipped day and decay toward
         # the default rating (independent per user, so order is irrelevant).
+        # Suppress decay for the puzzle that is still "in progress" on the
+        # server's clock: that day has not concluded for absent players yet, so
+        # bumping their skip-streak / rating now would penalise them prematurely.
+        day_concluded = (current_puzzle_number is None
+                         or puzzle_number < current_puzzle_number)
+        if not day_concluded:
+            continue
         for user_id in ratings:
             if user_id in day_rows:
                 continue
