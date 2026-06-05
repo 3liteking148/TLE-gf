@@ -142,7 +142,8 @@ def plot_akari_stats(rows, display_name):
     return discord_file
 
 
-def _plot_akari_series(dates, values, display_name, legend_value=None):
+def _plot_akari_series(dates, values, display_name, legend_value=None,
+                       marker_indices=None):
     """Shared body for the rating and performance graphs.
 
     Renders one line + markers, paints the Akari tier bands underneath, sets
@@ -150,11 +151,18 @@ def _plot_akari_series(dates, values, display_name, legend_value=None):
     the number shown after the name (defaults to ``values[-1]``); callers like
     the performance graph pass the user's current rating here so the legend
     always reads ``Name (rating)`` rather than ``Name (last point)``.
+
+    ``marker_indices`` (optional) restricts marker placement to those indices
+    while still drawing the line through every point.  Used by the rating
+    plot's ``+decay`` mode so played days stand out as dots and the decay
+    days between them only contribute to the line.
     """
     plt.clf()
     plt.axes().set_prop_cycle(gc.rating_color_cycler)
+    markevery = list(marker_indices) if marker_indices is not None else None
     plt.plot(dates, values, linestyle='-', marker='o', markersize=3,
-             markerfacecolor='white', markeredgewidth=0.5)
+             markerfacecolor='white', markeredgewidth=0.5,
+             markevery=markevery)
 
     plt.ylim(min(min(values) - 50, 1100), max(max(values) + 50, 1500))
     gc.plot_rating_bg(AKARI_RANKS)
@@ -173,13 +181,22 @@ def plot_akari_rating(history, display_name):
     """Plot one user's Daily Akari rating over time (``;plot rating`` style).
 
     ``history`` is the list of :class:`HistoryPoint` from
-    ``compute_ratings(histories=...)`` for that user — one entry per day they
-    actually played; the rating already reflects any intervening decay, so a
-    plain line through the points shows the user's true trajectory.
+    ``compute_ratings(histories=...)`` for that user.  In the default mode
+    every entry is a played day and a plain line + markers does the job.  In
+    ``+decay`` mode the history additionally contains one point per absent
+    puzzle day (``is_decay=True``); the line still passes through every point
+    so the inactivity slope is visible, and markers are placed only on the
+    played days so they remain the visual anchors.
     """
     dates = [normalize_puzzle_date(h.puzzle_date) for h in history]
     ratings = [h.rating for h in history]
-    return _plot_akari_series(dates, ratings, display_name)
+    has_decay = any(getattr(h, 'is_decay', False) for h in history)
+    marker_indices = (
+        [i for i, h in enumerate(history) if not getattr(h, 'is_decay', False)]
+        if has_decay else None
+    )
+    return _plot_akari_series(
+        dates, ratings, display_name, marker_indices=marker_indices)
 
 
 def plot_akari_performance(history, display_name, current_rating):

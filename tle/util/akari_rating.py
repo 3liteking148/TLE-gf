@@ -92,9 +92,12 @@ RatingState = namedtuple(
 )
 
 
-# One point on a user's rating history.  Emitted only for days the user actually
-# played — decay days between plays modify ``rating`` but don't produce their own
-# entry; their net effect shows up in the next played day's ``rating``.
+# One point on a user's rating history.  By default, emitted only for days the
+# user actually played — decay days between plays modify ``rating`` but don't
+# produce their own entry; their net effect shows up in the next played day's
+# ``rating``.  Pass ``include_decay_in_history=True`` to also get one point per
+# absent day, with ``is_decay=True`` and ``delta`` set to that day's decay
+# amount (zero during the grace window).
 # ``performance`` is the Codeforces-style per-contest performance: ``2*need -
 # rating``, where ``need`` is the geometric-mean target ``compute_round``
 # binary-searches for.  The substitution comes from the assumption that ``need``
@@ -102,11 +105,12 @@ RatingState = namedtuple(
 # performance — i.e. ``need = (rating + performance) / 2``, rearranged.  This
 # matches what CF's ``correct_rating_changes`` recovers from public deltas, and
 # stays bounded for clean wins (the rank-exact definition asymptotes at 1).
-# ``None`` for solo days (no field → no contest).
+# ``None`` for solo days and for decay days (no field → no contest).
 HistoryPoint = namedtuple(
     'HistoryPoint',
     'puzzle_number puzzle_date rating delta performance '
-    'is_perfect accuracy time_seconds',
+    'is_perfect accuracy time_seconds is_decay',
+    defaults=(False,),
 )
 
 
@@ -251,7 +255,8 @@ def _decay_rate(skip_streak, decay_base, decay_max, decay_grace):
 
 def compute_ratings(rows, start_rating=None, damping=None,
                     decay_base=None, decay_max=None, decay_grace=None,
-                    max_puzzle=None, histories=None):
+                    max_puzzle=None, histories=None,
+                    include_decay_in_history=False):
     """Replay every Akari day in order and return ``{user_id: RatingState}``.
 
     ``rows`` is any iterable of result rows, each exposing ``user_id``,
@@ -281,6 +286,13 @@ def compute_ratings(rows, start_rating=None, damping=None,
     played.  Decay days don't produce their own entries — their effect surfaces
     in the next played day's rating, so the line a caller plots through the
     points already accounts for any intervening inactivity.
+
+    Pass ``include_decay_in_history=True`` to additionally emit one point per
+    absent puzzle day for every user already seen on a prior day, with
+    ``is_decay=True``, ``delta`` set to that day's decay (zero during grace)
+    and ``rating`` set to the post-decay value.  A caller can then plot a
+    fully day-resolved trajectory — playing days are still distinguishable
+    via ``is_decay=False``.
     """
     if start_rating is None:
         start_rating = float(constants.AKARI_START_RATING)
@@ -313,8 +325,11 @@ def compute_ratings(rows, start_rating=None, damping=None,
         # One row per user per day; the DB already guarantees this, but dedupe
         # defensively (keep the first occurrence) so the algorithm is robust.
         day_rows = {}
+        puzzle_date_for_day = None
         for row in by_puzzle[puzzle_number]:
             day_rows.setdefault(str(row.user_id), row)
+            if puzzle_date_for_day is None:
+                puzzle_date_for_day = getattr(row, 'puzzle_date', None)
 
         for user_id in sorted(day_rows):
             if user_id not in ratings:
@@ -381,6 +396,18 @@ def compute_ratings(rows, start_rating=None, damping=None,
                 skip_streak[user_id], decay_base, decay_max, decay_grace)
             ratings[user_id] += delta
             last_delta[user_id] = delta
+            if histories is not None and include_decay_in_history:
+                histories.setdefault(user_id, []).append(HistoryPoint(
+                    puzzle_number=puzzle_number,
+                    puzzle_date=puzzle_date_for_day,
+                    rating=ratings[user_id],
+                    delta=delta,
+                    performance=None,
+                    is_perfect=False,
+                    accuracy=0,
+                    time_seconds=0,
+                    is_decay=True,
+                ))
 
     return {
         user_id: RatingState(

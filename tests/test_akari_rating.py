@@ -247,3 +247,90 @@ class TestDecay:
         states = compute_ratings(rows)
         assert states['a'].skip_streak == 0
         assert states['b'].skip_streak == 0
+
+
+class TestHistoryDecayCapture:
+    @staticmethod
+    def _winner_then_absent_rows(absent_days):
+        # Mirrors TestDecay._winner_then_absent: 'a' wins puzzles 1-3 then is
+        # absent for ``absent_days`` further days while 'b' and 'c' keep playing.
+        rows = []
+        for puzzle in range(1, 4):
+            rows += _day(puzzle, [('a', True, 100, 30), ('b', False, 60, 200)])
+        for puzzle in range(4, 4 + absent_days):
+            rows += _day(puzzle, [('b', True, 100, 40), ('c', False, 50, 200)])
+        return rows
+
+    def test_decay_days_omitted_by_default(self):
+        rows = self._winner_then_absent_rows(10)
+        histories = {}
+        compute_ratings(rows, histories=histories)
+        # 'a' played puzzles 1-3 only; default history has only the 3 played days.
+        assert len(histories['a']) == 3
+        assert all(not h.is_decay for h in histories['a'])
+
+    def test_include_decay_emits_one_point_per_absent_day(self):
+        rows = self._winner_then_absent_rows(10)
+        histories = {}
+        compute_ratings(
+            rows, histories=histories, include_decay_in_history=True)
+        a_history = histories['a']
+        assert len(a_history) == 13  # 3 played + 10 decay
+        assert [h.is_decay for h in a_history] == [False] * 3 + [True] * 10
+        assert [h.puzzle_number for h in a_history] == list(range(1, 14))
+
+    def test_decay_points_record_post_decay_rating(self):
+        rows = self._winner_then_absent_rows(
+            constants.AKARI_DECAY_GRACE + 5)
+        histories = {}
+        states = compute_ratings(
+            rows, histories=histories, include_decay_in_history=True)
+        decay_points = [h for h in histories['a'] if h.is_decay]
+        # Last decay point's rating matches the final RatingState.
+        assert decay_points[-1].rating == states['a'].rating
+        # Grace-window absent days are free → delta exactly 0.
+        for h in decay_points[:constants.AKARI_DECAY_GRACE]:
+            assert h.delta == 0.0
+        # First post-grace day pulls 'a' (who was above 1200) downward.
+        first_real_decay = decay_points[constants.AKARI_DECAY_GRACE]
+        assert first_real_decay.delta < 0
+
+    def test_decay_points_have_no_performance(self):
+        rows = self._winner_then_absent_rows(5)
+        histories = {}
+        compute_ratings(
+            rows, histories=histories, include_decay_in_history=True)
+        for h in histories['a']:
+            if h.is_decay:
+                assert h.performance is None
+
+    def test_decay_point_borrows_puzzle_date_from_participants(self):
+        # 'a' is absent on puzzle 2; the row's puzzle_date must come from the
+        # other players' rows on that day, not the absent user.
+        row1 = SimpleNamespace(
+            user_id='a', puzzle_number=1, is_perfect=True,
+            accuracy=100, time_seconds=30, puzzle_date='2026-06-01')
+        row2 = SimpleNamespace(
+            user_id='b', puzzle_number=1, is_perfect=False,
+            accuracy=50, time_seconds=200, puzzle_date='2026-06-01')
+        row3 = SimpleNamespace(
+            user_id='b', puzzle_number=2, is_perfect=True,
+            accuracy=100, time_seconds=40, puzzle_date='2026-06-02')
+        row4 = SimpleNamespace(
+            user_id='c', puzzle_number=2, is_perfect=False,
+            accuracy=20, time_seconds=300, puzzle_date='2026-06-02')
+        histories = {}
+        compute_ratings(
+            [row1, row2, row3, row4],
+            histories=histories, include_decay_in_history=True)
+        decay_points = [h for h in histories['a'] if h.is_decay]
+        assert len(decay_points) == 1
+        assert decay_points[0].puzzle_date == '2026-06-02'
+
+    def test_played_day_history_points_have_is_decay_false(self):
+        rows = _day(1, [('a', True, 100, 30), ('b', False, 60, 200)])
+        histories = {}
+        compute_ratings(
+            rows, histories=histories, include_decay_in_history=True)
+        assert histories['a'][0].is_decay is False
+        assert histories['b'][0].is_decay is False

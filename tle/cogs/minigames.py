@@ -1322,18 +1322,22 @@ class Minigames(commands.Cog):
             ctx.guild, active, registrants, mark_registered=False)
         await ctx.send(file=discord_file)
 
-    def _akari_user_history(self, guild_id, user_id):
+    def _akari_user_history(self, guild_id, user_id, *, include_decay=False):
         """Replay the guild's results and return one user's per-day history.
 
         Shared by the rating and performance graphs — the replay is the same;
         each caller picks the field it needs off the :class:`HistoryPoint`s.
+        ``include_decay=True`` additionally emits one entry per absent puzzle
+        day for the rating graph's ``+decay`` mode.
         """
         result_rows = cf_common.user_db.get_minigame_results_for_guild(
             guild_id, AKARI_GAME.name)
         max_puzzle = (expected_puzzle_number(dt.date.today())
                       + constants.AKARI_MAX_PUZZLE_LOOKAHEAD)
         histories = {}
-        compute_ratings(result_rows, max_puzzle=max_puzzle, histories=histories)
+        compute_ratings(
+            result_rows, max_puzzle=max_puzzle, histories=histories,
+            include_decay_in_history=include_decay)
         return histories.get(str(user_id), [])
 
     def _akari_pre_puzzle_ratings(self, guild_id, puzzle_number):
@@ -1360,13 +1364,35 @@ class Minigames(commands.Cog):
                     break
         return pre
 
-    async def _cmd_akari_rating(self, ctx, member, *, require_registered=True):
+    async def _parse_akari_rating_args(self, ctx, args, *, member_required=False):
+        """Pull ``+decay`` and an optional member out of the rating args.
+
+        ``+decay`` may appear anywhere; whatever's left (at most one token) is
+        resolved as a member.  ``member_required=True`` is for the ``debug``
+        subcommand, which has no sensible default target.
+        """
+        remaining = [a for a in args if a != '+decay']
+        include_decay = len(remaining) != len(args)
+        if remaining:
+            member = await self._resolve_member(ctx, remaining[0])
+        elif member_required:
+            raise MinigameCogError('A user is required for this command.')
+        else:
+            member = ctx.author
+        return member, include_decay
+
+    async def _cmd_akari_rating(self, ctx, member, *, require_registered=True,
+                                include_decay=False):
         """Per-user rating graph (``;plot rating`` style).
 
         ``require_registered=True`` (the default, public-facing path) refuses
         to show the rating of users who haven't opted in via ``;mg akari register``.
         The ``rating debug`` subcommand passes False so admins can inspect any
         shadow-rated player.
+
+        ``include_decay=True`` (the ``+decay`` arg) threads decay days into the
+        plotted history so absent-day slopes are visible; played days remain
+        the marker anchors so they still stand out.
         """
         self._require_enabled(ctx.guild.id, AKARI_GAME)
         if require_registered and not cf_common.user_db.is_akari_registered(
@@ -1380,7 +1406,8 @@ class Minigames(commands.Cog):
                 f'No {AKARI_GAME.display_name} rating for '
                 f'`{_safe_member_name(member)}` yet.')
 
-        history = self._akari_user_history(ctx.guild.id, member.id)
+        history = self._akari_user_history(
+            ctx.guild.id, member.id, include_decay=include_decay)
         if not history:
             raise MinigameCogError(
                 f'`{_safe_member_name(member)}` has no rated '
@@ -1961,18 +1988,20 @@ class Minigames(commands.Cog):
 
     @akari.group(name='rating',
                  brief='Show a registered user\'s Akari rating graph',
-                 usage='[@user]', invoke_without_command=True)
-    async def akari_rating(self, ctx, member: CaseInsensitiveMember = None):
-        if member is None:
-            member = ctx.author
-        await self._cmd_akari_rating(ctx, member)
+                 usage='[@user] [+decay]', invoke_without_command=True)
+    async def akari_rating(self, ctx, *args):
+        member, include_decay = await self._parse_akari_rating_args(ctx, args)
+        await self._cmd_akari_rating(ctx, member, include_decay=include_decay)
 
     @akari_rating.command(name='debug',
                           brief='(Mod) Rating graph for any user (incl. shadow-rated)',
-                          usage='@user')
+                          usage='@user [+decay]')
     @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
-    async def akari_rating_debug(self, ctx, member: CaseInsensitiveMember):
-        await self._cmd_akari_rating(ctx, member, require_registered=False)
+    async def akari_rating_debug(self, ctx, *args):
+        member, include_decay = await self._parse_akari_rating_args(
+            ctx, args, member_required=True)
+        await self._cmd_akari_rating(
+            ctx, member, require_registered=False, include_decay=include_decay)
 
     @akari.group(name='performance', aliases=['perf'],
                  brief='Show a registered user\'s Akari performance graph',
@@ -2231,15 +2260,19 @@ class Minigames(commands.Cog):
             await self._slash_send_error(interaction, 'An unexpected error occurred.')
 
     @akari_slash.command(name='rating', description="Show a user's Akari rating graph")
-    @app_commands.describe(member='Player (defaults to you)')
+    @app_commands.describe(
+        member='Player (defaults to you)',
+        decay='Include every day (with decay slopes), not only days played')
     async def slash_akari_rating(
         self, interaction: discord.Interaction,
         member: Optional[discord.Member] = None,
+        decay: bool = False,
     ):
         await interaction.response.defer()
         target = member or interaction.user
         try:
-            await self._cmd_akari_rating(_SlashCtx(interaction), target)
+            await self._cmd_akari_rating(
+                _SlashCtx(interaction), target, include_decay=decay)
         except MinigameCogError as e:
             await self._slash_send_error(interaction, e)
         except Exception:
