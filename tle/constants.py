@@ -42,8 +42,8 @@ AKARI_RATING_DAMPING = 0.25
 # longer it lasts (ramping to a 5%/day cap). Grace defaults to zero — decay
 # starts on the first absent day — but the knob is preserved so a server can
 # reintroduce a free window without touching code.
-AKARI_DECAY_BASE = 0.002
-AKARI_DECAY_MAX = 0.05
+AKARI_DECAY_BASE = 0.04
+AKARI_DECAY_MAX = 0.10
 AKARI_DECAY_GRACE = 0
 # A puzzle number more than this many days beyond today's real puzzle is treated
 # as bad data (e.g. a troll posting "Daily Akari 9999999999") and ignored for

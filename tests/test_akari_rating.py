@@ -198,12 +198,14 @@ class TestDecay:
         assert one_day_off.rating < active.rating  # decay bites immediately
         assert one_day_off.rating > 1200           # never crosses the default
 
-    def test_decay_strengthens_with_more_skips(self):
+    def test_longer_absences_yield_lower_ratings(self):
         early = self._winner_then_absent(2)
         late = self._winner_then_absent(11)
         assert late.skip_streak > early.skip_streak
-        # The longer streak removes more rating on its most recent skipped day.
-        assert abs(late.last_delta) > abs(early.last_delta)
+        # Absence keeps eroding rating, even when per-day deltas shrink (rate
+        # caps but gap-to-default closes, so later daily losses are smaller in
+        # absolute terms — the *cumulative* loss is still bigger).
+        assert late.rating < early.rating
 
     def test_decay_pulls_high_rating_toward_default(self):
         active = self._winner_then_absent(0)
