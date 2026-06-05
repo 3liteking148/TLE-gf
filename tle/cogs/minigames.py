@@ -4,6 +4,7 @@ import html
 import io
 import logging
 import time
+from collections import namedtuple
 from typing import Optional
 
 import cairo
@@ -47,7 +48,23 @@ _AKARI_IMAGE_MARGIN = 20
 _AKARI_IMAGE_ROW_HEIGHT = 36
 _AKARI_IMAGE_HEADER_SPACING = 1.25
 _AKARI_IMAGE_COLUMN_MARGIN = 10
-_AKARI_IMAGE_COLS = (54, 300, 260, 150, 96)
+# Two layouts share the same renderer.  ``_AKARI_RATING_COLS`` keeps the
+# 5-column shape (#, Name, Handle, Rating · Rank, Games) used by the rating
+# leaderboard image.  ``_AKARI_PUZZLE_COLS`` merges per-puzzle Result and Time
+# into a single column ("100% 1:34") so the table fits without compressing
+# Name / Handle.  Widths must sum to ``_AKARI_IMAGE_WIDTH − 2 × MARGIN`` (860).
+_AKARI_RATING_COLS = (54, 300, 260, 150, 96)
+_AKARI_PUZZLE_COLS = (54, 350, 296, 160)
+# Used when the per-puzzle table includes a Δ column for opted-in users —
+# rating context is shown next to the result instead of being hidden.  Same
+# Width budget as the others (sum = 860 = 900 − 2 × 20 margin).
+_AKARI_PUZZLE_DELTA_COLS = (54, 320, 260, 140, 86)
+
+
+# Per-puzzle table annotation for one opted-in player: pre-puzzle rating and
+# the day's delta (contest + transfer share).  Built from a single full-history
+# replay so a stats request only costs one ``compute_ratings`` pass.
+_PuzzlePlayerInfo = namedtuple('_PuzzlePlayerInfo', 'pre_rating delta')
 _AKARI_IMAGE_FONTS = [
     'Noto Sans',
     'Noto Sans CJK JP',
@@ -243,9 +260,14 @@ def _maybe_parse_puzzle_selector(arg):
 
 
 def _format_akari_result_status(row):
-    if row.is_perfect:
-        return 'perfect'
-    return f'{int(row.accuracy)}%'
+    """Combined "accuracy + time" cell for the per-puzzle table.
+
+    Uses ``100%`` instead of the word ``perfect`` so the cell fits next to the
+    time (e.g. ``100% 1:34`` or ``92% 2:15``) and the puzzle table can drop
+    its separate Time column.
+    """
+    pct = 100 if row.is_perfect else int(row.accuracy)
+    return f'{pct}% {format_duration(row.time_seconds)}'
 
 
 def _sort_akari_puzzle_results(rows):
@@ -260,35 +282,44 @@ def _sort_akari_puzzle_results(rows):
     )
 
 
-def _akari_puzzle_table_rows(guild, rows, *, pre_ratings=None, registrants=None):
+def _akari_puzzle_table_rows(guild, rows, *, puzzle_info=None, registrants=None):
     """Build display rows for a per-puzzle table.
 
-    When ``pre_ratings`` and ``registrants`` are both supplied, each opted-in
-    user's name cell gets ``(<rating> <tier>)`` appended — the rating they had
-    *before* this puzzle.  Unregistered users get the plain name (privacy).
+    When ``puzzle_info`` and ``registrants`` are both supplied, each opted-in
+    user's name cell gets ``(<pre-rating> <tier>)`` appended and a signed delta
+    cell (``+12`` / ``-8``) is included as the 5th column.  Unregistered users
+    get the plain name and an empty delta (privacy: we don't surface their
+    rating or its change).  Without ``puzzle_info`` the rows are 4-tuples so
+    the un-annotated text/image paths stay unchanged.
     """
+    annotated = puzzle_info is not None and registrants is not None
     result = []
     for index, row in enumerate(_sort_akari_puzzle_results(rows), start=1):
         name = _safe_user_name(guild, row.user_id)
-        if (pre_ratings is not None and registrants is not None
+        delta_cell = ''
+        if (annotated
                 and row.user_id in registrants
-                and row.user_id in pre_ratings):
-            r = round(pre_ratings[row.user_id])
+                and row.user_id in puzzle_info):
+            info = puzzle_info[row.user_id]
+            r = round(info.pre_rating)
             name = f'{name} ({r} {rank_for_rating(r).title_abbr})'
-        result.append((
+            delta_cell = f'{round(info.delta):+d}'
+        cells = [
             index,
             name,
             _safe_cf_handle(guild, row.user_id),
             _format_akari_result_status(row),
-            format_duration(row.time_seconds),
-        ))
+        ]
+        if annotated:
+            cells.append(delta_cell)
+        result.append(tuple(cells))
     return result
 
 
 def _format_akari_puzzle_table(guild, rows):
-    style = table.Style('{:>}  {:<}  {:<}  {:<}  {:>}')
+    style = table.Style('{:>}  {:<}  {:<}  {:<}')
     t = table.Table(style)
-    t += table.Header('#', 'Name', 'Handle', 'Result', 'Time')
+    t += table.Header('#', 'Name', 'Handle', 'Result')
     t += table.Line()
 
     for row in _akari_puzzle_table_rows(guild, rows):
@@ -297,7 +328,8 @@ def _format_akari_puzzle_table(guild, rows):
 
 
 def _get_akari_puzzle_table_image(table_rows, *, title=None, footer=None,
-                                  header=('#', 'Name', 'Handle', 'Result', 'Time'),
+                                  header=('#', 'Name', 'Handle', 'Result'),
+                                  cols=_AKARI_PUZZLE_COLS,
                                   row_colors=None):
     title_height = _AKARI_IMAGE_ROW_HEIGHT if title is not None else 0
     footer_height = _AKARI_IMAGE_ROW_HEIGHT if footer is not None else 0
@@ -344,11 +376,11 @@ def _get_akari_puzzle_table_image(table_rows, *, title=None, footer=None,
     def draw_row(row, y, color, *, bold=False):
         context.set_source_rgb(*(component / 255 for component in color))
         context.move_to(_AKARI_IMAGE_MARGIN, y)
-        draw_cell(row[0], _AKARI_IMAGE_COLS[0], align=Pango.Alignment.RIGHT, bold=bold)
-        draw_cell(row[1], _AKARI_IMAGE_COLS[1], bold=bold)
-        draw_cell(row[2], _AKARI_IMAGE_COLS[2], bold=bold)
-        draw_cell(row[3], _AKARI_IMAGE_COLS[3], bold=bold)
-        draw_cell(row[4], _AKARI_IMAGE_COLS[4], align=Pango.Alignment.RIGHT, bold=bold)
+        last_idx = len(cols) - 1
+        for i, (value, width) in enumerate(zip(row, cols)):
+            align = (Pango.Alignment.RIGHT if i == 0 or i == last_idx
+                     else Pango.Alignment.LEFT)
+            draw_cell(value, width, align=align, bold=bold)
 
     y = _AKARI_IMAGE_MARGIN
     if title is not None:
@@ -376,25 +408,33 @@ def _get_akari_puzzle_table_image(table_rows, *, title=None, footer=None,
 
 
 def _get_akari_puzzle_table_image_file(guild, rows, title,
-                                       *, pre_ratings=None, registrants=None):
+                                       *, puzzle_info=None, registrants=None):
     rows = _sort_akari_puzzle_results(rows)
     displayed = rows[:_AKARI_IMAGE_MAX_ROWS]
     displayed_rows = _akari_puzzle_table_rows(
-        guild, displayed, pre_ratings=pre_ratings, registrants=registrants)
+        guild, displayed, puzzle_info=puzzle_info, registrants=registrants)
+    annotated = puzzle_info is not None and registrants is not None
     row_colors = None
-    if pre_ratings is not None and registrants is not None:
+    if annotated:
         # Only opted-in users get a tier colour; the rest stay default-black.
         row_colors = [
-            _akari_row_text_color(pre_ratings[row.user_id])
-            if row.user_id in registrants and row.user_id in pre_ratings
+            _akari_row_text_color(puzzle_info[row.user_id].pre_rating)
+            if row.user_id in registrants and row.user_id in puzzle_info
             else _BLACK
             for row in displayed
         ]
     footer = None
     if len(rows) > len(displayed_rows):
         footer = f'Showing top {len(displayed_rows)} of {len(rows)} results'
+    if annotated:
+        header = ('#', 'Name', 'Handle', 'Result', '\N{INCREMENT}')
+        cols = _AKARI_PUZZLE_DELTA_COLS
+    else:
+        header = ('#', 'Name', 'Handle', 'Result')
+        cols = _AKARI_PUZZLE_COLS
     return _get_akari_puzzle_table_image(
-        displayed_rows, title=title, footer=footer, row_colors=row_colors)
+        displayed_rows, title=title, footer=footer,
+        header=header, cols=cols, row_colors=row_colors)
 
 
 def _akari_rating_table_rows(guild, rating_rows, registrants, *, mark_registered=True):
@@ -447,6 +487,7 @@ def _get_akari_rating_table_image_file(guild, rating_rows, registrants,
     return _get_akari_puzzle_table_image(
         table_rows, title=title, footer=footer,
         header=('#', 'Name', 'Handle', 'Rating', 'Games'),
+        cols=_AKARI_RATING_COLS,
         row_colors=row_colors)
 
 
@@ -1343,15 +1384,15 @@ class Minigames(commands.Cog):
             current_puzzle_number=current_puzzle)
         return histories.get(str(user_id), [])
 
-    def _akari_pre_puzzle_ratings(self, guild_id, puzzle_number):
-        """Map ``user_id -> rating immediately before they played puzzle N``.
+    def _akari_puzzle_change_info(self, guild_id, puzzle_number):
+        """Map ``user_id -> _PuzzlePlayerInfo(pre_rating, delta)`` for puzzle N.
 
         Replays the full guild history once and pulls each user's HistoryPoint
         for the target puzzle; the pre-contest rating is the post-contest one
         minus the day's delta (so first-timers get the seed value, 1200).
         Used by ``;mg akari stats <puzzle>`` to colour each row by the
-        player's pre-puzzle tier — coloring by the *post*-puzzle rating would
-        be circular (the contest itself is what shaped it).
+        player's pre-puzzle tier (post-puzzle would be circular) and to fill
+        the Δ column with the day's signed change.
         """
         result_rows = cf_common.user_db.get_minigame_results_for_guild(
             guild_id, AKARI_GAME.name)
@@ -1361,13 +1402,16 @@ class Minigames(commands.Cog):
         compute_ratings(
             result_rows, max_puzzle=max_puzzle, histories=histories,
             current_puzzle_number=current_puzzle)
-        pre = {}
+        info = {}
         for user_id, points in histories.items():
             for point in points:
                 if point.puzzle_number == puzzle_number:
-                    pre[user_id] = point.rating - point.delta
+                    info[user_id] = _PuzzlePlayerInfo(
+                        pre_rating=point.rating - point.delta,
+                        delta=point.delta,
+                    )
                     break
-        return pre
+        return info
 
     async def _parse_akari_rating_args(self, ctx, args, *, member_required=False):
         """Pull ``+decay`` and an optional member out of the rating args.
@@ -1594,21 +1638,21 @@ class Minigames(commands.Cog):
         # Annotation requires a single puzzle worth of rows (1 puzzle/day).
         # For a multi-puzzle slice (theoretical), fall back to plain rendering.
         puzzle_numbers = {int(row.puzzle_number) for row in rows}
-        pre_ratings = None
+        puzzle_info = None
         registrants = None
         if len(puzzle_numbers) == 1:
-            pre_ratings = self._akari_pre_puzzle_ratings(
+            puzzle_info = self._akari_puzzle_change_info(
                 ctx.guild.id, next(iter(puzzle_numbers)))
             if show_all:
                 # Debug: pretend every rated player is registered for display.
-                registrants = set(pre_ratings.keys())
+                registrants = set(puzzle_info.keys())
             else:
                 registrants = cf_common.user_db.get_akari_registrants(
                     ctx.guild.id)
 
         discord_file = _get_akari_puzzle_table_image_file(
             ctx.guild, rows, title,
-            pre_ratings=pre_ratings, registrants=registrants)
+            puzzle_info=puzzle_info, registrants=registrants)
         await ctx.send(file=discord_file)
 
     async def _cmd_stats(self, ctx, game, *args):

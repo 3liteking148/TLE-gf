@@ -921,9 +921,9 @@ class TestFormatting:
 
         assert '#  Name' in table_str
         assert 'Handle' in table_str
-        assert '1  Alice  alice_cf  perfect  1:00' in table_str
-        assert '2  Bob    bob_cf    perfect  1:20' in table_str
-        assert '3  Cara   cara_cf   97%      0:50' in table_str
+        assert '1  Alice  alice_cf  100% 1:00' in table_str
+        assert '2  Bob    bob_cf    100% 1:20' in table_str
+        assert '3  Cara   cara_cf   97% 0:50' in table_str
 
     def test_get_akari_puzzle_table_image_returns_png_file(self, monkeypatch):
         class _Surface:
@@ -2341,9 +2341,64 @@ class TestRatingDisplayNoLeak:
             user_id='999', is_perfect=True, accuracy=100,
             time_seconds=89, message_id=1)
         out = _akari_puzzle_table_rows(guild, [result_row])
-        # (#, name, handle, result, time) — 'perfect'/time only, no 1200-ish number.
-        assert out[0][3] == 'perfect'
+        # (#, name, handle, result) — combined "100% M:SS" cell only, no 1200-ish number.
+        assert out[0][3] == '100% 1:29'
         assert '1200' not in ' '.join(str(c) for c in out[0])
+
+    def test_annotated_puzzle_rows_include_pre_rating_and_delta(self, monkeypatch):
+        # When puzzle_info + registrants are supplied (the user-facing per-puzzle
+        # path), opted-in users get a 5-tuple row with pre-rating tier in the
+        # name cell and a signed delta in the 5th cell.
+        from tle.cogs.minigames import (
+            _PuzzlePlayerInfo, _akari_puzzle_table_rows as _rows_fn)
+        monkeypatch.setattr(cf_common, 'user_db', None)
+        guild = _FakeGuild(1, members=[
+            _FakeDiscordMember(10, 'alice', 'Alice'),
+            _FakeDiscordMember(20, 'bob', 'Bob'),
+        ])
+        result_rows = [
+            SimpleNamespace(user_id='10', is_perfect=True, accuracy=100,
+                            time_seconds=60, message_id=1),
+            SimpleNamespace(user_id='20', is_perfect=False, accuracy=88,
+                            time_seconds=145, message_id=2),
+        ]
+        puzzle_info = {
+            '10': _PuzzlePlayerInfo(pre_rating=1304.0, delta=12.4),
+            '20': _PuzzlePlayerInfo(pre_rating=1190.7, delta=-8.6),
+        }
+        registrants = {'10', '20'}
+        out = _rows_fn(guild, result_rows,
+                       puzzle_info=puzzle_info, registrants=registrants)
+        assert len(out[0]) == 5
+        # Alice — opted in, rated 1304 (CM tier), gained ~12.
+        assert '1304 CM' in out[0][1]
+        assert out[0][3] == '100% 1:00'
+        assert out[0][4] == '+12'
+        # Bob — opted in, rated 1191 (Specialist tier), lost ~9.
+        assert '1191 S' in out[1][1]
+        assert out[1][3] == '88% 2:25'
+        assert out[1][4] == '-9'
+
+    def test_unregistered_users_have_empty_delta_in_annotated_table(self, monkeypatch):
+        # Privacy: a user who isn't in the registrants set shows neither
+        # pre-rating annotation nor delta, even if puzzle_info has their entry.
+        from tle.cogs.minigames import (
+            _PuzzlePlayerInfo, _akari_puzzle_table_rows as _rows_fn)
+        monkeypatch.setattr(cf_common, 'user_db', None)
+        guild = _FakeGuild(1, members=[_FakeDiscordMember(99, 'hidden', 'Hidden')])
+        result_rows = [
+            SimpleNamespace(user_id='99', is_perfect=True, accuracy=100,
+                            time_seconds=60, message_id=1),
+        ]
+        puzzle_info = {'99': _PuzzlePlayerInfo(pre_rating=1700.0, delta=22.0)}
+        registrants = set()  # hidden user is not opted in
+        out = _rows_fn(guild, result_rows,
+                       puzzle_info=puzzle_info, registrants=registrants)
+        # Annotated mode still emits 5 cells (so the renderer has them all),
+        # but the rating/delta surface is empty for the opted-out user.
+        assert len(out[0]) == 5
+        assert '1700' not in out[0][1]
+        assert out[0][4] == ''
 
     def test_active_ranking_hides_inactive_and_garbage(self):
         import datetime as _dt
