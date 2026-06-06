@@ -2265,6 +2265,60 @@ class TestAkariExcludeFilter:
         assert set(partial) == {'100', '300'}
 
 
+class TestAkariMultiMember:
+    """``;mg akari rating @a @b ...`` and ``performance @a @b ...`` plot many."""
+
+    def _ctx(self, members):
+        guild = _FakeGuild(1, members=members)
+        return SimpleNamespace(
+            guild=guild,
+            author=members[0] if members else None,
+            bot=SimpleNamespace(get_guild=lambda gid: guild),
+        )
+
+    def test_parse_returns_list_of_resolved_members(self):
+        cog = Minigames(bot=None)
+        alice = _FakeDiscordMember(101, 'alice')
+        bob = _FakeDiscordMember(202, 'bob')
+        cara = _FakeDiscordMember(303, 'cara')
+        ctx = self._ctx([alice, bob, cara])
+        members, include_decay, excluded = asyncio.run(
+            cog._parse_akari_rating_args(ctx, ['alice', 'bob']))
+        assert [m.id for m in members] == [101, 202]
+        assert include_decay is False
+        assert excluded == set()
+
+    def test_parse_with_decay_and_exclude_alongside_members(self):
+        cog = Minigames(bot=None)
+        alice = _FakeDiscordMember(101, 'alice')
+        bob = _FakeDiscordMember(202, 'bob')
+        cara = _FakeDiscordMember(303, 'cara')
+        ctx = self._ctx([alice, bob, cara])
+        members, include_decay, excluded = asyncio.run(
+            cog._parse_akari_rating_args(
+                ctx, ['alice', '+decay', 'bob', '+exclude=cara']))
+        assert [m.id for m in members] == [101, 202]
+        assert include_decay is True
+        assert excluded == {'303'}
+
+    def test_parse_falls_back_to_ctx_author_when_no_member(self):
+        cog = Minigames(bot=None)
+        author = _FakeDiscordMember(999, 'author')
+        ctx = self._ctx([author])
+        members, _decay, _excl = asyncio.run(
+            cog._parse_akari_rating_args(ctx, []))
+        assert members == [author]
+
+    def test_parse_member_required_errors_when_empty(self):
+        cog = Minigames(bot=None)
+        author = _FakeDiscordMember(999, 'author')
+        ctx = self._ctx([author])
+        from tle.cogs.minigames import MinigameCogError
+        with pytest.raises(MinigameCogError):
+            asyncio.run(cog._parse_akari_rating_args(
+                ctx, [], member_required=True))
+
+
 class TestRegisterTarget:
     """`;mg akari register [@user]` — anyone can self-register; only mods can
     pass a different @user."""

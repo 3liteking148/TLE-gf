@@ -1518,25 +1518,32 @@ class Minigames(commands.Cog):
         return remaining, include_decay, excluded_ids
 
     async def _parse_akari_rating_args(self, ctx, args, *, member_required=False):
-        """Pull ``+decay`` / ``+exclude=`` and an optional member out of the args.
+        """Pull ``+decay`` / ``+exclude=`` and zero-or-more members out of the args.
 
-        Whatever's left after filter extraction (at most one token) is
-        resolved as a member.  ``member_required=True`` is for the ``debug``
-        subcommand, which has no sensible default target.
+        Returns ``(members, include_decay, excluded_ids)``.  Every remaining
+        token is resolved via the case-insensitive member converter, so the
+        rating / performance graphs can plot multiple users at once
+        (``;mg akari rating @alice @bob``).  An empty list falls back to
+        ``[ctx.author]`` unless ``member_required=True`` (the ``debug``
+        subcommands), which then errors with a usage hint.
         """
         remaining, include_decay, excluded_ids = (
             await self._extract_akari_filters(ctx, args))
-        if remaining:
-            member = await self._resolve_member(ctx, remaining[0])
-        elif member_required:
-            raise MinigameCogError('A user is required for this command.')
-        else:
-            member = ctx.author
-        return member, include_decay, excluded_ids
+        members = [await self._resolve_member(ctx, token) for token in remaining]
+        if not members:
+            if member_required:
+                raise MinigameCogError('A user is required for this command.')
+            members = [ctx.author]
+        return members, include_decay, excluded_ids
 
-    async def _cmd_akari_rating(self, ctx, member, *, require_registered=True,
+    async def _cmd_akari_rating(self, ctx, members, *, require_registered=True,
                                 include_decay=False, excluded_ids=None):
         """Per-user rating graph (``;plot rating`` style).
+
+        ``members`` is a list of one-or-more members.  With a single member
+        the embed keeps the rich layout (Rating / Peak / Games / Last change /
+        Last performance); with multiple members the graph plots one line per
+        user and the embed switches to a compact roster.
 
         ``require_registered=True`` (the default, public-facing path) refuses
         to show the rating of users who haven't opted in via ``;mg akari register``.
@@ -1552,56 +1559,87 @@ class Minigames(commands.Cog):
         snapshot stays untouched.
         """
         self._require_enabled(ctx.guild.id, AKARI_GAME)
-        if require_registered and not cf_common.user_db.is_akari_registered(
-                ctx.guild.id, member.id):
-            raise MinigameCogError(
-                f'`{_safe_member_name(member)}` has not opted in to '
-                f'{AKARI_GAME.display_name} ratings (`;mg akari register`).')
-        if excluded_ids:
-            row, history = self._akari_user_data(
-                ctx.guild.id, member.id,
-                include_decay=include_decay, excluded_ids=excluded_ids)
-        else:
-            row = cf_common.user_db.get_akari_rating(ctx.guild.id, member.id)
-            history = self._akari_user_history(
-                ctx.guild.id, member.id, include_decay=include_decay)
-        if row is None:
-            raise MinigameCogError(
-                f'No {AKARI_GAME.display_name} rating for '
-                f'`{_safe_member_name(member)}` yet.')
-        if not history:
-            raise MinigameCogError(
-                f'`{_safe_member_name(member)}` has no rated '
-                f'{AKARI_GAME.display_name} days to plot yet.')
+        if require_registered:
+            for member in members:
+                if not cf_common.user_db.is_akari_registered(
+                        ctx.guild.id, member.id):
+                    raise MinigameCogError(
+                        f'`{_safe_member_name(member)}` has not opted in to '
+                        f'{AKARI_GAME.display_name} ratings '
+                        f'(`;mg akari register`).')
 
-        rating = round(row.rating)
-        rank = rank_for_rating(rating)
-        peak_rank = rank_for_rating(round(row.peak))
-        # Last contest day's delta and performance (skip solo-day Nones).
-        # row.last_delta on the snapshot is overwritten by daily decay steps and
-        # rounds to +0 for most users — use the history to find their last
-        # actual contest instead, matching how Performance is computed below.
-        last_contest = next((h for h in reversed(history)
-                             if h.performance is not None), None)
-        last_change_str = (f'{last_contest.delta:+.0f}'
-                           if last_contest is not None else '—')
-        last_perf_str = (f'{round(last_contest.performance)} '
-                         f'({rank_for_rating(round(last_contest.performance)).title_abbr})'
-                         if last_contest is not None else '—')
-        discord_file = plot_akari_rating(history, _legend_name_for(ctx.guild, member))
-        embed = discord.Embed(
-            title=f'{AKARI_GAME.display_name} rating — {_safe_member_name(member)}',
-            color=rank.color_embed,
-        )
-        embed.add_field(name='Rating', value=f'{rating} ({rank.title_abbr})')
-        embed.add_field(name='Peak', value=f'{round(row.peak)} ({peak_rank.title_abbr})')
-        embed.add_field(name='Games', value=str(row.games))
-        embed.add_field(name='Last change', value=last_change_str)
-        embed.add_field(name='Last performance', value=last_perf_str)
+        per_member = []
+        for member in members:
+            if excluded_ids:
+                row, history = self._akari_user_data(
+                    ctx.guild.id, member.id,
+                    include_decay=include_decay, excluded_ids=excluded_ids)
+            else:
+                row = cf_common.user_db.get_akari_rating(
+                    ctx.guild.id, member.id)
+                history = self._akari_user_history(
+                    ctx.guild.id, member.id, include_decay=include_decay)
+            if row is None:
+                raise MinigameCogError(
+                    f'No {AKARI_GAME.display_name} rating for '
+                    f'`{_safe_member_name(member)}` yet.')
+            if not history:
+                raise MinigameCogError(
+                    f'`{_safe_member_name(member)}` has no rated '
+                    f'{AKARI_GAME.display_name} days to plot yet.')
+            per_member.append((member, row, history))
+
+        series = [(history, _legend_name_for(ctx.guild, member))
+                  for member, _row, history in per_member]
+        discord_file = plot_akari_rating(series)
+
+        if len(per_member) == 1:
+            member, row, history = per_member[0]
+            rating = round(row.rating)
+            rank = rank_for_rating(rating)
+            peak_rank = rank_for_rating(round(row.peak))
+            # Last contest day's delta and performance (skip solo-day Nones).
+            # row.last_delta on the snapshot is overwritten by daily decay steps
+            # and rounds to +0 for most users — use the history to find their
+            # last actual contest instead, matching how Performance is shown.
+            last_contest = next((h for h in reversed(history)
+                                 if h.performance is not None), None)
+            last_change_str = (f'{last_contest.delta:+.0f}'
+                               if last_contest is not None else '—')
+            last_perf_str = (
+                f'{round(last_contest.performance)} '
+                f'({rank_for_rating(round(last_contest.performance)).title_abbr})'
+                if last_contest is not None else '—')
+            embed = discord.Embed(
+                title=f'{AKARI_GAME.display_name} rating — {_safe_member_name(member)}',
+                color=rank.color_embed,
+            )
+            embed.add_field(name='Rating', value=f'{rating} ({rank.title_abbr})')
+            embed.add_field(name='Peak', value=f'{round(row.peak)} ({peak_rank.title_abbr})')
+            embed.add_field(name='Games', value=str(row.games))
+            embed.add_field(name='Last change', value=last_change_str)
+            embed.add_field(name='Last performance', value=last_perf_str)
+        else:
+            top_member, top_row, _ = max(per_member, key=lambda t: t[1].rating)
+            top_rank = rank_for_rating(round(top_row.rating))
+            del top_member  # only its row drives the embed colour
+            lines = [
+                f'**{_safe_member_name(member)}**: '
+                f'{round(row.rating)} '
+                f'({rank_for_rating(round(row.rating)).title_abbr})'
+                for member, row, _ in per_member
+            ]
+            embed = discord.Embed(
+                title=(f'{AKARI_GAME.display_name} ratings — '
+                       f'{len(per_member)} players'),
+                description='\n'.join(lines),
+                color=top_rank.color_embed,
+            )
+
         discord_common.attach_image(embed, discord_file)
         await ctx.send(embed=embed, file=discord_file)
 
-    async def _cmd_akari_performance(self, ctx, member, *, require_registered=True,
+    async def _cmd_akari_performance(self, ctx, members, *, require_registered=True,
                                      excluded_ids=None):
         """Per-user performance graph.
 
@@ -1610,6 +1648,10 @@ class Minigames(commands.Cog):
         finish" for that contest, independent of their incoming rating.  Solo
         days have no field and are dropped from the plot.
 
+        ``members`` is a list of one-or-more members; single-member uses the
+        rich embed (Last / Best / Contests), multi-member uses a compact one
+        with each player's latest performance.
+
         ``require_registered=True`` (the default, public-facing path) refuses
         to show performance for users who haven't opted in via ``;mg akari register``.
         The ``performance debug`` subcommand passes False so admins can inspect
@@ -1617,42 +1659,75 @@ class Minigames(commands.Cog):
         those users so their presence doesn't shape this player's performance.
         """
         self._require_enabled(ctx.guild.id, AKARI_GAME)
-        if require_registered and not cf_common.user_db.is_akari_registered(
-                ctx.guild.id, member.id):
-            raise MinigameCogError(
-                f'`{_safe_member_name(member)}` has not opted in to '
-                f'{AKARI_GAME.display_name} ratings (`;mg akari register`).')
-        if excluded_ids:
-            row, history = self._akari_user_data(
-                ctx.guild.id, member.id, excluded_ids=excluded_ids)
-        else:
-            row = cf_common.user_db.get_akari_rating(ctx.guild.id, member.id)
-            history = self._akari_user_history(ctx.guild.id, member.id)
-        if row is None:
-            raise MinigameCogError(
-                f'No {AKARI_GAME.display_name} rating for '
-                f'`{_safe_member_name(member)}` yet.')
-        contest_history = [h for h in history if h.performance is not None]
-        if not contest_history:
-            raise MinigameCogError(
-                f'`{_safe_member_name(member)}` has no contested '
-                f'{AKARI_GAME.display_name} days to plot performance for yet.')
+        if require_registered:
+            for member in members:
+                if not cf_common.user_db.is_akari_registered(
+                        ctx.guild.id, member.id):
+                    raise MinigameCogError(
+                        f'`{_safe_member_name(member)}` has not opted in to '
+                        f'{AKARI_GAME.display_name} ratings '
+                        f'(`;mg akari register`).')
 
-        discord_file = plot_akari_performance(
-            history, _legend_name_for(ctx.guild, member), round(row.rating))
-        last_perf = contest_history[-1].performance
-        last_rank = rank_for_rating(round(last_perf))
-        best_perf = max(h.performance for h in contest_history)
-        best_rank = rank_for_rating(round(best_perf))
-        embed = discord.Embed(
-            title=f'{AKARI_GAME.display_name} performance — {_safe_member_name(member)}',
-            color=last_rank.color_embed,
-        )
-        embed.add_field(name='Last performance',
-                        value=f'{round(last_perf)} ({last_rank.title_abbr})')
-        embed.add_field(name='Best performance',
-                        value=f'{round(best_perf)} ({best_rank.title_abbr})')
-        embed.add_field(name='Contests', value=str(len(contest_history)))
+        per_member = []
+        for member in members:
+            if excluded_ids:
+                row, history = self._akari_user_data(
+                    ctx.guild.id, member.id, excluded_ids=excluded_ids)
+            else:
+                row = cf_common.user_db.get_akari_rating(
+                    ctx.guild.id, member.id)
+                history = self._akari_user_history(ctx.guild.id, member.id)
+            if row is None:
+                raise MinigameCogError(
+                    f'No {AKARI_GAME.display_name} rating for '
+                    f'`{_safe_member_name(member)}` yet.')
+            contest_history = [h for h in history if h.performance is not None]
+            if not contest_history:
+                raise MinigameCogError(
+                    f'`{_safe_member_name(member)}` has no contested '
+                    f'{AKARI_GAME.display_name} days to plot performance for yet.')
+            per_member.append((member, row, history, contest_history))
+
+        series = [(history, _legend_name_for(ctx.guild, member), round(row.rating))
+                  for member, row, history, _ in per_member]
+        discord_file = plot_akari_performance(series)
+
+        if len(per_member) == 1:
+            member, row, _history, contest_history = per_member[0]
+            last_perf = contest_history[-1].performance
+            last_rank = rank_for_rating(round(last_perf))
+            best_perf = max(h.performance for h in contest_history)
+            best_rank = rank_for_rating(round(best_perf))
+            embed = discord.Embed(
+                title=f'{AKARI_GAME.display_name} performance — {_safe_member_name(member)}',
+                color=last_rank.color_embed,
+            )
+            embed.add_field(name='Last performance',
+                            value=f'{round(last_perf)} ({last_rank.title_abbr})')
+            embed.add_field(name='Best performance',
+                            value=f'{round(best_perf)} ({best_rank.title_abbr})')
+            embed.add_field(name='Contests', value=str(len(contest_history)))
+        else:
+            # Pick the embed colour from the strongest *recent* performance.
+            best_per_member = [
+                (member, contest_history[-1].performance)
+                for member, _row, _history, contest_history in per_member
+            ]
+            top_rank = rank_for_rating(round(
+                max(perf for _m, perf in best_per_member)))
+            lines = [
+                f'**{_safe_member_name(member)}**: '
+                f'last {round(contest_history[-1].performance)} '
+                f'({rank_for_rating(round(contest_history[-1].performance)).title_abbr})'
+                for member, _row, _history, contest_history in per_member
+            ]
+            embed = discord.Embed(
+                title=(f'{AKARI_GAME.display_name} performance — '
+                       f'{len(per_member)} players'),
+                description='\n'.join(lines),
+                color=top_rank.color_embed,
+            )
+
         discord_common.attach_image(embed, discord_file)
         await ctx.send(embed=embed, file=discord_file)
 
@@ -2187,48 +2262,48 @@ class Minigames(commands.Cog):
         await self._cmd_akari_ratings(ctx, excluded_ids=excluded_ids)
 
     @akari.group(name='rating',
-                 brief='Show a registered user\'s Akari rating graph',
-                 usage='[@user] [+decay] [+exclude=user1,user2,...]',
+                 brief='Show registered users\' Akari rating graph',
+                 usage='[@user1 @user2 ...] [+decay] [+exclude=user1,user2,...]',
                  invoke_without_command=True)
     async def akari_rating(self, ctx, *args):
-        member, include_decay, excluded_ids = (
+        members, include_decay, excluded_ids = (
             await self._parse_akari_rating_args(ctx, args))
         await self._cmd_akari_rating(
-            ctx, member, include_decay=include_decay,
+            ctx, members, include_decay=include_decay,
             excluded_ids=excluded_ids)
 
     @akari_rating.command(name='debug',
                           brief='(Mod) Rating graph for any user (incl. shadow-rated)',
-                          usage='@user [+decay] [+exclude=user1,user2,...]')
+                          usage='@user1 [@user2 ...] [+decay] [+exclude=user1,user2,...]')
     @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
     async def akari_rating_debug(self, ctx, *args):
-        member, include_decay, excluded_ids = (
+        members, include_decay, excluded_ids = (
             await self._parse_akari_rating_args(
                 ctx, args, member_required=True))
         await self._cmd_akari_rating(
-            ctx, member, require_registered=False,
+            ctx, members, require_registered=False,
             include_decay=include_decay, excluded_ids=excluded_ids)
 
     @akari.group(name='performance', aliases=['perf'],
-                 brief='Show a registered user\'s Akari performance graph',
-                 usage='[@user] [+exclude=user1,user2,...]',
+                 brief='Show registered users\' Akari performance graph',
+                 usage='[@user1 @user2 ...] [+exclude=user1,user2,...]',
                  invoke_without_command=True)
     async def akari_performance(self, ctx, *args):
-        member, _include_decay, excluded_ids = (
+        members, _include_decay, excluded_ids = (
             await self._parse_akari_rating_args(ctx, args))
         await self._cmd_akari_performance(
-            ctx, member, excluded_ids=excluded_ids)
+            ctx, members, excluded_ids=excluded_ids)
 
     @akari_performance.command(name='debug',
                                brief='(Mod) Performance graph for any user (incl. shadow-rated)',
-                               usage='@user [+exclude=user1,user2,...]')
+                               usage='@user1 [@user2 ...] [+exclude=user1,user2,...]')
     @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
     async def akari_performance_debug(self, ctx, *args):
-        member, _include_decay, excluded_ids = (
+        members, _include_decay, excluded_ids = (
             await self._parse_akari_rating_args(
                 ctx, args, member_required=True))
         await self._cmd_akari_performance(
-            ctx, member, require_registered=False,
+            ctx, members, require_registered=False,
             excluded_ids=excluded_ids)
 
     @akari.group(name='history',
@@ -2236,21 +2311,27 @@ class Minigames(commands.Cog):
                  usage='[@user] [+exclude=user1,user2,...]',
                  invoke_without_command=True)
     async def akari_history(self, ctx, *args):
-        member, _include_decay, excluded_ids = (
+        members, _include_decay, excluded_ids = (
             await self._parse_akari_rating_args(ctx, args))
+        if len(members) != 1:
+            raise MinigameCogError(
+                '`history` shows one user at a time — pick one.')
         await self._cmd_akari_history(
-            ctx, member, excluded_ids=excluded_ids)
+            ctx, members[0], excluded_ids=excluded_ids)
 
     @akari_history.command(name='debug',
                            brief='(Mod) Rating delta log for any user (incl. shadow-rated)',
                            usage='@user [+exclude=user1,user2,...]')
     @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
     async def akari_history_debug(self, ctx, *args):
-        member, _include_decay, excluded_ids = (
+        members, _include_decay, excluded_ids = (
             await self._parse_akari_rating_args(
                 ctx, args, member_required=True))
+        if len(members) != 1:
+            raise MinigameCogError(
+                '`history debug` shows one user at a time — pick one.')
         await self._cmd_akari_history(
-            ctx, member, require_registered=False,
+            ctx, members[0], require_registered=False,
             excluded_ids=excluded_ids)
 
     @akari_ratings.command(name='recompute', brief='(Mod) Rebuild the rating snapshot')
@@ -2495,7 +2576,7 @@ class Minigames(commands.Cog):
         target = member or interaction.user
         try:
             await self._cmd_akari_rating(
-                _SlashCtx(interaction), target, include_decay=decay)
+                _SlashCtx(interaction), [target], include_decay=decay)
         except MinigameCogError as e:
             await self._slash_send_error(interaction, e)
         except Exception:
@@ -2511,7 +2592,7 @@ class Minigames(commands.Cog):
         await interaction.response.defer()
         target = member or interaction.user
         try:
-            await self._cmd_akari_performance(_SlashCtx(interaction), target)
+            await self._cmd_akari_performance(_SlashCtx(interaction), [target])
         except MinigameCogError as e:
             await self._slash_send_error(interaction, e)
         except Exception:
