@@ -1,6 +1,5 @@
 import asyncio
 import functools
-import io
 import json
 import logging
 import time
@@ -10,7 +9,6 @@ from collections import defaultdict, namedtuple
 import discord
 from discord.ext import commands
 from matplotlib import pyplot as plt
-from PIL import Image, ImageDraw, ImageFont
 
 from tle import constants
 from tle.util import codeforces_common as cf_common
@@ -34,69 +32,49 @@ _WATCHING_RATED_VC_WAIT_TIME = 5 * 60  # seconds
 _RATED_VC_EXTRA_TIME = 10 * 60  # seconds
 _MIN_RATED_CONTESTANTS_FOR_RATED_VC = 50
 
-def _load_monospace_font(size):
-    for path in ('/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf',
-                 '/usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf'):
-        try:
-            return ImageFont.truetype(path, size)
-        except OSError:
-            continue
-    return ImageFont.load_default()
+# Codeforces rank colors keyed by rating (mirrors handles.rating_to_color);
+# used for per-row coloring in the probratimg table.
+def _cf_rating_color(rating):
+    if rating is None:
+        return (10, 10, 10)
+    if rating < 1200:
+        return (70, 70, 70)
+    if rating < 1400:
+        return (0, 140, 0)
+    if rating < 1600:
+        return (0, 165, 170)
+    if rating < 1900:
+        return (0, 0, 200)
+    if rating < 2100:
+        return (160, 0, 120)
+    if rating < 2400:
+        return (250, 140, 30)
+    return (255, 20, 20)
 
 
 def _render_problemratings_image(title, indices, official_ratings, predicted, *, from_cache):
-    """Render the probrat table as a PNG. Monospace + fixed per-cell layout
-    means rows can't visually wrap mid-line the way Discord codeblocks do."""
+    """Render the probrat table using the same Cairo/Pango table renderer that
+    ``;mg akari ratings`` uses, with each row coloured by the predicted rating's
+    CF rank."""
+    # Imported here to avoid pulling cairo/Pango (and the whole minigames cog)
+    # into contests' module-load path if it's never invoked.
+    from tle.cogs.minigames import _get_akari_puzzle_table_image
     header = ('#', 'Official', 'Predicted (C)' if from_cache else 'Predicted')
-    rows = [(str(idx),
-             '' if official_ratings[i] is None else str(official_ratings[i]),
-             str(predicted[i]))
-            for i, idx in enumerate(indices)]
-
-    font = _load_monospace_font(22)
-    title_font = _load_monospace_font(24)
-
-    pad = 16
-    row_h = 32
-    cell_pad = 16
-    measure = ImageDraw.Draw(Image.new('RGB', (1, 1)))
-    col_widths = []
-    for col in range(3):
-        cells = [header[col], *(r[col] for r in rows)]
-        col_widths.append(max(measure.textlength(c, font=font) for c in cells))
-    title_w = measure.textlength(title, font=title_font)
-
-    width = int(pad * 2 + sum(col_widths) + cell_pad * 2)
-    width = max(width, int(title_w + pad * 2))
-    height = pad * 2 + 40 + row_h * (1 + len(rows))
-
-    img = Image.new('RGB', (width, height), color=(36, 39, 42))
-    draw = ImageDraw.Draw(img)
-    draw.text((pad, pad), title, fill=(230, 230, 230), font=title_font)
-
-    y = pad + 36
-    x_starts = [pad]
-    for w in col_widths[:-1]:
-        x_starts.append(x_starts[-1] + int(w) + cell_pad)
-
-    # header — bold-ish via white-on-dark
-    for x, cell in zip(x_starts, header):
-        draw.text((x, y), cell, fill=(255, 255, 255), font=font)
-    draw.line([(pad, y + row_h - 4), (width - pad, y + row_h - 4)],
-              fill=(120, 120, 120), width=1)
-    y += row_h
-
-    for i, row in enumerate(rows):
-        if i % 2 == 1:
-            draw.rectangle([(0, y), (width, y + row_h)], fill=(45, 49, 54))
-        for x, cell in zip(x_starts, row):
-            draw.text((x, y), cell, fill=(220, 220, 220), font=font)
-        y += row_h
-
-    buf = io.BytesIO()
-    img.save(buf, format='PNG')
-    buf.seek(0)
-    return discord.File(buf, filename='probrat.png')
+    rows = [
+        (str(idx),
+         '—' if official_ratings[i] is None else str(official_ratings[i]),
+         str(predicted[i]))
+        for i, idx in enumerate(indices)
+    ]
+    row_colors = [_cf_rating_color(predicted[i]) for i in range(len(indices))]
+    return _get_akari_puzzle_table_image(
+        rows, title=title,
+        header=header,
+        cols=(80, 390, 390),
+        right_align_cols=(0, 1, 2),
+        row_colors=row_colors,
+        filename='probrat.png',
+    )
 
 
 class ContestCogError(commands.CommandError):
@@ -972,9 +950,7 @@ class Contests(commands.Cog):
             await self._compute_problem_ratings(ctx, contest_id))
         image_file = _render_problemratings_image(
             title, indices, official_ratings, predicted, from_cache=from_cache)
-        embed = discord_common.cf_color_embed(title=title, url=url)
-        discord_common.attach_image(embed, image_file)
-        await ctx.send(embed=embed, file=image_file)
+        await ctx.send(content=f'<{url}>', file=image_file)
 
     async def _compute_problem_ratings(self, ctx, contest_id):
         await ctx.send('This will take a while')

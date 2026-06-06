@@ -330,7 +330,8 @@ def _get_akari_puzzle_table_image(table_rows, *, title=None, footer=None,
                                   header=('#', 'Name', 'Handle', 'Result', 'Time'),
                                   cols=_AKARI_PUZZLE_COLS,
                                   right_align_cols=None,
-                                  row_colors=None):
+                                  row_colors=None,
+                                  filename='akari-results.png'):
     title_height = _AKARI_IMAGE_ROW_HEIGHT if title is not None else 0
     footer_height = _AKARI_IMAGE_ROW_HEIGHT if footer is not None else 0
     height = int(
@@ -409,7 +410,7 @@ def _get_akari_puzzle_table_image(table_rows, *, title=None, footer=None,
     image_data = io.BytesIO()
     surface.write_to_png(image_data)
     image_data.seek(0)
-    return discord.File(image_data, filename='akari-results.png')
+    return discord.File(image_data, filename=filename)
 
 
 def _get_akari_puzzle_table_image_file(guild, rows, title,
