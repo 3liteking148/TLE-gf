@@ -1667,6 +1667,16 @@ class UserDbConn(MinigameDbMixin, StarboardDbMixin, MigrationDbMixin):
             params=(str(message_id),), row_factory=namedtuple_factory
         )
 
+    def get_active_rpolls_in_channel(self, channel_id, now):
+        """Active (open, not yet expired) polls created in this channel."""
+        return self._fetchall(
+            'SELECT poll_id, guild_id, channel_id, message_id, question, created_by, created_at, '
+            'anonymous, expires_at, closed, formula '
+            'FROM rpoll WHERE channel_id = ? AND closed = 0 AND expires_at > ? '
+            'ORDER BY expires_at ASC',
+            params=(str(channel_id), now), row_factory=namedtuple_factory
+        )
+
     def get_rpoll_options(self, poll_id):
         """Get all options for a poll, ordered by index."""
         return self._fetchall(
@@ -1932,6 +1942,14 @@ class UserDbConn(MinigameDbMixin, StarboardDbMixin, MigrationDbMixin):
             'SELECT 1 FROM greatday_ban WHERE guild_id = ? AND user_id = ?',
             (str(guild_id), str(user_id))).fetchone()
         return row is not None
+
+    def greatday_get_banned(self, guild_id):
+        """Return all banned user_ids for the guild."""
+        return self.conn.execute(
+            'SELECT user_id FROM greatday_ban WHERE guild_id = ? '
+            'ORDER BY rowid ASC',
+            (str(guild_id),)
+        ).fetchall()
 
     def kvs_set(self, key, value):
         """Set a key-value pair. Overwrites if key exists."""

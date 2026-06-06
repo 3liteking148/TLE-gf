@@ -1,5 +1,6 @@
 import asyncio
 import functools
+import io
 import json
 import logging
 import time
@@ -9,6 +10,7 @@ from collections import defaultdict, namedtuple
 import discord
 from discord.ext import commands
 from matplotlib import pyplot as plt
+from PIL import Image, ImageDraw, ImageFont
 
 from tle import constants
 from tle.util import codeforces_common as cf_common
@@ -31,6 +33,71 @@ _FINISHED_CONTESTS_LIMIT = 5
 _WATCHING_RATED_VC_WAIT_TIME = 5 * 60  # seconds
 _RATED_VC_EXTRA_TIME = 10 * 60  # seconds
 _MIN_RATED_CONTESTANTS_FOR_RATED_VC = 50
+
+def _load_monospace_font(size):
+    for path in ('/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf',
+                 '/usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf'):
+        try:
+            return ImageFont.truetype(path, size)
+        except OSError:
+            continue
+    return ImageFont.load_default()
+
+
+def _render_problemratings_image(title, indices, official_ratings, predicted, *, from_cache):
+    """Render the probrat table as a PNG. Monospace + fixed per-cell layout
+    means rows can't visually wrap mid-line the way Discord codeblocks do."""
+    header = ('#', 'Official', 'Predicted (C)' if from_cache else 'Predicted')
+    rows = [(str(idx),
+             '' if official_ratings[i] is None else str(official_ratings[i]),
+             str(predicted[i]))
+            for i, idx in enumerate(indices)]
+
+    font = _load_monospace_font(22)
+    title_font = _load_monospace_font(24)
+
+    pad = 16
+    row_h = 32
+    cell_pad = 16
+    measure = ImageDraw.Draw(Image.new('RGB', (1, 1)))
+    col_widths = []
+    for col in range(3):
+        cells = [header[col], *(r[col] for r in rows)]
+        col_widths.append(max(measure.textlength(c, font=font) for c in cells))
+    title_w = measure.textlength(title, font=title_font)
+
+    width = int(pad * 2 + sum(col_widths) + cell_pad * 2)
+    width = max(width, int(title_w + pad * 2))
+    height = pad * 2 + 40 + row_h * (1 + len(rows))
+
+    img = Image.new('RGB', (width, height), color=(36, 39, 42))
+    draw = ImageDraw.Draw(img)
+    draw.text((pad, pad), title, fill=(230, 230, 230), font=title_font)
+
+    y = pad + 36
+    x_starts = [pad]
+    for w in col_widths[:-1]:
+        x_starts.append(x_starts[-1] + int(w) + cell_pad)
+
+    # header — bold-ish via white-on-dark
+    for x, cell in zip(x_starts, header):
+        draw.text((x, y), cell, fill=(255, 255, 255), font=font)
+    draw.line([(pad, y + row_h - 4), (width - pad, y + row_h - 4)],
+              fill=(120, 120, 120), width=1)
+    y += row_h
+
+    for i, row in enumerate(rows):
+        if i % 2 == 1:
+            draw.rectangle([(0, y), (width, y + row_h)], fill=(45, 49, 54))
+        for x, cell in zip(x_starts, row):
+            draw.text((x, y), cell, fill=(220, 220, 220), font=font)
+        y += row_h
+
+    buf = io.BytesIO()
+    img.save(buf, format='PNG')
+    buf.seek(0)
+    return discord.File(buf, filename='probrat.png')
+
 
 class ContestCogError(commands.CommandError):
     pass
@@ -880,11 +947,28 @@ class Contests(commands.Cog):
     async def problemratings(self, ctx, contest_id: int):
         """Estimation of contest problem ratings
         """
+        title, url, indices, official_ratings, predicted, from_cache = (
+            await self._compute_problem_ratings(ctx, contest_id))
+        table_pages = self._format_problemratings_table_pages(
+            indices, official_ratings, predicted, from_cache=from_cache)
+        await discord_common.send_paginated_embeds(ctx, table_pages, title=title, url=url)
+
+    @commands.command(brief='Estimation of contest problem ratings (image)',
+                      aliases=['probratimg'], usage='contest_id')
+    async def problemratingsimg(self, ctx, contest_id: int):
+        """Same as ;probrat but renders as an image (no codeblock alignment issues).
+        """
+        title, url, indices, official_ratings, predicted, from_cache = (
+            await self._compute_problem_ratings(ctx, contest_id))
+        image_file = _render_problemratings_image(
+            title, indices, official_ratings, predicted, from_cache=from_cache)
+        await ctx.send(content=url, file=image_file)
+
+    async def _compute_problem_ratings(self, ctx, contest_id):
         await ctx.send('This will take a while')
         contests = await cf.contest.list()
         reqcontest = [contest for contest in contests if contest.id == contest_id]
         combined = [contest for contest in contests if reqcontest[0].startTimeSeconds == contest.startTimeSeconds]
-
 
         # get ranklist of all contests in separate lists
         # get rating_changes of all contests in separate lists
@@ -965,13 +1049,11 @@ class Contests(commands.Cog):
                     if member in rating_cache:
                         solves.append(min(row.problemResults[idx].points, 1))
                         ratings.append(rating_cache[member])
-            predicted.append(calculateDifficulty(ratings,solves))
+            predicted.append(calculateDifficulty(ratings, solves))
 
         url = f'{cf.CONTEST_BASE_URL}{contest_id}'
         title = reqcontest[0].name
-        table_pages = self._format_problemratings_table_pages(
-            indicies, officialRatings, predicted, from_cache=from_cache)
-        await discord_common.send_paginated_embeds(ctx, table_pages, title=title, url=url)
+        return title, url, indicies, officialRatings, predicted, from_cache
 
     @staticmethod
     def _format_problemratings_table_pages(indices, official_ratings, predicted, *, from_cache):

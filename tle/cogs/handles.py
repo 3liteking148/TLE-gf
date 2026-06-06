@@ -538,7 +538,7 @@ class Handles(commands.Cog):
             lines += failed
         return discord_common.embed_success('\n'.join(lines))
 
-    @commands.command(brief="Show gudgitters", aliases=["gitgudders", "gitbadders", "gg"], usage="[div1|div2|div3] [+all]")
+    @commands.command(brief="Show gudgitters", aliases=["gitgudders", "gitbadders", "ggtext"], usage="[div1|div2|div3] [+all]")
     async def gudgitters(self, ctx, *args):
         """Show the list of users of gitgud with their scores."""
         res = cf_common.user_db.get_gudgitters()
@@ -679,7 +679,7 @@ class Handles(commands.Cog):
         paginator.paginate(self.bot, ctx.channel, pages, wait_time=_PAGINATE_WAIT_TIME,
                            set_pagenum_footers=True, author_id=ctx.author.id)
 
-    @commands.command(brief="Show gudgitters as an image", usage="[div1|div2|div3] [+all]")
+    @commands.command(brief="Show gudgitters as an image", aliases=["gg"], usage="[div1|div2|div3] [+all]")
     async def ggimg(self, ctx, *args):
         """Show the top gitgudders as a color-coded image."""
         res = cf_common.user_db.get_gudgitters()

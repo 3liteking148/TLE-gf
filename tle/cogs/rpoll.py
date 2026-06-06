@@ -543,8 +543,8 @@ class Rpoll(commands.Cog):
         except Exception as e:
             logger.warning(f'rpoll: Could not send results for poll {poll.poll_id}: {e}')
 
-    @commands.command(brief='Create a rating-weighted poll')
-    async def rpoll(self, ctx, *, args: str):
+    @commands.group(brief='Create a rating-weighted poll', invoke_without_command=True)
+    async def rpoll(self, ctx, *, args: str = None):
         """Create a poll where votes are weighted by Codeforces rating.
         Vote for multiple options, click again to un-vote. No CF handle = 0.
 
@@ -559,6 +559,9 @@ class Rpoll(commands.Cog):
           +gg / +mgg: all-time / monthly gitgud score
           +akari / +akariexp: Daily Akari rating (sum / exponential)
         """
+        if args is None:
+            await ctx.send_help(ctx.command)
+            return
         args = args.strip()
         # Normalize smart/curly quotes (common on macOS) to straight quotes
         args = args.replace('\u201c', '"').replace('\u201d', '"')
@@ -630,6 +633,27 @@ class Rpoll(commands.Cog):
         self._schedule_expiry(poll_id, expires_at)
         logger.info(f'rpoll: Created poll={poll_id} question={question!r} '
                     f'options={options} duration={duration}s by user={ctx.author.id} msg={msg.id}')
+
+    @rpoll.command(name='list', brief='List active polls in this channel')
+    async def list_polls(self, ctx):
+        """List currently-open polls created in this channel."""
+        now = time.time()
+        polls = cf_common.user_db.get_active_rpolls_in_channel(ctx.channel.id, now)
+        if not polls:
+            await ctx.send(embed=discord_common.embed_neutral(
+                'No active polls in this channel.'))
+            return
+        lines = []
+        for p in polls:
+            remaining = int(p.expires_at - now)
+            jump = (f'https://discord.com/channels/{p.guild_id}/{p.channel_id}/{p.message_id}'
+                    if p.message_id else None)
+            header = f'**#{p.poll_id}** — {p.question}'
+            if jump:
+                header += f' ([jump]({jump}))'
+            lines.append(f'{header}\nCloses <t:{int(p.expires_at)}:R>  |  formula: `{p.formula}`')
+        embed = discord.Embed(title='Active polls', description='\n\n'.join(lines))
+        await ctx.send(embed=embed)
 
     @discord_common.send_error_if(RpollError)
     async def cog_command_error(self, ctx, error):

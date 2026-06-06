@@ -275,6 +275,18 @@ class GreatDay(commands.Cog):
             await ctx.send(embed=discord_common.embed_alert(
                 f'`{name}` is not banned.'))
 
+    @greatday.command(name='banlist', brief='Show users banned from great day')
+    async def banlist(self, ctx):
+        rows = cf_common.user_db.greatday_get_banned(ctx.guild.id)
+        if not rows:
+            await ctx.send(embed=discord_common.embed_neutral(
+                'No one is banned from great day.'))
+            return
+        lines = [f'<@{r.user_id}>' for r in rows]
+        embed = discord.Embed(title='Great day ban list',
+                              description='\n'.join(lines))
+        await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
     @greatday.command(name='here', brief='Set the great day channel')
     @commands.has_role(constants.TLE_ADMIN)
     async def here(self, ctx):
