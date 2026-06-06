@@ -2135,9 +2135,10 @@ class TestAkariExcludeFilter:
         async def _go():
             return await cog._extract_akari_filters(
                 ctx, ['+decay', '+exclude=alice,cara', 'remaining'])
-        remaining, include_decay, excluded = asyncio.run(_go())
+        remaining, include_decay, excluded, included = asyncio.run(_go())
         assert include_decay is True
         assert excluded == {'101', '303'}
+        assert included == set()
         assert remaining == ['remaining']
 
     def test_extract_filters_ignores_empty_exclude_entries(self):
@@ -2154,8 +2155,78 @@ class TestAkariExcludeFilter:
         async def _go():
             return await cog._extract_akari_filters(
                 ctx, ['+exclude=alice,,bob,'])
-        _remaining, _include_decay, excluded = asyncio.run(_go())
+        _remaining, _include_decay, excluded, _included = asyncio.run(_go())
         assert excluded == {'101', '202'}
+
+    def test_extract_filters_parses_include(self):
+        cog = Minigames(bot=None)
+        alice = _FakeDiscordMember(101, 'alice')
+        bob = _FakeDiscordMember(202, 'bob')
+        cara = _FakeDiscordMember(303, 'cara')
+        guild = _FakeGuild(1, members=[alice, bob, cara])
+        ctx = SimpleNamespace(
+            guild=guild,
+            bot=SimpleNamespace(get_guild=lambda gid: guild),
+        )
+        async def _go():
+            return await cog._extract_akari_filters(
+                ctx, ['+include=alice,bob'])
+        _remaining, _include_decay, excluded, included = asyncio.run(_go())
+        assert excluded == set()
+        assert included == {'101', '202'}
+
+    def test_extract_filters_include_and_exclude_compose(self):
+        # Include narrows the universe; exclude trims from there.
+        cog = Minigames(bot=None)
+        alice = _FakeDiscordMember(101, 'alice')
+        bob = _FakeDiscordMember(202, 'bob')
+        cara = _FakeDiscordMember(303, 'cara')
+        guild = _FakeGuild(1, members=[alice, bob, cara])
+        ctx = SimpleNamespace(
+            guild=guild,
+            bot=SimpleNamespace(get_guild=lambda gid: guild),
+        )
+        async def _go():
+            return await cog._extract_akari_filters(
+                ctx, ['+include=alice,bob,cara', '+exclude=cara'])
+        _remaining, _include_decay, excluded, included = asyncio.run(_go())
+        assert excluded == {'303'}
+        assert included == {'101', '202', '303'}
+
+    def test_filtered_rating_rows_keeps_only_included_users(self, db, monkeypatch):
+        # The mirror of the exclude case: only the listed users count, every
+        # other row is dropped before the replay.
+        monkeypatch.setattr(cf_common, 'user_db', db)
+        self._no_puzzle_filter(monkeypatch)
+        self._enable(db)
+        cog = Minigames(bot=None)
+
+        async def _inner():
+            await cog.on_message(self._akari_msg_n(
+                1, 100, 500, '\U0001f31f Perfect! \U0001f553 1:00'))
+            await cog.on_message(self._akari_msg_n(
+                2, 200, 500, '\U0001f3af 50% \U0001f553 5:00'))
+            await cog.on_message(self._akari_msg_n(
+                3, 300, 500, '\U0001f3af 70% \U0001f553 3:00'))
+        asyncio.run(_inner())
+        rows = cog._akari_filtered_rating_rows(
+            1, included_ids={'100', '300'})
+        assert {r.user_id for r in rows} == {'100', '300'}
+
+    def test_include_and_exclude_compose_in_replay(self):
+        # Plain row-filter behaviour: include narrows, exclude trims.
+        Row = namedtuple('Row', 'user_id puzzle_number')
+        rows = [Row(str(u), 1) for u in (100, 200, 300, 400)]
+        filtered = Minigames._filter_akari_rows(
+            rows, included_ids={'100', '200', '300'}, excluded_ids={'200'})
+        assert {r.user_id for r in filtered} == {'100', '300'}
+
+    def test_filter_row_helper_is_pass_through_with_no_filters(self):
+        # Cheap sanity check: when both filter sets are empty, the helper is
+        # a no-op (and notably doesn't copy the list either).
+        Row = namedtuple('Row', 'user_id puzzle_number')
+        rows = [Row('100', 1), Row('200', 1)]
+        assert Minigames._filter_akari_rows(rows) is rows
 
     def test_filtered_rating_rows_drops_excluded_users(self, db, monkeypatch):
         monkeypatch.setattr(cf_common, 'user_db', db)
@@ -2172,7 +2243,7 @@ class TestAkariExcludeFilter:
                 3, 300, 500, '\U0001f3af 70% \U0001f553 3:00'))
         asyncio.run(_inner())
         assert {r.user_id for r in db.get_akari_ratings(1)} == {'100', '200', '300'}
-        rows = cog._akari_filtered_rating_rows(1, {'200'})
+        rows = cog._akari_filtered_rating_rows(1, excluded_ids={'200'})
         assert {r.user_id for r in rows} == {'100', '300'}
 
     def test_filtered_rating_rows_does_not_touch_cache(self, db, monkeypatch):
@@ -2193,7 +2264,7 @@ class TestAkariExcludeFilter:
                 3, 300, 500, '\U0001f3af 70% \U0001f553 3:00'))
         asyncio.run(_inner())
         before = {r.user_id: r.rating for r in db.get_akari_ratings(1)}
-        cog._akari_filtered_rating_rows(1, {'200'})
+        cog._akari_filtered_rating_rows(1, excluded_ids={'200'})
         after = {r.user_id: r.rating for r in db.get_akari_ratings(1)}
         assert before == after
 
@@ -2216,7 +2287,7 @@ class TestAkariExcludeFilter:
         asyncio.run(_inner())
         baseline = {r.user_id: r.rating for r in db.get_akari_ratings(1)}
         filtered = {r.user_id: r.rating
-                    for r in cog._akari_filtered_rating_rows(1, {'200'})}
+                    for r in cog._akari_filtered_rating_rows(1, excluded_ids={'200'})}
         assert '200' not in filtered
         # 100 and 300 are both still in, but their ratings differ from the
         # 3-player snapshot because the contest math is now binary.
@@ -2282,11 +2353,12 @@ class TestAkariMultiMember:
         bob = _FakeDiscordMember(202, 'bob')
         cara = _FakeDiscordMember(303, 'cara')
         ctx = self._ctx([alice, bob, cara])
-        members, include_decay, excluded = asyncio.run(
+        members, include_decay, excluded, included = asyncio.run(
             cog._parse_akari_rating_args(ctx, ['alice', 'bob']))
         assert [m.id for m in members] == [101, 202]
         assert include_decay is False
         assert excluded == set()
+        assert included == set()
 
     def test_parse_with_decay_and_exclude_alongside_members(self):
         cog = Minigames(bot=None)
@@ -2294,18 +2366,20 @@ class TestAkariMultiMember:
         bob = _FakeDiscordMember(202, 'bob')
         cara = _FakeDiscordMember(303, 'cara')
         ctx = self._ctx([alice, bob, cara])
-        members, include_decay, excluded = asyncio.run(
+        members, include_decay, excluded, included = asyncio.run(
             cog._parse_akari_rating_args(
-                ctx, ['alice', '+decay', 'bob', '+exclude=cara']))
+                ctx, ['alice', '+decay', 'bob', '+exclude=cara',
+                      '+include=alice,bob,cara']))
         assert [m.id for m in members] == [101, 202]
         assert include_decay is True
         assert excluded == {'303'}
+        assert included == {'101', '202', '303'}
 
     def test_parse_falls_back_to_ctx_author_when_no_member(self):
         cog = Minigames(bot=None)
         author = _FakeDiscordMember(999, 'author')
         ctx = self._ctx([author])
-        members, _decay, _excl = asyncio.run(
+        members, _decay, _excl, _incl = asyncio.run(
             cog._parse_akari_rating_args(ctx, []))
         assert members == [author]
 
