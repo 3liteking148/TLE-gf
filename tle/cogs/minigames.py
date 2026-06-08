@@ -835,9 +835,9 @@ class Minigames(commands.Cog):
                 'using `;queens connection set LinkedIn Name profile_url`.'
             )
         if account.get('url'):
-            account_text = f'[{account["name"]}]({account["url"]})'
+            account_text = f'[this]({account["url"]}) account'
         else:
-            account_text = f'`{account["name"]}`'
+            account_text = 'the configured account'
         return (
             f'In order to join the rating system, connect with {account_text} '
             'on LinkedIn so your result appears on the leaderboard.'

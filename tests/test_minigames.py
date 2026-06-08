@@ -1148,7 +1148,8 @@ class TestQueensCommands:
         assert row.external_name == 'Alice LinkedIn'
         assert row.external_url is None
         instruction = cog._queens_connection_instruction(100)
-        assert '[Linked User](https://www.linkedin.com/in/linked/)' in instruction
+        assert '[this](https://www.linkedin.com/in/linked/) account' in instruction
+        assert 'Linked User' not in instruction
 
     def test_connection_set_requires_and_stores_profile_url(self, db, monkeypatch):
         monkeypatch.setattr(cf_common, 'user_db', db)
@@ -1174,7 +1175,8 @@ class TestQueensCommands:
             'url': 'https://www.linkedin.com/in/linked/',
         }
         instruction = cog._queens_connection_instruction(100)
-        assert '[Linked User](https://www.linkedin.com/in/linked/)' in instruction
+        assert '[this](https://www.linkedin.com/in/linked/) account' in instruction
+        assert 'Linked User' not in instruction
 
     def test_register_rejects_url_input(self, db, monkeypatch):
         monkeypatch.setattr(cf_common, 'user_db', db)
