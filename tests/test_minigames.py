@@ -1138,7 +1138,8 @@ class TestQueensCommands:
         guild = _FakeGuild(100, members=[alice])
         ctx = self._make_ctx(guild, alice)
         cog = Minigames(bot=None)
-        cog._set_queens_connection_account(100, 'Linked User', None)
+        cog._set_queens_connection_account(
+            100, 'Linked User', 'https://www.linkedin.com/in/linked/')
 
         asyncio.run(Minigames.queens_register.__wrapped__(
             cog, ctx, 'Alice', linkedin='LinkedIn'))
@@ -1147,7 +1148,33 @@ class TestQueensCommands:
         assert row.external_name == 'Alice LinkedIn'
         assert row.external_url is None
         instruction = cog._queens_connection_instruction(100)
-        assert '`Linked User`' in instruction
+        assert '[Linked User](https://www.linkedin.com/in/linked/)' in instruction
+
+    def test_connection_set_requires_and_stores_profile_url(self, db, monkeypatch):
+        monkeypatch.setattr(cf_common, 'user_db', db)
+        db.set_guild_config(100, 'queens', '1')
+        mod = _FakeDiscordMember(
+            999, 'mod', 'Mod',
+            roles=[SimpleNamespace(name=constants.TLE_MODERATOR)])
+        guild = _FakeGuild(100, members=[mod])
+        ctx = self._make_ctx(guild, mod)
+        cog = Minigames(bot=None)
+
+        with pytest.raises(MinigameCogError, match='profile URL'):
+            asyncio.run(Minigames.queens_connection_set.__wrapped__(
+                cog, ctx, linkedin='Linked User'))
+
+        asyncio.run(Minigames.queens_connection_set.__wrapped__(
+            cog, ctx,
+            linkedin='Linked User https://www.linkedin.com/in/linked/'))
+
+        account = cog._get_queens_connection_account(100)
+        assert account == {
+            'name': 'Linked User',
+            'url': 'https://www.linkedin.com/in/linked/',
+        }
+        instruction = cog._queens_connection_instruction(100)
+        assert '[Linked User](https://www.linkedin.com/in/linked/)' in instruction
 
     def test_register_rejects_url_input(self, db, monkeypatch):
         monkeypatch.setattr(cf_common, 'user_db', db)

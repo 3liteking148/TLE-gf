@@ -277,6 +277,18 @@ def _clean_queens_linkedin_name(text):
     return name
 
 
+def _split_queens_connection_account_text(text):
+    urls = _URL_RE.findall(text or '')
+    if not urls:
+        raise MinigameCogError(
+            'A LinkedIn profile URL is required for the connection account.')
+    name = _URL_RE.sub('', text or '').strip()
+    name = ' '.join(name.split())
+    if not name:
+        raise MinigameCogError('A LinkedIn display name is required.')
+    return name, urls[0]
+
+
 def _format_queens_result(entry):
     badges = []
     if entry.no_hints:
@@ -820,9 +832,12 @@ class Minigames(commands.Cog):
         if account is None:
             return (
                 'Ask a moderator to set the LinkedIn account to connect with '
-                'using `;queens connection set LinkedIn Name`.'
+                'using `;queens connection set LinkedIn Name profile_url`.'
             )
-        account_text = f'`{account["name"]}`'
+        if account.get('url'):
+            account_text = f'[{account["name"]}]({account["url"]})'
+        else:
+            account_text = f'`{account["name"]}`'
         return (
             f'In order to join the rating system, connect with {account_text} '
             'on LinkedIn so your result appears on the leaderboard.'
@@ -3046,12 +3061,12 @@ class Minigames(commands.Cog):
 
     @queens_connection.command(name='set',
                                brief='(Mod) Set the LinkedIn connection account',
-                               usage='LinkedIn Name')
+                               usage='LinkedIn Name profile_url')
     @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
     async def queens_connection_set(self, ctx, *, linkedin: str):
         self._require_enabled(ctx.guild.id, QUEENS_GAME)
-        name = _clean_queens_linkedin_name(linkedin)
-        self._set_queens_connection_account(ctx.guild.id, name, None)
+        name, external_url = _split_queens_connection_account_text(linkedin)
+        self._set_queens_connection_account(ctx.guild.id, name, external_url)
         await ctx.send(embed=discord_common.embed_success(
             self._queens_connection_instruction(ctx.guild.id)))
 
