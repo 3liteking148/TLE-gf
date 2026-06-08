@@ -431,6 +431,9 @@ class TestRatingDefinitions:
 
         assert QUEENS_GAME.rating is not None
         assert QUEENS_GAME.rating.rank_fn is rank_queens_participants
+        assert QUEENS_GAME.rating.decay_base == 0.0
+        assert QUEENS_GAME.rating.decay_max == 0.0
+        assert QUEENS_GAME.rating.decay_grace == 0
 
         assert GUESSGAME_GAME.rating is None
 
@@ -1073,6 +1076,31 @@ class TestQueensImport:
         assert akari.rating == 1500
         assert akari.games == 1
 
+    def test_queens_rating_does_not_decay_absent_players(self, db, monkeypatch):
+        monkeypatch.setattr(cf_common, 'user_db', db)
+        db.save_minigame_result(
+            1, 100, 'queens', 200, 300, dt.date(2026, 6, 8).toordinal(), '2026-06-08',
+            100, 5, True, 'alice fast')
+        db.save_minigame_result(
+            2, 100, 'queens', 200, 301, dt.date(2026, 6, 8).toordinal(), '2026-06-08',
+            100, 10, True, 'bob slow')
+
+        cog = Minigames(bot=None)
+        cog._recompute_minigame_ratings(100, QUEENS_GAME)
+        alice_before = db.get_minigame_rating(100, 'queens', 300)
+
+        db.save_minigame_result(
+            3, 100, 'queens', 200, 301, dt.date(2026, 6, 9).toordinal(), '2026-06-09',
+            100, 5, True, 'bob fast')
+        db.save_minigame_result(
+            4, 100, 'queens', 200, 302, dt.date(2026, 6, 9).toordinal(), '2026-06-09',
+            100, 10, True, 'cara slow')
+        cog._recompute_minigame_ratings(100, QUEENS_GAME)
+
+        alice_after = db.get_minigame_rating(100, 'queens', 300)
+        assert abs(alice_after.rating - alice_before.rating) < 1e-9
+        assert alice_after.skip_streak == 1
+
 
 class TestQueensCommands:
     @staticmethod
@@ -1213,6 +1241,145 @@ class TestQueensCommands:
 
     def test_queens_link_command_is_not_registered(self):
         assert not hasattr(Minigames, 'queens_link')
+
+    def test_ratings_use_image_and_default_to_registered_players(
+            self, db, monkeypatch):
+        monkeypatch.setattr(cf_common, 'user_db', db)
+        db.set_guild_config(100, 'queens', '1')
+        alice = _FakeDiscordMember(300, 'alice', 'Alice')
+        bob = _FakeDiscordMember(301, 'bob', 'Bob')
+        guild = _FakeGuild(100, members=[alice, bob])
+        ctx = self._make_ctx(guild, alice)
+        cog = Minigames(bot=None)
+
+        db.set_minigame_player_link(
+            100, 'queens', alice.id, 'Alice LinkedIn',
+            normalize_queens_name('Alice LinkedIn'), None, 1.0, alice.id)
+        self._save_queens_result(db, 1, alice.id, '2026-06-08', 5)
+        self._save_queens_result(db, 2, bob.id, '2026-06-08', 10)
+        cog._recompute_minigame_ratings(100, QUEENS_GAME)
+
+        captured = []
+
+        def _capture(guild, rating_rows, registrants, **kwargs):
+            captured.append({
+                'user_ids': [row.user_id for row in rating_rows],
+                'registrants': set(registrants),
+                'identity_label': kwargs['identity_label'],
+                'mark_registered': kwargs['mark_registered'],
+            })
+            return object()
+        monkeypatch.setattr(
+            minigames_module, '_get_akari_rating_table_image_file', _capture)
+
+        asyncio.run(cog._cmd_queens_ratings(ctx))
+        assert captured[-1]['user_ids'] == ['300']
+        assert captured[-1]['identity_label'] == 'LinkedIn'
+        assert captured[-1]['mark_registered'] is False
+        assert 'file' in ctx.sent['kwargs']
+
+        asyncio.run(cog._cmd_queens_ratings(ctx, show_all=True))
+        assert set(captured[-1]['user_ids']) == {'300', '301'}
+        assert captured[-1]['mark_registered'] is True
+
+    def test_queens_rating_performance_and_history_views(
+            self, db, monkeypatch):
+        monkeypatch.setattr(cf_common, 'user_db', db)
+        db.set_guild_config(100, 'queens', '1')
+        alice = _FakeDiscordMember(300, 'alice', 'Alice')
+        bob = _FakeDiscordMember(301, 'bob', 'Bob')
+        guild = _FakeGuild(100, members=[alice, bob])
+        ctx = self._make_ctx(guild, alice)
+        cog = Minigames(bot=object())
+
+        for member, name in ((alice, 'Alice LinkedIn'), (bob, 'Bob LinkedIn')):
+            db.set_minigame_player_link(
+                100, 'queens', member.id, name,
+                normalize_queens_name(name), None, 1.0, alice.id)
+        self._save_queens_result(db, 1, alice.id, '2026-06-08', 5)
+        self._save_queens_result(db, 2, bob.id, '2026-06-08', 10)
+        self._save_queens_result(db, 3, alice.id, '2026-06-09', 9)
+        self._save_queens_result(db, 4, bob.id, '2026-06-09', 4)
+        cog._recompute_minigame_ratings(100, QUEENS_GAME)
+
+        rating_series = {}
+        perf_series = {}
+        fake_file = SimpleNamespace(filename='plot.png')
+
+        def _rating(series):
+            rating_series['names'] = [name for _history, name in series]
+            return fake_file
+
+        def _performance(series):
+            perf_series['names'] = [name for _history, name, _rating in series]
+            return fake_file
+
+        monkeypatch.setattr(minigames_module, 'plot_akari_rating', _rating)
+        monkeypatch.setattr(minigames_module, 'plot_akari_performance', _performance)
+
+        asyncio.run(cog._cmd_queens_rating(ctx, [alice, bob]))
+        assert rating_series['names'] == ['Alice LinkedIn', 'Bob LinkedIn']
+        assert ctx.sent['embed'].title == 'LinkedIn Queens ratings — 2 players'
+        assert ctx.sent['kwargs']['file'] is fake_file
+
+        asyncio.run(cog._cmd_queens_performance(ctx, [alice]))
+        assert perf_series['names'] == ['Alice LinkedIn']
+        assert ctx.sent['embed'].title == 'LinkedIn Queens performance — Alice'
+
+        pages = []
+        monkeypatch.setattr(
+            minigames_module.paginator, 'paginate',
+            lambda _bot, _channel, page_list, **_kwargs: pages.extend(page_list))
+        asyncio.run(cog._cmd_queens_history(ctx, alice))
+        assert pages
+        assert '2026-06-09' in pages[0][1].description
+        assert '**#' not in pages[0][1].description
+
+    def test_queens_rating_filters_reject_decay(self, db, monkeypatch):
+        monkeypatch.setattr(cf_common, 'user_db', db)
+        alice = _FakeDiscordMember(300, 'alice', 'Alice')
+        guild = _FakeGuild(100, members=[alice])
+        ctx = self._make_ctx(guild, alice)
+        cog = Minigames(bot=None)
+
+        with pytest.raises(MinigameCogError, match='do not use decay'):
+            asyncio.run(cog._extract_queens_rating_filters(ctx, ['+decay']))
+
+    def test_queens_stats_debug_renders_date_results_image(
+            self, db, monkeypatch):
+        monkeypatch.setattr(cf_common, 'user_db', db)
+        db.set_guild_config(100, 'queens', '1')
+        alice = _FakeDiscordMember(300, 'alice', 'Alice')
+        bob = _FakeDiscordMember(301, 'bob', 'Bob')
+        guild = _FakeGuild(100, members=[alice, bob])
+        ctx = self._make_ctx(guild, alice)
+        cog = Minigames(bot=None)
+
+        db.set_minigame_player_link(
+            100, 'queens', alice.id, 'Alice LinkedIn',
+            normalize_queens_name('Alice LinkedIn'), None, 1.0, alice.id)
+        self._save_queens_result(db, 1, bob.id, '2026-06-08', 8)
+        self._save_queens_result(db, 2, alice.id, '2026-06-08', 5)
+
+        captured = {}
+
+        def _capture(guild, rows, title, **kwargs):
+            captured['user_ids'] = [row.user_id for row in rows]
+            captured['title'] = title
+            captured['identity_label'] = kwargs['identity_label']
+            captured['registrants'] = set(kwargs['registrants'])
+            return object()
+        monkeypatch.setattr(
+            minigames_module, '_get_akari_puzzle_table_image_file', _capture)
+
+        asyncio.run(cog._cmd_queens_stats_date(
+            ctx, '2026-06-08', show_all=True))
+
+        assert captured['title'] == 'LinkedIn Queens 2026-06-08 Results'
+        assert captured['identity_label'] == 'LinkedIn'
+        assert set(captured['user_ids']) == {'300', '301'}
+        assert set(captured['registrants']) == {'300', '301'}
+        assert 'file' in ctx.sent['kwargs']
 
     def test_ban_removes_link_and_excludes_queens_rating(self, db, monkeypatch):
         monkeypatch.setattr(cf_common, 'user_db', db)

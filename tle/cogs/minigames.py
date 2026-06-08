@@ -401,7 +401,9 @@ def _format_akari_result_status(row):
     return f'{pct}%'
 
 
-def _sort_akari_puzzle_results(rows):
+def _sort_akari_puzzle_results(rows, *, sort_key_fn=None):
+    if sort_key_fn is not None:
+        return sorted(rows, key=sort_key_fn)
     return sorted(
         rows,
         key=lambda row: (
@@ -413,7 +415,9 @@ def _sort_akari_puzzle_results(rows):
     )
 
 
-def _akari_puzzle_table_rows(guild, rows, *, puzzle_info=None, registrants=None):
+def _akari_puzzle_table_rows(guild, rows, *, puzzle_info=None,
+                             registrants=None, identity_fn=None,
+                             sort_key_fn=None):
     """Build display rows for a per-puzzle table.
 
     When ``puzzle_info`` and ``registrants`` are both supplied, each opted-in
@@ -423,9 +427,13 @@ def _akari_puzzle_table_rows(guild, rows, *, puzzle_info=None, registrants=None)
     rating or its change).  Without ``puzzle_info`` the rows are 4-tuples so
     the un-annotated text/image paths stay unchanged.
     """
+    if identity_fn is None:
+        identity_fn = lambda g, row: _safe_cf_handle(g, row.user_id)
     annotated = puzzle_info is not None and registrants is not None
     result = []
-    for index, row in enumerate(_sort_akari_puzzle_results(rows), start=1):
+    for index, row in enumerate(
+            _sort_akari_puzzle_results(rows, sort_key_fn=sort_key_fn),
+            start=1):
         name = _safe_user_name(guild, row.user_id)
         delta_cell = ''
         if (annotated
@@ -438,7 +446,7 @@ def _akari_puzzle_table_rows(guild, rows, *, puzzle_info=None, registrants=None)
         cells = [
             index,
             name,
-            _safe_cf_handle(guild, row.user_id),
+            identity_fn(guild, row),
             _format_akari_result_status(row),
             format_duration(row.time_seconds),
         ]
@@ -552,11 +560,15 @@ def _get_akari_puzzle_table_image(table_rows, *, title=None, footer=None,
 
 
 def _get_akari_puzzle_table_image_file(guild, rows, title,
-                                       *, puzzle_info=None, registrants=None):
-    rows = _sort_akari_puzzle_results(rows)
+                                       *, puzzle_info=None, registrants=None,
+                                       identity_label='Handle',
+                                       identity_fn=None,
+                                       sort_key_fn=None):
+    rows = _sort_akari_puzzle_results(rows, sort_key_fn=sort_key_fn)
     displayed = rows[:_AKARI_IMAGE_MAX_ROWS]
     displayed_rows = _akari_puzzle_table_rows(
-        guild, displayed, puzzle_info=puzzle_info, registrants=registrants)
+        guild, displayed, puzzle_info=puzzle_info, registrants=registrants,
+        identity_fn=identity_fn, sort_key_fn=sort_key_fn)
     annotated = puzzle_info is not None and registrants is not None
     row_colors = None
     if annotated:
@@ -571,13 +583,13 @@ def _get_akari_puzzle_table_image_file(guild, rows, title,
     if len(rows) > len(displayed_rows):
         footer = f'Showing top {len(displayed_rows)} of {len(rows)} results'
     if annotated:
-        header = ('#', 'Name', 'Handle', 'Result', 'Time', '\N{INCREMENT}')
+        header = ('#', 'Name', identity_label, 'Result', 'Time', '\N{INCREMENT}')
         cols = _AKARI_PUZZLE_DELTA_COLS
         # Time and Δ both carry numeric content — right-align them so values
         # line up at the column's right edge.
         right_align_cols = (0, 4, 5)
     else:
-        header = ('#', 'Name', 'Handle', 'Result', 'Time')
+        header = ('#', 'Name', identity_label, 'Result', 'Time')
         cols = _AKARI_PUZZLE_COLS
         right_align_cols = None  # default — # and Time right
     return _get_akari_puzzle_table_image(
@@ -586,7 +598,8 @@ def _get_akari_puzzle_table_image_file(guild, rows, title,
         right_align_cols=right_align_cols, row_colors=row_colors)
 
 
-def _akari_rating_table_rows(guild, rating_rows, registrants, *, mark_registered=True):
+def _akari_rating_table_rows(guild, rating_rows, registrants, *,
+                             mark_registered=True, identity_fn=None):
     """Build display rows (#, Name[✓], Handle, Rating · Rank, Games) for the leaderboard.
 
     ``rating`` is rounded only here for display, and the rank abbreviation
@@ -595,6 +608,8 @@ def _akari_rating_table_rows(guild, rating_rows, registrants, *, mark_registered
     users who opted in via ``;mg akari register``; pass False on a registered-only
     view (the marker is redundant when every row is opted in).
     """
+    if identity_fn is None:
+        identity_fn = lambda g, row: _safe_cf_handle(g, row.user_id)
     rows = []
     for index, row in enumerate(rating_rows, start=1):
         name = _safe_user_name(guild, row.user_id)
@@ -605,7 +620,7 @@ def _akari_rating_table_rows(guild, rating_rows, registrants, *, mark_registered
         rows.append((
             index,
             name,
-            _safe_cf_handle(guild, row.user_id),
+            identity_fn(guild, row),
             f'{rating} · {rank.title_abbr}',
             str(row.games),
         ))
@@ -625,17 +640,20 @@ def _akari_row_text_color(rating):
 
 def _get_akari_rating_table_image_file(guild, rating_rows, registrants,
                                        *, title='Daily Akari Ratings',
-                                       mark_registered=True):
+                                       mark_registered=True,
+                                       identity_label='Handle',
+                                       identity_fn=None):
     displayed = rating_rows[:_AKARI_IMAGE_MAX_ROWS]
     table_rows = _akari_rating_table_rows(
-        guild, displayed, registrants, mark_registered=mark_registered)
+        guild, displayed, registrants, mark_registered=mark_registered,
+        identity_fn=identity_fn)
     row_colors = [_akari_row_text_color(row.rating) for row in displayed]
     footer = None
     if len(rating_rows) > len(table_rows):
         footer = f'Showing top {len(table_rows)} of {len(rating_rows)} rated players'
     return _get_akari_puzzle_table_image(
         table_rows, title=title, footer=footer,
-        header=('#', 'Name', 'Handle', 'Rating', 'Games'),
+        header=('#', 'Name', identity_label, 'Rating', 'Games'),
         cols=_AKARI_RATING_COLS,
         row_colors=row_colors)
 
@@ -667,6 +685,24 @@ def _format_akari_history_line(point):
     return (
         f'**#{point.puzzle_number}** \N{MIDDLE DOT} {date_str} '
         f'\N{MIDDLE DOT} {result_str} '
+        f'\N{MIDDLE DOT} {old_rating} \N{HORIZONTAL BAR} **{delta:+}** '
+        f'\N{LONG RIGHTWARDS ARROW} {new_rating} ({rank_abbr}) '
+        f'\N{MIDDLE DOT} perf {round(point.performance)}'
+    )
+
+
+def _format_minigame_history_line(point):
+    """One rating-history line for date-keyed minigames such as Queens."""
+    new_rating = round(point.rating)
+    old_rating = round(point.rating - point.delta)
+    delta = round(point.delta)
+    rank_abbr = rank_for_rating(new_rating).title_abbr
+    result_str = format_duration(point.time_seconds)
+    if point.is_perfect:
+        result_str = f'{result_str} clean'
+    date_str = normalize_puzzle_date(point.puzzle_date).isoformat()
+    return (
+        f'**{date_str}** \N{MIDDLE DOT} {result_str} '
         f'\N{MIDDLE DOT} {old_rating} \N{HORIZONTAL BAR} **{delta:+}** '
         f'\N{LONG RIGHTWARDS ARROW} {new_rating} ({rank_abbr}) '
         f'\N{MIDDLE DOT} perf {round(point.performance)}'
@@ -890,21 +926,7 @@ class Minigames(commands.Cog):
             rows = cf_common.user_db.get_minigame_results_for_guild(
                 guild_id, game.name)
             rows = self._filter_minigame_banned_rows(guild_id, game, rows)
-            kwargs = {}
-            for name in (
-                    'start_rating', 'damping', 'decay_base', 'decay_max',
-                    'decay_grace'):
-                value = getattr(rating, name)
-                if value is not None:
-                    kwargs[name] = value
-            if rating.current_puzzle_number_fn is not None:
-                current_puzzle = rating.current_puzzle_number_fn()
-                kwargs['current_puzzle_number'] = current_puzzle
-                if rating.max_puzzle_lookahead is not None:
-                    kwargs['max_puzzle'] = (
-                        current_puzzle + rating.max_puzzle_lookahead)
-            if rating.rank_fn is not None:
-                kwargs['rank_fn'] = rating.rank_fn
+            kwargs = self._rating_compute_kwargs(game)
             states = compute_ratings(rows, **kwargs)
             if game.name == AKARI_GAME.name:
                 cf_common.user_db.replace_akari_ratings(
@@ -915,6 +937,88 @@ class Minigames(commands.Cog):
         except Exception:
             logger.error('Failed to recompute %s ratings for guild %s',
                          game.name, guild_id, exc_info=True)
+
+    @staticmethod
+    def _rating_compute_kwargs(game):
+        rating = game.rating
+        if rating is None:
+            return {}
+        kwargs = {}
+        for name in (
+                'start_rating', 'damping', 'decay_base', 'decay_max',
+                'decay_grace'):
+            value = getattr(rating, name)
+            if value is not None:
+                kwargs[name] = value
+        if rating.current_puzzle_number_fn is not None:
+            current_puzzle = rating.current_puzzle_number_fn()
+            kwargs['current_puzzle_number'] = current_puzzle
+            if rating.max_puzzle_lookahead is not None:
+                kwargs['max_puzzle'] = (
+                    current_puzzle + rating.max_puzzle_lookahead)
+        if rating.rank_fn is not None:
+            kwargs['rank_fn'] = rating.rank_fn
+        return kwargs
+
+    def _minigame_rating_rows(self, guild_id, game, *, excluded_ids=None,
+                              included_ids=None):
+        rows = cf_common.user_db.get_minigame_results_for_guild(
+            guild_id, game.name)
+        rows = self._filter_minigame_banned_rows(guild_id, game, rows)
+        rows = self._filter_akari_rows(
+            rows, excluded_ids=excluded_ids, included_ids=included_ids)
+        states = compute_ratings(rows, **self._rating_compute_kwargs(game))
+        return sorted(
+            states.values(),
+            key=lambda s: (-s.rating, -s.games, int(s.user_id)),
+        )
+
+    def _minigame_user_data(self, guild_id, game, user_id, *,
+                            include_decay=False, excluded_ids=None,
+                            included_ids=None):
+        rows = cf_common.user_db.get_minigame_results_for_guild(
+            guild_id, game.name)
+        rows = self._filter_minigame_banned_rows(guild_id, game, rows)
+        rows = self._filter_akari_rows(
+            rows, excluded_ids=excluded_ids, included_ids=included_ids)
+        histories = {}
+        states = compute_ratings(
+            rows, histories=histories,
+            include_decay_in_history=include_decay,
+            **self._rating_compute_kwargs(game))
+        key = str(user_id)
+        return states.get(key), histories.get(key, [])
+
+    def _minigame_user_history(self, guild_id, game, user_id, *,
+                               include_decay=False, excluded_ids=None,
+                               included_ids=None):
+        state, history = self._minigame_user_data(
+            guild_id, game, user_id, include_decay=include_decay,
+            excluded_ids=excluded_ids, included_ids=included_ids)
+        del state
+        return history
+
+    def _minigame_puzzle_change_info(self, guild_id, game, puzzle_number, *,
+                                     excluded_ids=None, included_ids=None):
+        rows = cf_common.user_db.get_minigame_results_for_guild(
+            guild_id, game.name)
+        rows = self._filter_minigame_banned_rows(guild_id, game, rows)
+        rows = self._filter_akari_rows(
+            rows, excluded_ids=excluded_ids, included_ids=included_ids)
+        histories = {}
+        compute_ratings(
+            rows, histories=histories,
+            **self._rating_compute_kwargs(game))
+        info = {}
+        for user_id, points in histories.items():
+            for point in points:
+                if point.puzzle_number == puzzle_number:
+                    info[user_id] = _PuzzlePlayerInfo(
+                        pre_rating=point.rating - point.delta,
+                        delta=point.delta,
+                    )
+                    break
+        return info
 
     @staticmethod
     def _active_ranking_rows(rows, *, include_inactive=False):
@@ -1059,22 +1163,269 @@ class Minigames(commands.Cog):
         self._recompute_minigame_ratings(ctx.guild.id, QUEENS_GAME)
         return len(preview.resolved)
 
-    async def _cmd_queens_ratings(self, ctx):
-        rows = cf_common.user_db.get_minigame_ratings(
-            ctx.guild.id, QUEENS_GAME.name)
+    @staticmethod
+    def _queens_links_by_user(guild_id):
+        return {
+            str(row.user_id): row
+            for row in cf_common.user_db.get_minigame_player_links(
+                guild_id, QUEENS_GAME.name)
+        }
+
+    def _require_queens_registered_member(self, guild_id, member):
+        link = cf_common.user_db.get_minigame_player_link(
+            guild_id, QUEENS_GAME.name, member.id)
+        if link is None:
+            raise MinigameCogError(
+                f'`{_safe_member_name(member)}` is not registered for '
+                f'{QUEENS_GAME.display_name} (`;queens register LinkedIn Name`).')
+        return link
+
+    def _queens_rating_identity_fn(self, links_by_user):
+        return lambda _guild, row: (
+            links_by_user.get(str(row.user_id)).external_name
+            if str(row.user_id) in links_by_user
+            else '-'
+        )
+
+    def _queens_legend_name(self, guild_id, member):
+        link = cf_common.user_db.get_minigame_player_link(
+            guild_id, QUEENS_GAME.name, member.id)
+        if link is not None:
+            return link.external_name
+        return _safe_member_name(member)
+
+    async def _extract_queens_rating_filters(self, ctx, args):
+        (remaining, include_decay, excluded_ids, included_ids,
+         _include_inactive) = await self._extract_akari_filters(ctx, args)
+        if include_decay:
+            raise MinigameCogError(
+                f'{QUEENS_GAME.display_name} ratings do not use decay.')
+        return remaining, excluded_ids, included_ids
+
+    async def _parse_queens_rating_args(self, ctx, args, *,
+                                        member_required=False):
+        remaining, excluded_ids, included_ids = (
+            await self._extract_queens_rating_filters(ctx, args))
+        members = [await self._resolve_member(ctx, token) for token in remaining]
+        if not members:
+            if member_required:
+                raise MinigameCogError('A user is required for this command.')
+            members = [ctx.author]
+        return members, excluded_ids, included_ids
+
+    async def _cmd_queens_ratings(self, ctx, *, show_all=False,
+                                  excluded_ids=None, included_ids=None):
+        if excluded_ids or included_ids:
+            rows = self._minigame_rating_rows(
+                ctx.guild.id, QUEENS_GAME,
+                excluded_ids=excluded_ids, included_ids=included_ids)
+        else:
+            rows = cf_common.user_db.get_minigame_ratings(
+                ctx.guild.id, QUEENS_GAME.name)
         if not rows:
             raise MinigameCogError(
                 f'No {QUEENS_GAME.display_name} ratings yet.')
-        lines = []
-        for index, row in enumerate(rows[:_QUEENS_HISTORY_PER_PAGE], start=1):
-            link = cf_common.user_db.get_minigame_player_link(
-                ctx.guild.id, QUEENS_GAME.name, row.user_id)
-            linked_name = link.external_name if link is not None else 'unlinked'
-            lines.append(
-                f'**#{index}** {_safe_user_name(ctx.guild, row.user_id)} '
-                f'({linked_name}) — **{round(row.rating)}** '
-                f'({row.games} games)')
-        await ctx.send(embed=discord_common.embed_neutral('\n'.join(lines)))
+        links_by_user = self._queens_links_by_user(ctx.guild.id)
+        linked_ids = set(links_by_user)
+        shown = rows if show_all else [row for row in rows if row.user_id in linked_ids]
+        if not shown:
+            raise MinigameCogError(
+                f'No registered {QUEENS_GAME.display_name} players yet. '
+                f'Players register with `;queens register LinkedIn Name`.')
+        title = (f'{QUEENS_GAME.display_name} Ratings (all)'
+                 if show_all else f'{QUEENS_GAME.display_name} Ratings')
+        discord_file = _get_akari_rating_table_image_file(
+            ctx.guild, shown, linked_ids,
+            title=title,
+            mark_registered=show_all,
+            identity_label='LinkedIn',
+            identity_fn=self._queens_rating_identity_fn(links_by_user))
+        await ctx.send(file=discord_file)
+
+    async def _cmd_queens_rating(self, ctx, members, *,
+                                 require_registered=True,
+                                 excluded_ids=None, included_ids=None):
+        self._require_enabled(ctx.guild.id, QUEENS_GAME)
+        if require_registered:
+            for member in members:
+                self._require_queens_registered_member(ctx.guild.id, member)
+
+        filtered = bool(excluded_ids or included_ids)
+        per_member = []
+        for member in members:
+            if filtered:
+                row, history = self._minigame_user_data(
+                    ctx.guild.id, QUEENS_GAME, member.id,
+                    excluded_ids=excluded_ids, included_ids=included_ids)
+            else:
+                row = cf_common.user_db.get_minigame_rating(
+                    ctx.guild.id, QUEENS_GAME.name, member.id)
+                history = self._minigame_user_history(
+                    ctx.guild.id, QUEENS_GAME, member.id)
+            if row is None:
+                raise MinigameCogError(
+                    f'No {QUEENS_GAME.display_name} rating for '
+                    f'`{_safe_member_name(member)}` yet.')
+            if not history:
+                raise MinigameCogError(
+                    f'`{_safe_member_name(member)}` has no rated '
+                    f'{QUEENS_GAME.display_name} days to plot yet.')
+            per_member.append((member, row, history))
+
+        series = [
+            (history, self._queens_legend_name(ctx.guild.id, member))
+            for member, _row, history in per_member
+        ]
+        discord_file = plot_akari_rating(series)
+
+        if len(per_member) == 1:
+            member, row, history = per_member[0]
+            rating = round(row.rating)
+            rank = rank_for_rating(rating)
+            peak_rank = rank_for_rating(round(row.peak))
+            last_contest = next((h for h in reversed(history)
+                                 if h.performance is not None), None)
+            last_change_str = (f'{last_contest.delta:+.0f}'
+                               if last_contest is not None else '—')
+            last_perf_str = (
+                f'{round(last_contest.performance)} '
+                f'({rank_for_rating(round(last_contest.performance)).title_abbr})'
+                if last_contest is not None else '—')
+            embed = discord.Embed(
+                title=(f'{QUEENS_GAME.display_name} rating — '
+                       f'{_safe_member_name(member)}'),
+                color=rank.color_embed,
+            )
+            embed.add_field(name='Rating', value=f'{rating} ({rank.title_abbr})')
+            embed.add_field(name='Peak', value=f'{round(row.peak)} ({peak_rank.title_abbr})')
+            embed.add_field(name='Games', value=str(row.games))
+            embed.add_field(name='Last change', value=last_change_str)
+            embed.add_field(name='Last performance', value=last_perf_str)
+        else:
+            _top_member, top_row, _history = max(
+                per_member, key=lambda t: t[1].rating)
+            top_rank = rank_for_rating(round(top_row.rating))
+            lines = [
+                f'**{_safe_member_name(member)}**: '
+                f'{round(row.rating)} '
+                f'({rank_for_rating(round(row.rating)).title_abbr})'
+                for member, row, _history in per_member
+            ]
+            embed = discord.Embed(
+                title=(f'{QUEENS_GAME.display_name} ratings — '
+                       f'{len(per_member)} players'),
+                description='\n'.join(lines),
+                color=top_rank.color_embed,
+            )
+
+        discord_common.attach_image(embed, discord_file)
+        await ctx.send(embed=embed, file=discord_file)
+
+    async def _cmd_queens_performance(self, ctx, members, *,
+                                      require_registered=True,
+                                      excluded_ids=None, included_ids=None):
+        self._require_enabled(ctx.guild.id, QUEENS_GAME)
+        if require_registered:
+            for member in members:
+                self._require_queens_registered_member(ctx.guild.id, member)
+
+        filtered = bool(excluded_ids or included_ids)
+        per_member = []
+        for member in members:
+            if filtered:
+                row, history = self._minigame_user_data(
+                    ctx.guild.id, QUEENS_GAME, member.id,
+                    excluded_ids=excluded_ids, included_ids=included_ids)
+            else:
+                row = cf_common.user_db.get_minigame_rating(
+                    ctx.guild.id, QUEENS_GAME.name, member.id)
+                history = self._minigame_user_history(
+                    ctx.guild.id, QUEENS_GAME, member.id)
+            if row is None:
+                raise MinigameCogError(
+                    f'No {QUEENS_GAME.display_name} rating for '
+                    f'`{_safe_member_name(member)}` yet.')
+            contest_history = [h for h in history if h.performance is not None]
+            if not contest_history:
+                raise MinigameCogError(
+                    f'`{_safe_member_name(member)}` has no contested '
+                    f'{QUEENS_GAME.display_name} days to plot performance for yet.')
+            per_member.append((member, row, history, contest_history))
+
+        series = [
+            (history, self._queens_legend_name(ctx.guild.id, member),
+             round(row.rating))
+            for member, row, history, _contest_history in per_member
+        ]
+        discord_file = plot_akari_performance(series)
+
+        if len(per_member) == 1:
+            member, _row, _history, contest_history = per_member[0]
+            last_perf = contest_history[-1].performance
+            last_rank = rank_for_rating(round(last_perf))
+            best_perf = max(h.performance for h in contest_history)
+            best_rank = rank_for_rating(round(best_perf))
+            embed = discord.Embed(
+                title=(f'{QUEENS_GAME.display_name} performance — '
+                       f'{_safe_member_name(member)}'),
+                color=last_rank.color_embed,
+            )
+            embed.add_field(name='Last performance',
+                            value=f'{round(last_perf)} ({last_rank.title_abbr})')
+            embed.add_field(name='Best performance',
+                            value=f'{round(best_perf)} ({best_rank.title_abbr})')
+            embed.add_field(name='Contests', value=str(len(contest_history)))
+        else:
+            top_rank = rank_for_rating(round(max(
+                contest_history[-1].performance
+                for _member, _row, _history, contest_history in per_member)))
+            lines = [
+                f'**{_safe_member_name(member)}**: '
+                f'last {round(contest_history[-1].performance)} '
+                f'({rank_for_rating(round(contest_history[-1].performance)).title_abbr})'
+                for member, _row, _history, contest_history in per_member
+            ]
+            embed = discord.Embed(
+                title=(f'{QUEENS_GAME.display_name} performance — '
+                       f'{len(per_member)} players'),
+                description='\n'.join(lines),
+                color=top_rank.color_embed,
+            )
+
+        discord_common.attach_image(embed, discord_file)
+        await ctx.send(embed=embed, file=discord_file)
+
+    async def _cmd_queens_history(self, ctx, member, *,
+                                  require_registered=True,
+                                  excluded_ids=None, included_ids=None):
+        self._require_enabled(ctx.guild.id, QUEENS_GAME)
+        if require_registered:
+            self._require_queens_registered_member(ctx.guild.id, member)
+
+        history = self._minigame_user_history(
+            ctx.guild.id, QUEENS_GAME, member.id,
+            excluded_ids=excluded_ids, included_ids=included_ids)
+        contest_history = [h for h in history if h.performance is not None]
+        if not contest_history:
+            raise MinigameCogError(
+                f'`{_safe_member_name(member)}` has no contested '
+                f'{QUEENS_GAME.display_name} days yet.')
+
+        lines = [_format_minigame_history_line(h)
+                 for h in reversed(contest_history)]
+        title = (f'{QUEENS_GAME.display_name} rating history — '
+                 f'{_safe_member_name(member)} ({len(contest_history)} contests)')
+        pages = []
+        for chunk in paginator.chunkify(lines, _AKARI_HISTORY_PER_PAGE):
+            embed = discord.Embed(
+                title=title,
+                description='\n'.join(chunk),
+                color=discord_common.random_cf_color(),
+            )
+            pages.append((None, embed))
+        paginator.paginate(
+            self.bot, ctx.channel, pages, wait_time=300,
+            set_pagenum_footers=True, author_id=ctx.author.id)
 
     async def _cmd_queens_show(self, ctx):
         enabled = self._is_enabled(ctx.guild.id, QUEENS_GAME.feature_flag)
@@ -1192,6 +1543,45 @@ class Minigames(commands.Cog):
             description='\n'.join(lines),
             color=discord_common.random_cf_color(),
         ))
+
+    async def _cmd_queens_stats_date(self, ctx, date_arg, *,
+                                     show_all=False, excluded_ids=None,
+                                     included_ids=None):
+        self._require_enabled(ctx.guild.id, QUEENS_GAME)
+        puzzle_date = _parse_queens_date(date_arg)
+        puzzle_number = _queens_puzzle_number_for_date(puzzle_date)
+        rows = cf_common.user_db.get_minigame_results_for_guild(
+            ctx.guild.id, QUEENS_GAME.name,
+            plo=puzzle_number, phi=puzzle_number + 1)
+        rows = self._filter_minigame_banned_rows(ctx.guild.id, QUEENS_GAME, rows)
+        rows = self._filter_akari_rows(
+            rows, excluded_ids=excluded_ids, included_ids=included_ids)
+        if not rows:
+            raise MinigameCogError(
+                f'No {QUEENS_GAME.display_name} results found for '
+                f'`{puzzle_date.isoformat()}`.')
+
+        puzzle_info = self._minigame_puzzle_change_info(
+            ctx.guild.id, QUEENS_GAME, puzzle_number,
+            excluded_ids=excluded_ids, included_ids=included_ids)
+        links_by_user = self._queens_links_by_user(ctx.guild.id)
+        registrants = (
+            set(puzzle_info.keys())
+            if show_all
+            else set(links_by_user)
+        )
+        discord_file = _get_akari_puzzle_table_image_file(
+            ctx.guild, rows,
+            f'{QUEENS_GAME.display_name} {puzzle_date.isoformat()} Results',
+            puzzle_info=puzzle_info,
+            registrants=registrants,
+            identity_label='LinkedIn',
+            identity_fn=self._queens_rating_identity_fn(links_by_user),
+            sort_key_fn=lambda row: (
+                int(getattr(row, 'time_seconds', 0)),
+                int(getattr(row, 'message_id', 0)),
+            ))
+        await ctx.send(file=discord_file)
 
     # ── Listeners ───────────────────────────────────────────────────────
 
@@ -3165,11 +3555,27 @@ class Minigames(commands.Cog):
     async def queens_streak(self, ctx, *args):
         await self._cmd_queens_streak(ctx, *args)
 
-    @queens.command(name='stats', brief='Show personal Queens stats',
-                    usage='[@user] [filters...]')
+    @queens.group(name='stats', brief='Show personal Queens stats',
+                  usage='[@user] [filters...]',
+                  invoke_without_command=True)
     @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
     async def queens_stats(self, ctx, *args):
         await self._cmd_queens_stats(ctx, *args)
+
+    @queens_stats.command(name='debug',
+                          brief='(Mod) Date results with ratings for ALL players',
+                          usage='<date> [+exclude=…] [+include=…]')
+    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    async def queens_stats_debug(self, ctx, *args):
+        remaining, excluded_ids, included_ids = (
+            await self._extract_queens_rating_filters(ctx, args))
+        if len(remaining) != 1:
+            raise MinigameCogError(
+                'Usage: `;queens stats debug <date> '
+                '[+exclude=…] [+include=…]`.')
+        await self._cmd_queens_stats_date(
+            ctx, remaining[0], show_all=True,
+            excluded_ids=excluded_ids, included_ids=included_ids)
 
     @queens.group(name='import', brief='Preview a pasted Queens leaderboard',
                   usage='date <pasted leaderboard>',
@@ -3256,11 +3662,96 @@ class Minigames(commands.Cog):
             f'`{_safe_member_name(member)}` on {parsed_date.isoformat()}.'))
 
     @queens.group(name='ratings', brief='Show Queens rating leaderboard',
+                  usage='[+exclude=…] [+include=…]',
                   invoke_without_command=True)
     @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
-    async def queens_ratings(self, ctx):
+    async def queens_ratings(self, ctx, *args):
         self._require_enabled(ctx.guild.id, QUEENS_GAME)
-        await self._cmd_queens_ratings(ctx)
+        remaining, excluded_ids, included_ids = (
+            await self._extract_queens_rating_filters(ctx, args))
+        if remaining:
+            raise MinigameCogError(
+                'Usage: `;queens ratings [+exclude=…] [+include=…]`.')
+        await self._cmd_queens_ratings(
+            ctx, excluded_ids=excluded_ids, included_ids=included_ids)
+
+    @queens.group(name='rating',
+                  brief='Show Queens rating graph',
+                  usage='[@user1 @user2 ...] [+exclude=…] [+include=…]',
+                  invoke_without_command=True)
+    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    async def queens_rating(self, ctx, *args):
+        members, excluded_ids, included_ids = (
+            await self._parse_queens_rating_args(ctx, args))
+        await self._cmd_queens_rating(
+            ctx, members,
+            excluded_ids=excluded_ids, included_ids=included_ids)
+
+    @queens_rating.command(name='debug',
+                           brief='(Mod) Rating graph for any rated user',
+                           usage='@user1 [@user2 ...] [+exclude=…] [+include=…]')
+    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    async def queens_rating_debug(self, ctx, *args):
+        members, excluded_ids, included_ids = (
+            await self._parse_queens_rating_args(
+                ctx, args, member_required=True))
+        await self._cmd_queens_rating(
+            ctx, members, require_registered=False,
+            excluded_ids=excluded_ids, included_ids=included_ids)
+
+    @queens.group(name='performance', aliases=['perf'],
+                  brief='Show Queens performance graph',
+                  usage='[@user1 @user2 ...] [+exclude=…] [+include=…]',
+                  invoke_without_command=True)
+    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    async def queens_performance(self, ctx, *args):
+        members, excluded_ids, included_ids = (
+            await self._parse_queens_rating_args(ctx, args))
+        await self._cmd_queens_performance(
+            ctx, members,
+            excluded_ids=excluded_ids, included_ids=included_ids)
+
+    @queens_performance.command(name='debug',
+                                brief='(Mod) Performance graph for any rated user',
+                                usage='@user1 [@user2 ...] [+exclude=…] [+include=…]')
+    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    async def queens_performance_debug(self, ctx, *args):
+        members, excluded_ids, included_ids = (
+            await self._parse_queens_rating_args(
+                ctx, args, member_required=True))
+        await self._cmd_queens_performance(
+            ctx, members, require_registered=False,
+            excluded_ids=excluded_ids, included_ids=included_ids)
+
+    @queens.group(name='history',
+                  brief='Paginated Queens rating delta log',
+                  usage='[@user] [+exclude=…] [+include=…]',
+                  invoke_without_command=True)
+    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    async def queens_history(self, ctx, *args):
+        members, excluded_ids, included_ids = (
+            await self._parse_queens_rating_args(ctx, args))
+        if len(members) != 1:
+            raise MinigameCogError(
+                '`history` shows one user at a time — pick one.')
+        await self._cmd_queens_history(
+            ctx, members[0],
+            excluded_ids=excluded_ids, included_ids=included_ids)
+
+    @queens_history.command(name='debug',
+                            brief='(Mod) Rating delta log for any rated user',
+                            usage='@user [+exclude=…] [+include=…]')
+    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    async def queens_history_debug(self, ctx, *args):
+        members, excluded_ids, included_ids = (
+            await self._parse_queens_rating_args(
+                ctx, args, member_required=True))
+        if len(members) != 1:
+            raise MinigameCogError(
+                '`history debug` shows one user at a time — pick one.')
+        await self._cmd_queens_history(
+            ctx, members[0], require_registered=False,
+            excluded_ids=excluded_ids, included_ids=included_ids)
 
     @queens_ratings.command(name='recompute',
                             brief='(Mod) Rebuild the Queens rating snapshot')
@@ -3270,6 +3761,20 @@ class Minigames(commands.Cog):
         self._recompute_minigame_ratings(ctx.guild.id, QUEENS_GAME)
         await ctx.send(embed=discord_common.embed_success(
             f'{QUEENS_GAME.display_name} ratings recomputed.'))
+
+    @queens_ratings.command(name='debug', aliases=['all'],
+                            brief='(Mod) Leaderboard including unregistered rated users',
+                            usage='[+exclude=…] [+include=…]')
+    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    async def queens_ratings_debug(self, ctx, *args):
+        remaining, excluded_ids, included_ids = (
+            await self._extract_queens_rating_filters(ctx, args))
+        if remaining:
+            raise MinigameCogError(
+                'Usage: `;queens ratings debug [+exclude=…] [+include=…]`.')
+        await self._cmd_queens_ratings(
+            ctx, show_all=True,
+            excluded_ids=excluded_ids, included_ids=included_ids)
 
     # ── GuessGame commands: ;minigames guessgame … ──────────────────────
 

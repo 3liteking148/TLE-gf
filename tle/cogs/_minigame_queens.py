@@ -162,5 +162,10 @@ QUEENS_GAME = GameDef(
     winner_result_sort_key=queens_winner_result_sort_key,
     result_group_key=queens_result_group_key,
     manual_ingest_only=True,
-    rating=RatingDef(rank_fn=rank_queens_participants),
+    rating=RatingDef(
+        rank_fn=rank_queens_participants,
+        decay_base=0.0,
+        decay_max=0.0,
+        decay_grace=0,
+    ),
 )
