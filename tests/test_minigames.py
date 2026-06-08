@@ -935,6 +935,36 @@ class TestQueensImport:
         assert [row.user_id for row in ratings] == ['300', '301']
         assert ratings[0].rating > ratings[1].rating
 
+    def test_generic_recompute_writes_queens_snapshot_only(self, db, monkeypatch):
+        monkeypatch.setattr(cf_common, 'user_db', db)
+        db.replace_minigame_ratings(
+            100, 'akari', [RatingState('999', 1500, 1, 1500, 0)], 1.0)
+        db.save_minigame_result(
+            1, 100, 'queens', 200, 300, 20260608, '2026-06-08',
+            0, 8, False, 'fast no badges')
+        db.save_minigame_result(
+            2, 100, 'queens', 200, 301, 20260608, '2026-06-08',
+            100, 10, True, 'slow perfect')
+        db.save_minigame_result(
+            3, 100, 'queens', 200, 302, 20260608, '2026-06-08',
+            0, 10, False, 'slow imperfect')
+
+        cog = Minigames(bot=None)
+        cog._recompute_minigame_ratings(100, QUEENS_GAME)
+
+        queens = {
+            row.user_id: row
+            for row in db.get_minigame_ratings(100, 'queens')
+        }
+        assert set(queens) == {'300', '301', '302'}
+        assert queens['300'].rating > queens['301'].rating
+        assert queens['301'].rating == pytest.approx(queens['302'].rating)
+        assert all(row.games == 1 for row in queens.values())
+
+        akari = db.get_minigame_rating(100, 'akari', 999)
+        assert akari.rating == 1500
+        assert akari.games == 1
+
 
 class TestCogIngest:
     def test_ingests_only_enabled_configured_channel(self, db, monkeypatch):

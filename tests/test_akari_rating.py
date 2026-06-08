@@ -84,11 +84,28 @@ class TestComputeRound:
 
 
 class TestComputeRatings:
+    @staticmethod
+    def _rank_by_time_only(rows):
+        ordered = sorted(rows, key=lambda row: row.time_seconds)
+        return {str(row.user_id): rank for rank, row in enumerate(ordered, start=1)}
+
     def test_new_players_start_at_1200(self):
         states = compute_ratings(_day(1, [('a', True, 100, 30),
                                           ('b', False, 50, 200)]))
         # Both seeded at 1200, then one contest moves them apart.
         assert states['a'].rating > 1200 > states['b'].rating
+
+    def test_custom_rank_fn_changes_daily_rating_order(self):
+        rows = _day(1, [
+            ('fast_imperfect', False, 0, 10),
+            ('slow_perfect', True, 100, 200),
+        ])
+
+        akari_states = compute_ratings(rows)
+        generic_states = compute_ratings(rows, rank_fn=self._rank_by_time_only)
+
+        assert akari_states['slow_perfect'].rating > akari_states['fast_imperfect'].rating
+        assert generic_states['fast_imperfect'].rating > generic_states['slow_perfect'].rating
 
     def test_solo_day_leaves_rating_untouched(self):
         states = compute_ratings([_row('a', 1, perfect=True)])
