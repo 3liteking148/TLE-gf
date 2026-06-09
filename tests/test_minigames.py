@@ -130,6 +130,22 @@ class FakeMinigameDb(MinigameDbMixin):
             )
         ''')
         self.conn.execute('''
+            CREATE TABLE IF NOT EXISTS minigame_unresolved_result (
+                guild_id        TEXT NOT NULL,
+                game            TEXT NOT NULL,
+                normalized_name TEXT NOT NULL,
+                external_name   TEXT NOT NULL,
+                channel_id      TEXT NOT NULL,
+                puzzle_number   INTEGER NOT NULL,
+                puzzle_date     TEXT NOT NULL,
+                accuracy        INTEGER NOT NULL,
+                time_seconds    INTEGER NOT NULL,
+                is_perfect      INTEGER NOT NULL DEFAULT 0,
+                raw_content     TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY (guild_id, game, normalized_name, puzzle_number)
+            )
+        ''')
+        self.conn.execute('''
             CREATE TABLE IF NOT EXISTS minigame_rating (
                 guild_id    TEXT NOT NULL,
                 game        TEXT NOT NULL,
@@ -848,6 +864,34 @@ class TestDbMixin:
                 normalize_queens_name('Robert   Kocharyan'),
                 None, 2.0, 999)
 
+    def test_minigame_unresolved_result_crud(self, db):
+        db.save_minigame_unresolved_result(
+            100, 'queens', normalize_queens_name('Alice LinkedIn'),
+            'Alice LinkedIn', 200, 123, '2026-06-08',
+            100, 5, True, 'raw')
+        db.save_minigame_unresolved_result(
+            100, 'queens', normalize_queens_name('Bob LinkedIn'),
+            'Bob LinkedIn', 200, 123, '2026-06-08',
+            100, 7, True, 'raw')
+
+        by_name = db.get_minigame_unresolved_results_for_name(
+            100, 'queens', normalize_queens_name('Alice LinkedIn'))
+        assert [(row.external_name, row.time_seconds) for row in by_name] == [
+            ('Alice LinkedIn', 5),
+        ]
+        by_puzzle = db.get_minigame_unresolved_results_for_puzzle(
+            100, 'queens', 123)
+        assert [(row.external_name, row.time_seconds) for row in by_puzzle] == [
+            ('Alice LinkedIn', 5),
+            ('Bob LinkedIn', 7),
+        ]
+        assert db.delete_minigame_unresolved_results_for_name(
+            100, 'queens', normalize_queens_name('Alice LinkedIn')) == 1
+        assert db.delete_minigame_unresolved_results_for_puzzle(
+            100, 'queens', 123) == 1
+        assert db.get_minigame_unresolved_results_for_puzzle(
+            100, 'queens', 123) == []
+
     def test_minigame_rating_snapshot_is_game_keyed(self, db):
         states = [
             RatingState('300', 1210.5, 2, 1210.5, 5.0),
@@ -923,7 +967,7 @@ class _FakeMessage:
 
 
 class TestQueensImport:
-    def test_importer_must_be_linked(self, db, monkeypatch):
+    def test_importer_must_be_linked_for_you_row(self, db, monkeypatch):
         monkeypatch.setattr(cf_common, 'user_db', db)
         guild = _FakeGuild(100, members=[
             _FakeDiscordMember(300, 'ali', 'Ali'),
@@ -936,7 +980,7 @@ class TestQueensImport:
             message=SimpleNamespace(id=555),
         )
         content = (
-            'Ali Farhat\n'
+            'You\n'
             '\U0001f913\U0001f48e No hints & no mistakes!\n'
             '0:04\n'
         )
@@ -944,6 +988,30 @@ class TestQueensImport:
         cog = Minigames(bot=None)
         with pytest.raises(MinigameCogError, match='Register the importer'):
             cog._make_queens_import_preview(ctx, '2026-06-08', content)
+
+    def test_import_stores_unresolved_names_without_registered_importer(
+            self, db, monkeypatch):
+        monkeypatch.setattr(cf_common, 'user_db', db)
+        guild = _FakeGuild(100, members=[
+            _FakeDiscordMember(301, 'robert', 'Robert'),
+        ])
+        ctx = SimpleNamespace(
+            guild=guild,
+            author=_FakeDiscordMember(301, 'robert', 'Robert'),
+            channel=_FakeChannel(200),
+            message=SimpleNamespace(id=555),
+        )
+        cog = Minigames(bot=None)
+        preview = cog._make_queens_import_preview(ctx, '2026-06-08', (
+            'Alice LinkedIn\n'
+            '\U0001f913\U0001f48e No hints & no mistakes!\n'
+            '0:04\n'
+        ))
+
+        assert preview.resolved == []
+        assert [entry.linkedin_name for entry in preview.unresolved] == [
+            'Alice LinkedIn',
+        ]
 
     def test_preview_resolves_linked_names_and_you_then_saves_ratings(self, db, monkeypatch):
         monkeypatch.setattr(cf_common, 'user_db', db)
@@ -985,17 +1053,25 @@ class TestQueensImport:
         assert preview.puzzle_date == dt.date(2026, 6, 8)
         assert preview.puzzle_number == dt.date(2026, 6, 8).toordinal()
         assert [entry.user_id for entry in preview.resolved] == ['300', '301']
-        assert preview.unresolved == ['Unknown Person']
+        assert [entry.linkedin_name for entry in preview.unresolved] == [
+            'Unknown Person',
+        ]
         assert '2026-06-08' in cog._format_queens_import_preview(ctx, preview)
         assert 'Robert Kocharyan' in cog._format_queens_import_preview(ctx, preview)
 
         saved = cog._save_queens_import(ctx, preview)
 
-        assert saved == 2
+        assert saved.resolved == 2
+        assert saved.unresolved == 1
         rows = db.get_minigame_results_for_guild(100, 'queens')
         assert sorted((row.user_id, row.time_seconds) for row in rows) == [
             ('300', 4),
             ('301', 6),
+        ]
+        unresolved = db.get_minigame_unresolved_results_for_puzzle(
+            100, 'queens', dt.date(2026, 6, 8).toordinal())
+        assert [(row.external_name, row.time_seconds) for row in unresolved] == [
+            ('Unknown Person', 7),
         ]
         assert {row.puzzle_number for row in rows} == {dt.date(2026, 6, 8).toordinal()}
         assert {row.puzzle_date for row in rows} == {'2026-06-08'}
@@ -1008,12 +1084,79 @@ class TestQueensImport:
             '\U0001f913\U0001f48e No hints & no mistakes!\n'
             '0:05\n'
         ))
-        assert cog._save_queens_import(ctx, reimport) == 1
+        saved = cog._save_queens_import(ctx, reimport)
+        assert saved.resolved == 1
+        assert saved.unresolved == 0
         rows = db.get_minigame_results_for_guild(100, 'queens')
         assert [(row.user_id, row.time_seconds) for row in rows] == [('301', 5)]
+        assert db.get_minigame_unresolved_results_for_puzzle(
+            100, 'queens', dt.date(2026, 6, 8).toordinal()) == []
         ratings = db.get_minigame_ratings(100, 'queens')
         assert [row.user_id for row in ratings] == ['301']
         assert ratings[0].games == 0
+
+    def test_register_claims_previously_unresolved_import_rows(self, db, monkeypatch):
+        monkeypatch.setattr(cf_common, 'user_db', db)
+        monkeypatch.setattr(
+            minigames_module.discord_common, 'embed_success',
+            lambda desc: SimpleNamespace(description=desc))
+        db.set_guild_config(100, 'queens', '1')
+        db.set_minigame_player_link(
+            100, 'queens', 300, 'Importer Name',
+            normalize_queens_name('Importer Name'), None, 1.0, 999)
+        importer = _FakeDiscordMember(300, 'importer', 'Importer')
+        alice = _FakeDiscordMember(301, 'alice', 'Alice')
+        guild = _FakeGuild(100, members=[importer, alice])
+        ctx = SimpleNamespace(
+            guild=guild,
+            author=importer,
+            channel=_FakeChannel(200),
+            message=SimpleNamespace(id=555),
+            send=lambda *args, **kwargs: None,
+        )
+        cog = Minigames(bot=None)
+        preview = cog._make_queens_import_preview(ctx, '2026-06-08', (
+            'Alice LinkedIn\n'
+            '\U0001f913\U0001f48e No hints & no mistakes!\n'
+            '0:04\n'
+            'You\n'
+            '\U0001f913\U0001f48e No hints & no mistakes!\n'
+            '0:06\n'
+        ))
+        saved = cog._save_queens_import(ctx, preview)
+        assert saved.resolved == 1
+        assert saved.unresolved == 1
+        assert db.get_minigame_result_for_user_puzzle(
+            100, 'queens', alice.id, dt.date(2026, 6, 8).toordinal()) is None
+
+        sent = {}
+
+        async def send(content=None, *, embed=None, **kwargs):
+            sent['content'] = content
+            sent['embed'] = embed
+            sent['kwargs'] = kwargs
+
+        register_ctx = SimpleNamespace(
+            guild=guild,
+            author=alice,
+            channel=_FakeChannel(200),
+            send=send,
+            sent=sent,
+        )
+        asyncio.run(Minigames.queens_register.__wrapped__(
+            cog, register_ctx, 'Alice', linkedin='LinkedIn'))
+
+        claimed = db.get_minigame_result_for_user_puzzle(
+            100, 'queens', alice.id, dt.date(2026, 6, 8).toordinal())
+        assert claimed is not None
+        assert claimed.time_seconds == 4
+        assert db.get_minigame_unresolved_results_for_name(
+            100, 'queens', normalize_queens_name('Alice LinkedIn')) == []
+        assert [row.user_id for row in db.get_minigame_ratings(100, 'queens')] == [
+            '301', '300',
+        ]
+        assert 'Claimed 1 stored Queens result(s)' in (
+            sent['embed'].description)
 
     def test_you_row_prefers_importer_even_when_name_is_copied(self, db, monkeypatch):
         monkeypatch.setattr(cf_common, 'user_db', db)
@@ -1309,6 +1452,10 @@ class TestQueensCommands:
             4, 100, 'queens', 200, bob.id,
             dt.date(2026, 6, 8).toordinal(), '2026-06-08',
             100, 7, True, 'imported')
+        db.save_minigame_unresolved_result(
+            100, 'queens', normalize_queens_name('Unknown Person'),
+            'Unknown Person', 200, dt.date(2026, 6, 8).toordinal(),
+            '2026-06-08', 100, 9, True, 'raw')
 
         asyncio.run(Minigames.queens_clear.__wrapped__(
             cog, ctx, '2026-06-08'))
@@ -1317,7 +1464,9 @@ class TestQueensCommands:
         assert [(row.user_id, row.puzzle_date) for row in remaining] == [
             ('300', '2026-06-09'),
         ]
-        assert 'Removed 3 LinkedIn Queens result(s) for 2026-06-08' in (
+        assert db.get_minigame_unresolved_results_for_puzzle(
+            100, 'queens', dt.date(2026, 6, 8).toordinal()) == []
+        assert 'Removed 3 registered and 1 unresolved LinkedIn Queens result(s) for 2026-06-08' in (
             ctx.sent['embed'].description)
         assert [row.user_id for row in db.get_minigame_ratings(100, 'queens')] == ['300']
 

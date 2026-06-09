@@ -327,6 +327,81 @@ class MinigameDbMixin:
         self.conn.commit()
         return live_rc + imported_rc
 
+    # ── Unresolved external-account imports ───────────────────────────
+
+    def save_minigame_unresolved_result(
+            self, guild_id, game, normalized_name, external_name, channel_id,
+            puzzle_number, puzzle_date, accuracy, time_seconds, is_perfect,
+            raw_content):
+        self.conn.execute(
+            '''
+            INSERT OR REPLACE INTO minigame_unresolved_result (
+                guild_id, game, normalized_name, external_name, channel_id,
+                puzzle_number, puzzle_date, accuracy, time_seconds,
+                is_perfect, raw_content
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''',
+            (
+                str(guild_id), game, str(normalized_name), str(external_name),
+                str(channel_id), int(puzzle_number), str(puzzle_date),
+                int(accuracy), int(time_seconds), int(bool(is_perfect)),
+                str(raw_content),
+            )
+        )
+        self.conn.commit()
+
+    def get_minigame_unresolved_results_for_name(
+            self, guild_id, game, normalized_name):
+        return self.conn.execute(
+            '''
+            SELECT guild_id, game, normalized_name, external_name, channel_id,
+                   puzzle_number, puzzle_date, accuracy, time_seconds,
+                   is_perfect, raw_content
+            FROM minigame_unresolved_result
+            WHERE guild_id = ? AND game = ? AND normalized_name = ?
+            ORDER BY puzzle_number ASC
+            ''',
+            (str(guild_id), game, str(normalized_name))
+        ).fetchall()
+
+    def get_minigame_unresolved_results_for_puzzle(
+            self, guild_id, game, puzzle_number):
+        return self.conn.execute(
+            '''
+            SELECT guild_id, game, normalized_name, external_name, channel_id,
+                   puzzle_number, puzzle_date, accuracy, time_seconds,
+                   is_perfect, raw_content
+            FROM minigame_unresolved_result
+            WHERE guild_id = ? AND game = ? AND puzzle_number = ?
+            ORDER BY time_seconds ASC, normalized_name ASC
+            ''',
+            (str(guild_id), game, int(puzzle_number))
+        ).fetchall()
+
+    def delete_minigame_unresolved_results_for_name(
+            self, guild_id, game, normalized_name):
+        rc = self.conn.execute(
+            '''
+            DELETE FROM minigame_unresolved_result
+            WHERE guild_id = ? AND game = ? AND normalized_name = ?
+            ''',
+            (str(guild_id), game, str(normalized_name))
+        ).rowcount
+        self.conn.commit()
+        return rc
+
+    def delete_minigame_unresolved_results_for_puzzle(
+            self, guild_id, game, puzzle_number):
+        rc = self.conn.execute(
+            '''
+            DELETE FROM minigame_unresolved_result
+            WHERE guild_id = ? AND game = ? AND puzzle_number = ?
+            ''',
+            (str(guild_id), game, int(puzzle_number))
+        ).rowcount
+        self.conn.commit()
+        return rc
+
     # ── Generic minigame identity links ───────────────────────────────
 
     def set_minigame_player_link(self, guild_id, game, user_id, external_name,

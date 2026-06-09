@@ -492,6 +492,35 @@ class TestUpgrade131:
         db.execute('SELECT * FROM minigame_ban').fetchall()
 
 
+class TestUpgrade132:
+    def test_creates_unresolved_minigame_result_table(self, db):
+        from tle.util.db.user_db_upgrades import upgrade_1_32_0
+        upgrade_1_32_0(db)
+        db.execute(
+            "INSERT INTO minigame_unresolved_result "
+            "(guild_id, game, normalized_name, external_name, channel_id, "
+            "puzzle_number, puzzle_date, accuracy, time_seconds, is_perfect, "
+            "raw_content) VALUES "
+            "('1', 'queens', 'alice', 'Alice', '9', 123, '2026-06-08', "
+            "100, 5, 1, 'raw')")
+        row = db.execute(
+            'SELECT guild_id, game, normalized_name, external_name, '
+            'channel_id, puzzle_number, puzzle_date, accuracy, time_seconds, '
+            'is_perfect, raw_content '
+            'FROM minigame_unresolved_result').fetchone()
+        assert row.guild_id == '1'
+        assert row.game == 'queens'
+        assert row.normalized_name == 'alice'
+        assert row.external_name == 'Alice'
+        assert row.time_seconds == 5
+
+    def test_idempotent(self, db):
+        from tle.util.db.user_db_upgrades import upgrade_1_32_0
+        upgrade_1_32_0(db)
+        upgrade_1_32_0(db)
+        db.execute('SELECT * FROM minigame_unresolved_result').fetchall()
+
+
 class TestUserDbConnUpgradeEndToEnd:
     @staticmethod
     def _seed_legacy_akari_rating(dbfile):
@@ -613,6 +642,11 @@ class TestFreshDbSchema:
             conn.conn.execute('SELECT guild_id, game, user_id, rating, games, '
                               'peak, last_delta, skip_streak, last_puzzle, '
                               'updated_at FROM minigame_rating').fetchall()
+            conn.conn.execute('SELECT guild_id, game, normalized_name, '
+                              'external_name, channel_id, puzzle_number, '
+                              'puzzle_date, accuracy, time_seconds, '
+                              'is_perfect, raw_content '
+                              'FROM minigame_unresolved_result').fetchall()
             conn.conn.execute('SELECT guild_id, game, user_id, banned_at, '
                               'banned_by, reason FROM minigame_ban').fetchall()
             # And the legacy table must NOT be created by the fresh path.

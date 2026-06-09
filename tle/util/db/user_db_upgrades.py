@@ -793,3 +793,31 @@ def upgrade_1_31_0(db):
     ''')
     db.commit()
     logger.info('1.31.0: Upgrade complete')
+
+
+@registry.register('1.32.0', 'Unresolved minigame import results')
+def upgrade_1_32_0(db):
+    """Create storage for imported external results before Discord linking."""
+    logger.info('1.32.0: Creating unresolved minigame result table')
+    db.execute('''
+        CREATE TABLE IF NOT EXISTS minigame_unresolved_result (
+            guild_id        TEXT NOT NULL,
+            game            TEXT NOT NULL,
+            normalized_name TEXT NOT NULL,
+            external_name   TEXT NOT NULL,
+            channel_id      TEXT NOT NULL,
+            puzzle_number   INTEGER NOT NULL,
+            puzzle_date     TEXT NOT NULL,
+            accuracy        INTEGER NOT NULL,
+            time_seconds    INTEGER NOT NULL,
+            is_perfect      INTEGER NOT NULL DEFAULT 0,
+            raw_content     TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (guild_id, game, normalized_name, puzzle_number)
+        )
+    ''')
+    db.execute('''
+        CREATE INDEX IF NOT EXISTS idx_minigame_unresolved_result_puzzle
+            ON minigame_unresolved_result (guild_id, game, puzzle_number)
+    ''')
+    db.commit()
+    logger.info('1.32.0: Upgrade complete')
