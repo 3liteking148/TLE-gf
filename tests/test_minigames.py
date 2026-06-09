@@ -1372,6 +1372,41 @@ class TestQueensCommands:
         assert 'with the note "GF Queens"' in instruction
         assert 'Linked User' not in instruction
 
+    def test_register_anonymous_keeps_linkedin_name_private(
+            self, db, monkeypatch):
+        monkeypatch.setattr(cf_common, 'user_db', db)
+        monkeypatch.setattr(
+            minigames_module.discord_common, 'embed_success',
+            lambda desc: SimpleNamespace(description=desc))
+        db.set_guild_config(100, 'queens', '1')
+        alice = _FakeDiscordMember(300, 'alice', 'Alice')
+        guild = _FakeGuild(100, members=[alice])
+        ctx = self._make_ctx(guild, alice)
+        cog = Minigames(bot=None)
+
+        asyncio.run(Minigames.queens_register.__wrapped__(
+            cog, ctx, '+anon', linkedin='Alice LinkedIn'))
+
+        row = db.get_minigame_player_link(100, 'queens', alice.id)
+        assert row.external_name == 'Alice LinkedIn'
+        assert row.normalized_name == normalize_queens_name('Alice LinkedIn')
+        assert row.external_url == (
+            minigames_module._QUEENS_ANONYMOUS_LINK_MARKER)
+        assert 'Anonymous' in ctx.sent['embed'].description
+        assert 'Alice LinkedIn' not in ctx.sent['embed'].description
+
+        pages = []
+        monkeypatch.setattr(
+            minigames_module.paginator, 'paginate',
+            lambda _bot, _channel, page_list, **_kwargs: pages.extend(page_list))
+
+        asyncio.run(Minigames.queens_links.__wrapped__(cog, ctx))
+
+        assert pages
+        assert 'Anonymous: `Anonymous`' in pages[0][1].description
+        assert 'Alice LinkedIn' not in pages[0][1].description
+        assert 'Alice:' not in pages[0][1].description
+
     def test_connection_set_requires_and_stores_profile_url(self, db, monkeypatch):
         monkeypatch.setattr(cf_common, 'user_db', db)
         db.set_guild_config(100, 'queens', '1')
@@ -1432,6 +1467,24 @@ class TestQueensCommands:
                 cog, ctx, 'alice', linkedin='linkedin'))
 
         assert db.get_minigame_player_link(100, 'queens', bob.id) is None
+
+    def test_register_duplicate_name_hides_anonymous_owner(
+            self, db, monkeypatch):
+        monkeypatch.setattr(cf_common, 'user_db', db)
+        db.set_guild_config(100, 'queens', '1')
+        alice = _FakeDiscordMember(300, 'alice', 'Alice')
+        bob = _FakeDiscordMember(301, 'bob', 'Bob')
+        guild = _FakeGuild(100, members=[alice, bob])
+        ctx = self._make_ctx(guild, bob)
+        cog = Minigames(bot=None)
+        db.set_minigame_player_link(
+            100, 'queens', alice.id, 'Alice LinkedIn',
+            normalize_queens_name('Alice LinkedIn'),
+            minigames_module._QUEENS_ANONYMOUS_LINK_MARKER, 1.0, alice.id)
+
+        with pytest.raises(MinigameCogError, match='Anonymous'):
+            asyncio.run(Minigames.queens_register.__wrapped__(
+                cog, ctx, 'Alice', linkedin='LinkedIn'))
 
     def test_queens_link_command_is_not_registered(self):
         assert not hasattr(Minigames, 'queens_link')
@@ -1563,6 +1616,63 @@ class TestQueensCommands:
         assert set(captured[-1]['user_ids']) == {'300', '301'}
         assert captured[-1]['mark_registered'] is True
 
+    def test_anonymous_registration_hides_results_and_rating_names(
+            self, db, monkeypatch):
+        monkeypatch.setattr(cf_common, 'user_db', db)
+        db.set_guild_config(100, 'queens', '1')
+        alice = _FakeDiscordMember(300, 'alice', 'Alice')
+        bob = _FakeDiscordMember(301, 'bob', 'Bob')
+        guild = _FakeGuild(100, members=[alice, bob])
+        ctx = self._make_ctx(guild, alice)
+        cog = Minigames(bot=None)
+
+        db.set_minigame_player_link(
+            100, 'queens', alice.id, 'Alice LinkedIn',
+            normalize_queens_name('Alice LinkedIn'),
+            minigames_module._QUEENS_ANONYMOUS_LINK_MARKER, 1.0, alice.id)
+        db.set_minigame_player_link(
+            100, 'queens', bob.id, 'Bob LinkedIn',
+            normalize_queens_name('Bob LinkedIn'), None, 1.0, alice.id)
+        self._save_queens_result(db, 1, alice.id, '2026-06-08', 5)
+        self._save_queens_result(db, 2, bob.id, '2026-06-08', 10)
+        cog._recompute_minigame_ratings(100, QUEENS_GAME)
+
+        captured_results = {}
+
+        def _capture_results(guild, rows, title, **kwargs):
+            captured_results['names'] = [
+                kwargs['name_fn'](guild, row) for row in rows]
+            captured_results['identities'] = [
+                kwargs['identity_fn'](guild, row) for row in rows]
+            captured_results['title'] = title
+            return object()
+        monkeypatch.setattr(
+            minigames_module, '_get_queens_results_table_image_file',
+            _capture_results)
+
+        asyncio.run(Minigames.queens_results.__wrapped__(
+            cog, ctx, '2026-06-08'))
+
+        assert captured_results['names'] == ['Anonymous', 'Bob']
+        assert captured_results['identities'] == ['Anonymous', 'Bob LinkedIn']
+
+        captured_ratings = {}
+
+        def _capture_ratings(guild, rating_rows, registrants, **kwargs):
+            captured_ratings['names'] = [
+                kwargs['name_fn'](guild, row) for row in rating_rows]
+            captured_ratings['identities'] = [
+                kwargs['identity_fn'](guild, row) for row in rating_rows]
+            return object()
+        monkeypatch.setattr(
+            minigames_module, '_get_akari_rating_table_image_file',
+            _capture_ratings)
+
+        asyncio.run(cog._cmd_queens_ratings(ctx, show_all=True))
+
+        assert captured_ratings['names'][0] == 'Anonymous'
+        assert captured_ratings['identities'][0] == 'Anonymous'
+
     def test_queens_rating_performance_and_history_views(
             self, db, monkeypatch):
         monkeypatch.setattr(cf_common, 'user_db', db)
@@ -1615,6 +1725,60 @@ class TestQueensCommands:
         assert pages
         assert '2026-06-09' in pages[0][1].description
         assert '**#' not in pages[0][1].description
+
+    def test_anonymous_registration_hides_graph_and_history_names(
+            self, db, monkeypatch):
+        monkeypatch.setattr(cf_common, 'user_db', db)
+        db.set_guild_config(100, 'queens', '1')
+        alice = _FakeDiscordMember(300, 'alice', 'Alice')
+        bob = _FakeDiscordMember(301, 'bob', 'Bob')
+        guild = _FakeGuild(100, members=[alice, bob])
+        ctx = self._make_ctx(guild, alice)
+        cog = Minigames(bot=object())
+
+        db.set_minigame_player_link(
+            100, 'queens', alice.id, 'Alice LinkedIn',
+            normalize_queens_name('Alice LinkedIn'),
+            minigames_module._QUEENS_ANONYMOUS_LINK_MARKER, 1.0, alice.id)
+        db.set_minigame_player_link(
+            100, 'queens', bob.id, 'Bob LinkedIn',
+            normalize_queens_name('Bob LinkedIn'), None, 1.0, alice.id)
+        self._save_queens_result(db, 1, alice.id, '2026-06-08', 5)
+        self._save_queens_result(db, 2, bob.id, '2026-06-08', 10)
+        self._save_queens_result(db, 3, alice.id, '2026-06-09', 9)
+        self._save_queens_result(db, 4, bob.id, '2026-06-09', 4)
+        cog._recompute_minigame_ratings(100, QUEENS_GAME)
+
+        rating_series = {}
+        perf_series = {}
+        fake_file = SimpleNamespace(filename='plot.png')
+        monkeypatch.setattr(
+            minigames_module, 'plot_akari_rating',
+            lambda series: rating_series.update(
+                names=[name for _history, name in series]) or fake_file)
+        monkeypatch.setattr(
+            minigames_module, 'plot_akari_performance',
+            lambda series: perf_series.update(
+                names=[name for _history, name, _rating in series]) or fake_file)
+
+        asyncio.run(cog._cmd_queens_rating(ctx, [alice]))
+        assert rating_series['names'] == ['Anonymous']
+        assert ctx.sent['embed'].title == 'LinkedIn Queens rating — Anonymous'
+
+        asyncio.run(cog._cmd_queens_performance(ctx, [alice]))
+        assert perf_series['names'] == ['Anonymous']
+        assert ctx.sent['embed'].title == (
+            'LinkedIn Queens performance — Anonymous')
+
+        pages = []
+        monkeypatch.setattr(
+            minigames_module.paginator, 'paginate',
+            lambda _bot, _channel, page_list, **_kwargs: pages.extend(page_list))
+        asyncio.run(cog._cmd_queens_history(ctx, alice))
+        assert pages
+        assert pages[0][1].title.startswith(
+            'LinkedIn Queens rating history — Anonymous')
+        assert 'Alice' not in pages[0][1].title
 
     def test_queens_rating_filters_reject_decay(self, db, monkeypatch):
         monkeypatch.setattr(cf_common, 'user_db', db)
@@ -1775,6 +1939,10 @@ class TestQueensCommands:
         ctx = self._make_ctx(guild, alice)
         cog = Minigames(bot=None)
 
+        db.set_minigame_player_link(
+            100, 'queens', alice.id, 'Alice LinkedIn',
+            normalize_queens_name('Alice LinkedIn'),
+            minigames_module._QUEENS_ANONYMOUS_LINK_MARKER, 1.0, alice.id)
         self._save_queens_result(db, 1, alice.id, '2026-06-08', 5, False, 0)
         self._save_queens_result(db, 2, bob.id, '2026-06-08', 7, True, 100)
         self._save_queens_result(db, 3, alice.id, '2026-06-09', 8, True, 100)
@@ -1784,8 +1952,9 @@ class TestQueensCommands:
 
         embed = ctx.sent['embed']
         assert embed.title == 'LinkedIn Queens Head to Head'
-        assert '`Alice`: **1.5** points, **1** wins' in embed.description
+        assert '`Anonymous`: **1.5** points, **1** wins' in embed.description
         assert '`Bob`: **0.5** points, **0** wins' in embed.description
+        assert '`Alice`' not in embed.description
         assert 'Ties: **1**' in embed.description
 
     def test_top_counts_fastest_winners(self, db, monkeypatch):
@@ -1797,6 +1966,10 @@ class TestQueensCommands:
         ctx = self._make_ctx(guild, alice)
         cog = Minigames(bot=object())
 
+        db.set_minigame_player_link(
+            100, 'queens', alice.id, 'Alice LinkedIn',
+            normalize_queens_name('Alice LinkedIn'),
+            minigames_module._QUEENS_ANONYMOUS_LINK_MARKER, 1.0, alice.id)
         self._save_queens_result(db, 1, alice.id, '2026-06-08', 5, False, 0)
         self._save_queens_result(db, 2, bob.id, '2026-06-08', 7, True, 100)
         self._save_queens_result(db, 3, alice.id, '2026-06-09', 8, True, 100)
@@ -1812,7 +1985,8 @@ class TestQueensCommands:
         assert len(pages) == 1
         embed = pages[0][1]
         assert embed.title == 'LinkedIn Queens Winners'
-        assert '`Alice` — **2** wins' in embed.description
+        assert '`Anonymous` — **2** wins' in embed.description
+        assert '`Alice`' not in embed.description
         assert '`Bob`' not in embed.description
 
 

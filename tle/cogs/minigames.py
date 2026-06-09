@@ -103,6 +103,9 @@ _BLACK = (0, 0, 0)
 _SMOKE_WHITE = (250, 250, 250)
 _URL_RE = re.compile(r'https?://\S+', re.IGNORECASE)
 _QUEENS_CONNECTION_ACCOUNT_KEY = 'queens_connection_account'
+_QUEENS_ANONYMOUS_LINK_MARKER = 'tle:queens:anonymous'
+_QUEENS_ANONYMOUS_LABEL = 'Anonymous'
+_QUEENS_ANONYMOUS_FLAGS = {'+anon', '+anonymous'}
 _QUEENS_ANCHOR_DATE = dt.date(2026, 6, 8)
 _QUEENS_ANCHOR_NUMBER = 769
 
@@ -295,6 +298,31 @@ def _queens_result_message_id(guild_id, puzzle_date, user_id):
 def _format_queens_date(row_or_date):
     value = getattr(row_or_date, 'puzzle_date', row_or_date)
     return normalize_puzzle_date(value).isoformat()
+
+
+def _is_queens_link_anonymous(link):
+    return (
+        link is not None
+        and getattr(link, 'external_url', None) == _QUEENS_ANONYMOUS_LINK_MARKER
+    )
+
+
+def _queens_public_link_name(link):
+    if _is_queens_link_anonymous(link):
+        return _QUEENS_ANONYMOUS_LABEL
+    return getattr(link, 'external_name', '-')
+
+
+def _split_queens_anonymous_flag(linkedin_text):
+    tokens = str(linkedin_text or '').split()
+    anonymous = any(
+        token.casefold() in _QUEENS_ANONYMOUS_FLAGS
+        for token in tokens)
+    name_tokens = [
+        token for token in tokens
+        if token.casefold() not in _QUEENS_ANONYMOUS_FLAGS
+    ]
+    return ' '.join(name_tokens).strip(), anonymous
 
 
 def _clean_queens_linkedin_name(text):
@@ -631,15 +659,17 @@ def _get_akari_puzzle_table_image_file(guild, rows, title,
 
 def _queens_results_table_rows(guild, rows, *, puzzle_info=None,
                                registrants=None, identity_fn=None,
-                               sort_key_fn=None):
+                               name_fn=None, sort_key_fn=None):
     if identity_fn is None:
         identity_fn = lambda _g, row: getattr(row, 'user_id', '-')
+    if name_fn is None:
+        name_fn = lambda g, row: _safe_user_name(g, row.user_id)
     annotated = puzzle_info is not None and registrants is not None
     result = []
     for index, row in enumerate(
             _sort_akari_puzzle_results(rows, sort_key_fn=sort_key_fn),
             start=1):
-        name = _safe_user_name(guild, row.user_id)
+        name = name_fn(guild, row)
         delta_cell = ''
         if (annotated
                 and row.user_id in registrants
@@ -664,12 +694,13 @@ def _get_queens_results_table_image_file(guild, rows, title,
                                          *, puzzle_info=None, registrants=None,
                                          identity_label='LinkedIn',
                                          identity_fn=None,
+                                         name_fn=None,
                                          sort_key_fn=None):
     rows = _sort_akari_puzzle_results(rows, sort_key_fn=sort_key_fn)
     displayed = rows[:_AKARI_IMAGE_MAX_ROWS]
     displayed_rows = _queens_results_table_rows(
         guild, displayed, puzzle_info=puzzle_info, registrants=registrants,
-        identity_fn=identity_fn, sort_key_fn=sort_key_fn)
+        identity_fn=identity_fn, name_fn=name_fn, sort_key_fn=sort_key_fn)
     annotated = puzzle_info is not None and registrants is not None
     row_colors = None
     if annotated:
@@ -698,7 +729,8 @@ def _get_queens_results_table_image_file(guild, rows, title,
 
 
 def _akari_rating_table_rows(guild, rating_rows, registrants, *,
-                             mark_registered=True, identity_fn=None):
+                             mark_registered=True, identity_fn=None,
+                             name_fn=None):
     """Build display rows (#, Name[✓], Handle, Rating · Rank, Games) for the leaderboard.
 
     ``rating`` is rounded only here for display, and the rank abbreviation
@@ -709,9 +741,11 @@ def _akari_rating_table_rows(guild, rating_rows, registrants, *,
     """
     if identity_fn is None:
         identity_fn = lambda g, row: _safe_cf_handle(g, row.user_id)
+    if name_fn is None:
+        name_fn = lambda g, row: _safe_user_name(g, row.user_id)
     rows = []
     for index, row in enumerate(rating_rows, start=1):
-        name = _safe_user_name(guild, row.user_id)
+        name = name_fn(guild, row)
         if mark_registered and row.user_id in registrants:
             name = f'{name} \N{CHECK MARK}'
         rating = round(row.rating)
@@ -741,11 +775,12 @@ def _get_akari_rating_table_image_file(guild, rating_rows, registrants,
                                        *, title='Daily Akari Ratings',
                                        mark_registered=True,
                                        identity_label='Handle',
-                                       identity_fn=None):
+                                       identity_fn=None,
+                                       name_fn=None):
     displayed = rating_rows[:_AKARI_IMAGE_MAX_ROWS]
     table_rows = _akari_rating_table_rows(
         guild, displayed, registrants, mark_registered=mark_registered,
-        identity_fn=identity_fn)
+        identity_fn=identity_fn, name_fn=name_fn)
     row_colors = [_akari_row_text_color(row.rating) for row in displayed]
     footer = None
     if len(rating_rows) > len(table_rows):
@@ -982,7 +1017,7 @@ class Minigames(commands.Cog):
     async def _resolve_queens_registration_args(self, ctx, first, rest):
         if first is None:
             raise MinigameCogError(
-                'Usage: `;queens register LinkedIn Name`.')
+                'Usage: `;queens register LinkedIn Name [+anon]`.')
         first = str(first).strip()
         rest = (rest or '').strip()
         target = ctx.author
@@ -998,7 +1033,10 @@ class Minigames(commands.Cog):
             target = await self._resolve_member(ctx, first)
             target = self._resolve_registrar_target(ctx, target)
             linkedin = rest
-        return target, linkedin
+        linkedin, anonymous = _split_queens_anonymous_flag(linkedin)
+        if not linkedin:
+            raise MinigameCogError('A LinkedIn display name is required.')
+        return target, linkedin, anonymous
 
     # ── Rating ──────────────────────────────────────────────────────────
 
@@ -1146,7 +1184,8 @@ class Minigames(commands.Cog):
 
     # ── Queens helpers ─────────────────────────────────────────────────
 
-    def _cmd_queens_register_link(self, ctx, member, linkedin_text):
+    def _cmd_queens_register_link(self, ctx, member, linkedin_text,
+                                  anonymous=False):
         self._ensure_not_minigame_banned(
             ctx.guild.id, QUEENS_GAME, member.id, _safe_member_name(member))
         name = _clean_queens_linkedin_name(linkedin_text)
@@ -1154,12 +1193,15 @@ class Minigames(commands.Cog):
         existing = cf_common.user_db.get_minigame_player_link_by_name(
             ctx.guild.id, QUEENS_GAME.name, normalized)
         if existing is not None and str(existing.user_id) != str(member.id):
+            existing_label = self._queens_public_user_name(
+                ctx.guild, existing.user_id, {str(existing.user_id): existing})
             raise MinigameCogError(
                 f'LinkedIn name `{name}` is already linked to '
-                f'{_safe_user_name(ctx.guild, existing.user_id)}.')
+                f'{existing_label}.')
+        external_url = _QUEENS_ANONYMOUS_LINK_MARKER if anonymous else None
         cf_common.user_db.set_minigame_player_link(
             ctx.guild.id, QUEENS_GAME.name, member.id, name, normalized,
-            None, time.time(), ctx.author.id)
+            external_url, time.time(), ctx.author.id)
         claimed = self._claim_queens_unresolved_results(
             ctx.guild.id, member.id, normalized)
         if claimed:
@@ -1251,6 +1293,7 @@ class Minigames(commands.Cog):
         )
 
     def _format_queens_import_preview(self, ctx, preview):
+        links_by_user = self._queens_links_by_user(ctx.guild.id)
         lines = [
             f'{QUEENS_GAME.display_name} #{preview.puzzle_number} '
             f'import preview for {preview.puzzle_date.isoformat()}',
@@ -1260,9 +1303,10 @@ class Minigames(commands.Cog):
         if preview.resolved:
             for index, entry in enumerate(
                     sorted(preview.resolved, key=lambda e: e.time_seconds), start=1):
+                name = self._queens_public_user_name(
+                    ctx.guild, entry.user_id, links_by_user)
                 lines.append(
-                    f'{index}. {_safe_user_name(ctx.guild, entry.user_id)} — '
-                    f'{_format_queens_result(entry)}')
+                    f'{index}. {name} — {_format_queens_result(entry)}')
         else:
             lines.append('- none yet')
         if preview.unresolved:
@@ -1324,6 +1368,25 @@ class Minigames(commands.Cog):
                 guild_id, QUEENS_GAME.name)
         }
 
+    def _queens_public_user_name(self, guild, user_id, links_by_user=None):
+        if links_by_user is None:
+            link = cf_common.user_db.get_minigame_player_link(
+                guild.id, QUEENS_GAME.name, user_id)
+        else:
+            link = links_by_user.get(str(user_id))
+        if _is_queens_link_anonymous(link):
+            return _QUEENS_ANONYMOUS_LABEL
+        return _safe_user_name(guild, user_id)
+
+    def _queens_name_fn(self, links_by_user):
+        return lambda guild, row: self._queens_public_user_name(
+            guild, row.user_id, links_by_user)
+
+    def _minigame_public_user_name(self, guild, game, user_id):
+        if game.name == QUEENS_GAME.name:
+            return self._queens_public_user_name(guild, user_id)
+        return _safe_user_name(guild, user_id)
+
     def _require_queens_registered_member(self, guild_id, member):
         link = cf_common.user_db.get_minigame_player_link(
             guild_id, QUEENS_GAME.name, member.id)
@@ -1335,7 +1398,7 @@ class Minigames(commands.Cog):
 
     def _queens_rating_identity_fn(self, links_by_user):
         return lambda _guild, row: (
-            links_by_user.get(str(row.user_id)).external_name
+            _queens_public_link_name(links_by_user.get(str(row.user_id)))
             if str(row.user_id) in links_by_user
             else '-'
         )
@@ -1344,7 +1407,7 @@ class Minigames(commands.Cog):
         link = cf_common.user_db.get_minigame_player_link(
             guild_id, QUEENS_GAME.name, member.id)
         if link is not None:
-            return link.external_name
+            return _queens_public_link_name(link)
         return _safe_member_name(member)
 
     async def _resolve_queens_linked_player(self, ctx, player_text):
@@ -1364,7 +1427,12 @@ class Minigames(commands.Cog):
                 raise MinigameCogError(
                     f'`{_safe_member_name(member)}` is not registered for '
                     f'{QUEENS_GAME.display_name}.')
-            return str(member.id), _safe_member_name(member), link
+            return (
+                str(member.id),
+                self._queens_public_user_name(
+                    ctx.guild, member.id, {str(member.id): link}),
+                link,
+            )
 
         name = _clean_queens_linkedin_name(player_text)
         link = cf_common.user_db.get_minigame_player_link_by_name(
@@ -1373,12 +1441,8 @@ class Minigames(commands.Cog):
             raise MinigameCogError(
                 f'Could not find a Discord user or registered LinkedIn name '
                 f'for `{discord.utils.escape_mentions(player_text)}`.')
-        member = ctx.guild.get_member(int(link.user_id))
-        label = (
-            _safe_member_name(member)
-            if member is not None
-            else _safe_user_name(ctx.guild, link.user_id)
-        )
+        label = self._queens_public_user_name(
+            ctx.guild, link.user_id, {str(link.user_id): link})
         return str(link.user_id), label, link
 
     @staticmethod
@@ -1464,7 +1528,8 @@ class Minigames(commands.Cog):
             title=title,
             mark_registered=show_all,
             identity_label='LinkedIn',
-            identity_fn=self._queens_rating_identity_fn(links_by_user))
+            identity_fn=self._queens_rating_identity_fn(links_by_user),
+            name_fn=self._queens_name_fn(links_by_user))
         await ctx.send(file=discord_file)
 
     async def _cmd_queens_rating(self, ctx, members, *,
@@ -1490,10 +1555,10 @@ class Minigames(commands.Cog):
             if row is None:
                 raise MinigameCogError(
                     f'No {QUEENS_GAME.display_name} rating for '
-                    f'`{_safe_member_name(member)}` yet.')
+                    f'`{self._queens_public_user_name(ctx.guild, member.id)}` yet.')
             if not history:
                 raise MinigameCogError(
-                    f'`{_safe_member_name(member)}` has no rated '
+                    f'`{self._queens_public_user_name(ctx.guild, member.id)}` has no rated '
                     f'{QUEENS_GAME.display_name} days to plot yet.')
             per_member.append((member, row, history))
 
@@ -1505,6 +1570,7 @@ class Minigames(commands.Cog):
 
         if len(per_member) == 1:
             member, row, history = per_member[0]
+            display_name = self._queens_public_user_name(ctx.guild, member.id)
             rating = round(row.rating)
             rank = rank_for_rating(rating)
             peak_rank = rank_for_rating(round(row.peak))
@@ -1518,7 +1584,7 @@ class Minigames(commands.Cog):
                 if last_contest is not None else '—')
             embed = discord.Embed(
                 title=(f'{QUEENS_GAME.display_name} rating — '
-                       f'{_safe_member_name(member)}'),
+                       f'{display_name}'),
                 color=rank.color_embed,
             )
             embed.add_field(name='Rating', value=f'{rating} ({rank.title_abbr})')
@@ -1531,7 +1597,7 @@ class Minigames(commands.Cog):
                 per_member, key=lambda t: t[1].rating)
             top_rank = rank_for_rating(round(top_row.rating))
             lines = [
-                f'**{_safe_member_name(member)}**: '
+                f'**{self._queens_public_user_name(ctx.guild, member.id)}**: '
                 f'{round(row.rating)} '
                 f'({rank_for_rating(round(row.rating)).title_abbr})'
                 for member, row, _history in per_member
@@ -1569,11 +1635,11 @@ class Minigames(commands.Cog):
             if row is None:
                 raise MinigameCogError(
                     f'No {QUEENS_GAME.display_name} rating for '
-                    f'`{_safe_member_name(member)}` yet.')
+                    f'`{self._queens_public_user_name(ctx.guild, member.id)}` yet.')
             contest_history = [h for h in history if h.performance is not None]
             if not contest_history:
                 raise MinigameCogError(
-                    f'`{_safe_member_name(member)}` has no contested '
+                    f'`{self._queens_public_user_name(ctx.guild, member.id)}` has no contested '
                     f'{QUEENS_GAME.display_name} days to plot performance for yet.')
             per_member.append((member, row, history, contest_history))
 
@@ -1586,13 +1652,14 @@ class Minigames(commands.Cog):
 
         if len(per_member) == 1:
             member, _row, _history, contest_history = per_member[0]
+            display_name = self._queens_public_user_name(ctx.guild, member.id)
             last_perf = contest_history[-1].performance
             last_rank = rank_for_rating(round(last_perf))
             best_perf = max(h.performance for h in contest_history)
             best_rank = rank_for_rating(round(best_perf))
             embed = discord.Embed(
                 title=(f'{QUEENS_GAME.display_name} performance — '
-                       f'{_safe_member_name(member)}'),
+                       f'{display_name}'),
                 color=last_rank.color_embed,
             )
             embed.add_field(name='Last performance',
@@ -1605,7 +1672,7 @@ class Minigames(commands.Cog):
                 contest_history[-1].performance
                 for _member, _row, _history, contest_history in per_member)))
             lines = [
-                f'**{_safe_member_name(member)}**: '
+                f'**{self._queens_public_user_name(ctx.guild, member.id)}**: '
                 f'last {round(contest_history[-1].performance)} '
                 f'({rank_for_rating(round(contest_history[-1].performance)).title_abbr})'
                 for member, _row, _history, contest_history in per_member
@@ -1633,13 +1700,14 @@ class Minigames(commands.Cog):
         contest_history = [h for h in history if h.performance is not None]
         if not contest_history:
             raise MinigameCogError(
-                f'`{_safe_member_name(member)}` has no contested '
+                f'`{self._queens_public_user_name(ctx.guild, member.id)}` has no contested '
                 f'{QUEENS_GAME.display_name} days yet.')
 
         lines = [_format_minigame_history_line(h)
                  for h in reversed(contest_history)]
         title = (f'{QUEENS_GAME.display_name} rating history — '
-                 f'{_safe_member_name(member)} ({len(contest_history)} contests)')
+                 f'{self._queens_public_user_name(ctx.guild, member.id)} '
+                 f'({len(contest_history)} contests)')
         pages = []
         for chunk in paginator.chunkify(lines, _AKARI_HISTORY_PER_PAGE):
             embed = discord.Embed(
@@ -1695,10 +1763,11 @@ class Minigames(commands.Cog):
         rows = cf_common.user_db.get_minigame_results_for_user(
             ctx.guild.id, QUEENS_GAME.name, member.id, dlo, dhi, plo, phi)
         rows = self._filter_minigame_banned_rows(ctx.guild.id, QUEENS_GAME, rows)
+        display_name = self._queens_public_user_name(ctx.guild, member.id)
         if not rows:
             raise MinigameCogError(
                 f'No {QUEENS_GAME.display_name} results found for '
-                f'`{_safe_member_name(member)}`.')
+                f'`{display_name}`.')
 
         current, longest, latest = _queens_streak_info(rows)
         latest_status = (
@@ -1707,7 +1776,7 @@ class Minigames(commands.Cog):
             else 'not clean'
         )
         description = '\n'.join([
-            f'`{_safe_member_name(member)}`: **{current}** consecutive clean day(s)',
+            f'`{display_name}`: **{current}** consecutive clean day(s)',
             f'Longest clean streak: **{longest}** day(s)',
             f'Latest result: **{_format_queens_date(latest)}**, **{format_duration(latest.time_seconds)}**, {latest_status}',
         ])
@@ -1737,10 +1806,11 @@ class Minigames(commands.Cog):
             ctx.guild.id, QUEENS_GAME.name, member.id, dlo, dhi, plo, phi)
         rows = self._filter_minigame_banned_rows(ctx.guild.id, QUEENS_GAME, rows)
         best = _queens_best_results_by_date(rows)
+        display_name = self._queens_public_user_name(ctx.guild, member.id)
         if not best:
             raise MinigameCogError(
                 f'No {QUEENS_GAME.display_name} results found for '
-                f'`{_safe_member_name(member)}`.')
+                f'`{display_name}`.')
 
         results = [best[day] for day in sorted(best)]
         total = len(results)
@@ -1750,7 +1820,7 @@ class Minigames(commands.Cog):
         current, longest, latest = _queens_streak_info(results)
         clean_rate = len(clean) / total * 100 if total else 0
         lines = [
-            f'Player: `{_safe_member_name(member)}`',
+            f'Player: `{display_name}`',
             f'Queens days: **{total}**',
             f'Clean: **{len(clean)}** ({clean_rate:.0f}%)',
             f'No mistakes: **{len(no_mistakes)}**',
@@ -1809,6 +1879,7 @@ class Minigames(commands.Cog):
             registrants=registrants,
             identity_label='LinkedIn',
             identity_fn=self._queens_rating_identity_fn(links_by_user),
+            name_fn=self._queens_name_fn(links_by_user),
             sort_key_fn=lambda row: (
                 int(getattr(row, 'time_seconds', 0)),
                 int(getattr(row, 'message_id', 0)),
@@ -2273,9 +2344,11 @@ class Minigames(commands.Cog):
                 f'These users have no {game.display_name} puzzles to compare.')
 
         title_suffix = f' ({scoring_name.title()})' if scoring_name else ''
+        name1 = self._minigame_public_user_name(ctx.guild, game, member1.id)
+        name2 = self._minigame_public_user_name(ctx.guild, game, member2.id)
         description = '\n'.join([
-            f'`{_safe_member_name(member1)}`: **{stats["score1"]:g}** points, **{stats["wins1"]}** wins',
-            f'`{_safe_member_name(member2)}`: **{stats["score2"]:g}** points, **{stats["wins2"]}** wins',
+            f'`{name1}`: **{stats["score1"]:g}** points, **{stats["wins1"]}** wins',
+            f'`{name2}`: **{stats["score2"]:g}** points, **{stats["wins2"]}** wins',
             f'Ties: **{stats["ties"]}**',
             f'Puzzles: **{stats["common_count"]}**',
         ])
@@ -2405,7 +2478,7 @@ class Minigames(commands.Cog):
             lines = []
             for i, (user_id, wins) in enumerate(chunk):
                 rank = page_idx * per_page + i + 1
-                name = _safe_user_name(ctx.guild, user_id)
+                name = self._minigame_public_user_name(ctx.guild, game, user_id)
                 lines.append(f'**#{rank}** `{name}` — **{wins}** wins')
             embed = discord.Embed(
                 title=f'{game.display_name} Winners{title_suffix}',
@@ -3603,23 +3676,26 @@ class Minigames(commands.Cog):
 
     @queens.command(name='register',
                     brief='Link a Discord user to a LinkedIn Queens name',
-                    usage='LinkedIn Name')
+                    usage='LinkedIn Name [+anon]')
     async def queens_register(self, ctx, first: str = None, *,
                               linkedin: str = None):
         self._require_enabled(ctx.guild.id, QUEENS_GAME)
-        member, linkedin_text = await self._resolve_queens_registration_args(
+        member, linkedin_text, anonymous = await self._resolve_queens_registration_args(
             ctx, first, linkedin)
-        claimed = self._cmd_queens_register_link(ctx, member, linkedin_text)
+        claimed = self._cmd_queens_register_link(
+            ctx, member, linkedin_text, anonymous=anonymous)
         link = cf_common.user_db.get_minigame_player_link(
             ctx.guild.id, QUEENS_GAME.name, member.id)
+        display_name = self._queens_public_user_name(
+            ctx.guild, member.id, {str(member.id): link})
         who = (
             'You are'
             if member.id == ctx.author.id
-            else f'`{_safe_member_name(member)}` is'
+            else f'`{display_name}` is'
         )
         await ctx.send(embed=discord_common.embed_success('\n'.join([
             f'{who} registered for {QUEENS_GAME.display_name} as '
-            f'`{link.external_name}`.',
+            f'`{_queens_public_link_name(link)}`.',
             *(
                 [f'Claimed {claimed} stored Queens result(s) and recomputed ratings.']
                 if claimed else []
@@ -3637,6 +3713,8 @@ class Minigames(commands.Cog):
         else:
             target = await self._resolve_member(ctx, member)
             target = self._resolve_registrar_target(ctx, target)
+        link = cf_common.user_db.get_minigame_player_link(
+            ctx.guild.id, QUEENS_GAME.name, target.id)
         removed = cf_common.user_db.delete_minigame_player_link(
             ctx.guild.id, QUEENS_GAME.name, target.id)
         if not removed:
@@ -3645,7 +3723,7 @@ class Minigames(commands.Cog):
                 f'{QUEENS_GAME.display_name}.')
         await ctx.send(embed=discord_common.embed_success(
             f'Removed {QUEENS_GAME.display_name} link for '
-            f'`{_safe_member_name(target)}`.'))
+            f'`{self._queens_public_user_name(ctx.guild, target.id, {str(target.id): link})}`.'))
 
     @queens.command(name='links', brief='List registered LinkedIn Queens names')
     async def queens_links(self, ctx):
@@ -3657,9 +3735,10 @@ class Minigames(commands.Cog):
                 f'No {QUEENS_GAME.display_name} links registered.')
         lines = []
         for row in rows:
+            display_name = self._queens_public_user_name(
+                ctx.guild, row.user_id, {str(row.user_id): row})
             lines.append(
-                f'- {_safe_user_name(ctx.guild, row.user_id)}: '
-                f'`{row.external_name}`')
+                f'- {display_name}: `{_queens_public_link_name(row)}`')
         pages = []
         for chunk in paginator.chunkify(lines, _QUEENS_HISTORY_PER_PAGE):
             pages.append((None, discord.Embed(
@@ -3713,15 +3792,19 @@ class Minigames(commands.Cog):
         added = cf_common.user_db.ban_minigame_user(
             ctx.guild.id, QUEENS_GAME.name, member.id, time.time(),
             ctx.author.id, reason)
+        link = cf_common.user_db.get_minigame_player_link(
+            ctx.guild.id, QUEENS_GAME.name, member.id)
+        display_name = self._queens_public_user_name(
+            ctx.guild, member.id, {str(member.id): link})
         if not added:
             raise MinigameCogError(
-                f'`{_safe_member_name(member)}` is already banned from '
+                f'`{display_name}` is already banned from '
                 f'{QUEENS_GAME.display_name}.')
         cf_common.user_db.delete_minigame_player_link(
             ctx.guild.id, QUEENS_GAME.name, member.id)
         self._recompute_minigame_ratings(ctx.guild.id, QUEENS_GAME)
         lines = [
-            f'`{_safe_member_name(member)}` is now banned from '
+            f'`{display_name}` is now banned from '
             f'{QUEENS_GAME.display_name}. They will be skipped by imports, '
             'manual adds, and rating recomputes.',
             'Their LinkedIn Queens registration was removed.',
