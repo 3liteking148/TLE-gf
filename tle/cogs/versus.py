@@ -199,6 +199,7 @@ class Versus(commands.Cog):
         self.converter = commands.MemberConverter()
 
     @commands.group(brief='Compare contest results between users',
+                    aliases=['vs'],
                     usage='[+all] handle1 handle2 [handle3 ...]',
                     invoke_without_command=True)
     async def versus(self, ctx, *args: str):
