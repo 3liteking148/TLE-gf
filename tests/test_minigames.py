@@ -2580,6 +2580,7 @@ class TestQueensCommands:
         self._save_queens_result(db, 2, bob.id, '2026-06-08', 10)
         self._save_queens_result(db, 3, alice.id, '2026-06-09', 9)
         self._save_queens_result(db, 4, bob.id, '2026-06-09', 4)
+        self._save_queens_result(db, 5, alice.id, '2026-06-10', 7)
         cog._recompute_minigame_ratings(100, QUEENS_GAME)
 
         rating_series = {}
@@ -2612,8 +2613,34 @@ class TestQueensCommands:
             lambda _bot, _channel, page_list, **_kwargs: pages.extend(page_list))
         asyncio.run(cog._cmd_queens_history(ctx, alice))
         assert pages
+        assert pages[0][1].title.endswith('(3 days)')
+        assert '2026-06-10' in pages[0][1].description
         assert '2026-06-09' in pages[0][1].description
+        assert 'solo' in pages[0][1].description
         assert '**#' not in pages[0][1].description
+
+    def test_queens_history_shows_solo_only_days(self, db, monkeypatch):
+        monkeypatch.setattr(cf_common, 'user_db', db)
+        db.set_guild_config(100, 'queens', '1')
+        alice = _FakeDiscordMember(300, 'alice', 'Alice')
+        guild = _FakeGuild(100, members=[alice])
+        ctx = self._make_ctx(guild, alice)
+        cog = Minigames(bot=object())
+        db.set_minigame_player_link(
+            100, 'queens', alice.id, 'Alice LinkedIn',
+            normalize_queens_name('Alice LinkedIn'), None, 1.0, alice.id)
+        self._save_queens_result(db, 1, alice.id, '2026-06-08', 5)
+        pages = []
+        monkeypatch.setattr(
+            minigames_module.paginator, 'paginate',
+            lambda _bot, _channel, page_list, **_kwargs: pages.extend(page_list))
+
+        asyncio.run(cog._cmd_queens_history(ctx, alice))
+
+        assert pages
+        assert pages[0][1].title.endswith('(1 day)')
+        assert '2026-06-08' in pages[0][1].description
+        assert 'solo' in pages[0][1].description
 
     def test_anonymous_registration_hides_graph_identity_only(
             self, db, monkeypatch):

@@ -909,11 +909,16 @@ def _format_minigame_history_line(point):
     if point.is_perfect:
         result_str = f'{result_str} clean'
     date_str = normalize_puzzle_date(point.puzzle_date).isoformat()
+    performance_str = (
+        f'perf {round(point.performance)}'
+        if point.performance is not None
+        else 'solo'
+    )
     return (
         f'**{date_str}** \N{MIDDLE DOT} {result_str} '
         f'\N{MIDDLE DOT} {old_rating} \N{HORIZONTAL BAR} **{delta:+}** '
         f'\N{LONG RIGHTWARDS ARROW} {new_rating} ({rank_abbr}) '
-        f'\N{MIDDLE DOT} perf {round(point.performance)}'
+        f'\N{MIDDLE DOT} {performance_str}'
     )
 
 
@@ -2488,17 +2493,18 @@ class Minigames(commands.Cog):
         history = self._minigame_user_history(
             ctx.guild.id, QUEENS_GAME, member.id,
             excluded_ids=excluded_ids, included_ids=included_ids)
-        contest_history = [h for h in history if h.performance is not None]
-        if not contest_history:
+        played_history = [h for h in history if not h.is_decay]
+        if not played_history:
             raise MinigameCogError(
-                f'`{self._queens_public_user_name(ctx.guild, member.id)}` has no contested '
+                f'`{self._queens_public_user_name(ctx.guild, member.id)}` has no '
                 f'{QUEENS_GAME.display_name} days yet.')
 
         lines = [_format_minigame_history_line(h)
-                 for h in reversed(contest_history)]
+                 for h in reversed(played_history)]
+        day_label = 'day' if len(played_history) == 1 else 'days'
         title = (f'{QUEENS_GAME.display_name} rating history — '
                  f'{self._queens_public_user_name(ctx.guild, member.id)} '
-                 f'({len(contest_history)} contests)')
+                 f'({len(played_history)} {day_label})')
         pages = []
         for chunk in paginator.chunkify(lines, _AKARI_HISTORY_PER_PAGE):
             embed = discord.Embed(
