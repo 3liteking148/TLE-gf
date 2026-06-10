@@ -1408,10 +1408,16 @@ class Minigames(commands.Cog):
 
     def _save_queens_registration_link(self, guild_id, member_id, name,
                                        normalized_name, external_url, linked_by):
+        previous_link = cf_common.user_db.get_minigame_player_link(
+            guild_id, QUEENS_GAME.name, member_id)
         self._migrate_legacy_queens_results_to_external(guild_id)
+        if previous_link is not None:
+            self._delete_queens_materialized_results_for_link(
+                guild_id, previous_link)
         cf_common.user_db.set_minigame_player_link(
             guild_id, QUEENS_GAME.name, member_id, name, normalized_name,
             external_url, time.time(), linked_by)
+        self._migrate_legacy_queens_results_to_external(guild_id)
         claimed = self._claim_queens_unresolved_results(
             guild_id, member_id, normalized_name)
         self._recompute_minigame_ratings(guild_id, QUEENS_GAME)
@@ -1445,9 +1451,7 @@ class Minigames(commands.Cog):
             f'`{display_name}` is registered for {QUEENS_GAME.display_name} as '
             f'`{_queens_public_link_name(link)}`.',
         ]
-        if claimed:
-            lines.append(
-                f'Claimed {claimed} stored Queens result(s) and recomputed ratings.')
+        del claimed
         await ctx.send(embed=discord_common.embed_success('\n'.join(lines)))
 
     async def _cmd_queens_register(self, ctx, member, linkedin_text,
@@ -1670,6 +1674,9 @@ class Minigames(commands.Cog):
         link = cf_common.user_db.get_minigame_player_link(
             ctx.guild.id, QUEENS_GAME.name, target.id)
         self._migrate_legacy_queens_results_to_external(ctx.guild.id)
+        if link is not None:
+            self._delete_queens_materialized_results_for_link(
+                ctx.guild.id, link)
         removed = cf_common.user_db.delete_minigame_player_link(
             ctx.guild.id, QUEENS_GAME.name, target.id)
         if not removed:
@@ -1729,9 +1736,49 @@ class Minigames(commands.Cog):
             return link.normalized_name, link.external_name
         return None
 
+    @staticmethod
+    def _queens_source_row_key(normalized_name, row):
+        puzzle_date = normalize_puzzle_date(row.puzzle_date)
+        return (
+            normalized_name,
+            _queens_puzzle_number_for_date(puzzle_date),
+            int(row.accuracy),
+            int(row.time_seconds),
+            int(row.is_perfect),
+        )
+
+    def _queens_source_row_keys(self, guild_id):
+        return {
+            self._queens_source_row_key(row.normalized_name, row)
+            for row in cf_common.user_db.get_minigame_unresolved_results_for_guild(
+                guild_id, QUEENS_GAME.name)
+        }
+
+    def _is_current_queens_projection_row(self, guild_id, row, link,
+                                          source_keys):
+        if link is None:
+            return False
+        puzzle_date = normalize_puzzle_date(row.puzzle_date)
+        expected_message_id = _queens_result_message_id(
+            guild_id, puzzle_date, link.user_id)
+        if str(row.message_id) != str(expected_message_id):
+            return False
+        return self._queens_source_row_key(link.normalized_name, row) in source_keys
+
+    def _delete_queens_materialized_results_for_link(self, guild_id, link):
+        deleted = 0
+        for row in cf_common.user_db.get_minigame_unresolved_results_for_name(
+                guild_id, QUEENS_GAME.name, link.normalized_name):
+            puzzle_date = normalize_puzzle_date(row.puzzle_date)
+            for puzzle_number in _queens_puzzle_numbers_for_date(puzzle_date):
+                deleted += cf_common.user_db.delete_minigame_result_for_user_puzzle(
+                    guild_id, QUEENS_GAME.name, link.user_id, puzzle_number)
+        return deleted
+
     def _migrate_legacy_queens_results_to_external(
             self, guild_id, *, delete_migrated=True):
         links_by_user = self._queens_links_by_user(guild_id)
+        source_keys = self._queens_source_row_keys(guild_id)
         migrated = 0
         rows = cf_common.user_db.get_stored_minigame_results_for_guild(
             guild_id, QUEENS_GAME.name)
@@ -1746,6 +1793,9 @@ class Minigames(commands.Cog):
 
         for row in sorted(rows, key=migration_order):
             link = links_by_user.get(str(row.user_id))
+            if self._is_current_queens_projection_row(
+                    guild_id, row, link, source_keys):
+                continue
             identity = self._legacy_queens_source_identity(row, link)
             if identity is None:
                 continue
@@ -1768,6 +1818,7 @@ class Minigames(commands.Cog):
                 cf_common.user_db.delete_stored_minigame_result_row(
                     guild_id, QUEENS_GAME.name, row.storage, row.message_id,
                     row.puzzle_number)
+            source_keys.add(self._queens_source_row_key(normalized_name, row))
             migrated += 1
         return migrated
 
@@ -5195,6 +5246,9 @@ class Minigames(commands.Cog):
                 f'`{display_name}` is already banned from '
                 f'{QUEENS_GAME.display_name}.')
         self._migrate_legacy_queens_results_to_external(ctx.guild.id)
+        if link is not None:
+            self._delete_queens_materialized_results_for_link(
+                ctx.guild.id, link)
         cf_common.user_db.delete_minigame_player_link(
             ctx.guild.id, QUEENS_GAME.name, member.id)
         self._sync_queens_materialized_results(

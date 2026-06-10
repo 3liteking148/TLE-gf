@@ -1529,6 +1529,30 @@ class TestQueensImport:
         assert db.get_minigame_unresolved_results_for_guild(100, 'queens') == []
         assert db.get_minigame_ratings(100, 'queens') == []
 
+    def test_sync_does_not_remigrate_current_materialized_rows(
+            self, db, monkeypatch):
+        monkeypatch.setattr(cf_common, 'user_db', db)
+        db.set_minigame_player_link(
+            100, 'queens', 300, 'Alice LinkedIn',
+            normalize_queens_name('Alice LinkedIn'), None, 1.0, 999)
+        db.save_minigame_unresolved_result(
+            100, 'queens', normalize_queens_name('Alice LinkedIn'),
+            'Alice LinkedIn', 200, _queens_number('2026-06-08'),
+            '2026-06-08', 100, 4, True, 'source')
+        cog = Minigames(bot=None)
+
+        assert cog._sync_queens_materialized_results(100) == 1
+        rows_before = db.get_minigame_results_for_guild(100, 'queens')
+        assert [(row.user_id, row.time_seconds) for row in rows_before] == [
+            ('300', 4),
+        ]
+
+        assert cog._migrate_legacy_queens_results_to_external(100) == 0
+        rows_after = db.get_minigame_results_for_guild(100, 'queens')
+        assert [(row.user_id, row.time_seconds) for row in rows_after] == [
+            ('300', 4),
+        ]
+
     def test_generic_recompute_writes_queens_snapshot_only(self, db, monkeypatch):
         monkeypatch.setattr(cf_common, 'user_db', db)
         db.replace_minigame_ratings(
@@ -1805,6 +1829,36 @@ class TestQueensCommands:
         assert '`Bob` is registered for LinkedIn Queens as `Anonymous`' in (
             ctx.sent['embed'].description)
         assert 'Bob LinkedIn' not in ctx.sent['embed'].description
+
+    def test_set_does_not_report_claimed_count_on_repeat(self, db, monkeypatch):
+        monkeypatch.setattr(cf_common, 'user_db', db)
+        monkeypatch.setattr(
+            minigames_module.discord_common, 'embed_success',
+            lambda desc: SimpleNamespace(description=desc))
+        db.set_guild_config(100, 'queens', '1')
+        mod = _FakeDiscordMember(
+            999, 'mod', 'Mod',
+            roles=[SimpleNamespace(name=constants.TLE_MODERATOR)])
+        bob = _FakeDiscordMember(301, 'dontdefense', 'dontdefense')
+        guild = _FakeGuild(100, members=[mod, bob])
+        ctx = self._make_ctx(guild, mod)
+        cog = Minigames(bot=None)
+        for offset, seconds in enumerate((4, 5)):
+            puzzle_date = dt.date(2026, 6, 8) + dt.timedelta(days=offset)
+            db.save_minigame_unresolved_result(
+                100, 'queens', normalize_queens_name('Dragos Ristache'),
+                'Dragos Ristache', 200, _queens_number(puzzle_date),
+                puzzle_date.isoformat(), 100, seconds, True, 'source')
+
+        asyncio.run(Minigames.queens_set.__wrapped__(
+            cog, ctx, '+anon', linkedin='dontdefense Dragos Ristache'))
+        assert 'Claimed' not in ctx.sent['embed'].description
+        asyncio.run(Minigames.queens_set.__wrapped__(
+            cog, ctx, '+anon', linkedin='dontdefense Dragos Ristache'))
+        assert 'Claimed' not in ctx.sent['embed'].description
+        assert 'Dragos Ristache' not in ctx.sent['embed'].description
+        assert len(db.get_minigame_unresolved_results_for_name(
+            100, 'queens', normalize_queens_name('Dragos Ristache'))) == 2
 
     def test_pending_register_expires_after_linkedin_scan_without_match(
             self, db, monkeypatch):
