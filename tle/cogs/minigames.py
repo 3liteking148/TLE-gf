@@ -5,10 +5,14 @@ import html
 import io
 import json
 import logging
+import os
+import pathlib
 import re
 import statistics
+import sys
 import time
 from collections import namedtuple
+from types import SimpleNamespace
 from typing import Optional
 
 import cairo
@@ -108,6 +112,30 @@ _QUEENS_ANONYMOUS_LABEL = 'Anonymous'
 _QUEENS_ANONYMOUS_FLAGS = {'+anon', '+anonymous'}
 _QUEENS_ANCHOR_DATE = dt.date(2026, 6, 8)
 _QUEENS_ANCHOR_NUMBER = 769
+
+# Scraper config — stored per-guild in guild_config.
+#  - Discord user id of the importer (resolved from `;queens login` whoami)
+#  - Optional override for the storage_state.json path
+# Rate-limit bookkeeping for `;queens update` lives in kvs under
+# `queens_update_throttle:{guild_id}`.
+_QUEENS_IMPORTER_KEY = 'queens_importer_user'
+_QUEENS_STATE_PATH_KEY = 'queens_state_path'
+_QUEENS_UPDATE_THROTTLE_PREFIX = 'queens_update_throttle:'
+_QUEENS_UPDATE_THROTTLE_SECONDS = 60
+_QUEENS_SCRAPER_TIMEOUT = 240  # seconds — playwright start + slow auto-play
+_QUEENS_WHOAMI_TIMEOUT = 60    # seconds — quick /in/me/ visit only
+# Tolerate a state file up to ~256KiB.  Real Playwright state.json files for
+# LinkedIn are ~10-30KiB; this gives generous headroom without inviting
+# someone to upload a giant attachment.
+_QUEENS_STATE_MAX_BYTES = 256 * 1024
+# tle/cogs/minigames.py → repo root → extra/queens_scrape.py
+_QUEENS_SCRAPER_SCRIPT = (
+    pathlib.Path(__file__).resolve().parent.parent.parent
+    / 'extra' / 'queens_scrape.py'
+)
+_QUEENS_DEFAULT_STATE_PATH = (
+    _QUEENS_SCRAPER_SCRIPT.parent / '.queens_state.json'
+)
 
 
 class MinigameCogError(commands.CommandError):
@@ -965,11 +993,11 @@ class Minigames(commands.Cog):
                     self.minigames.all_commands[key] = group
 
     async def cog_unload(self):
-        tasks = list(self._import_tasks.values())
-        for task in tasks:
+        import_tasks = list(self._import_tasks.values())
+        for task in import_tasks:
             task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        if import_tasks:
+            await asyncio.gather(*import_tasks, return_exceptions=True)
 
     # ── Helpers ─────────────────────────────────────────────────────────
 
@@ -1319,6 +1347,19 @@ class Minigames(commands.Cog):
             raise MinigameCogError(
                 'Register the importer with `;queens register` before importing '
                 'LinkedIn Queens leaderboard results.')
+        # If ``ctx.author`` is the configured bot-account importer (the
+        # Discord user whose ``;queens login`` set them as the avatar for
+        # the LinkedIn account the scraper is logged in as), their ``You``
+        # row is an artifact of the scraper having had to play the puzzle
+        # to see the leaderboard — drop it so the bot's controlled solve
+        # time never enters the rating pool.  Real ``;queens import``
+        # paste flows (where ctx.author is a normal human) are unaffected.
+        bot_importer_id = cf_common.user_db.get_guild_config(
+            ctx.guild.id, _QUEENS_IMPORTER_KEY)
+        importer_is_bot = (
+            bot_importer_id is not None
+            and str(ctx.author.id) == str(bot_importer_id))
+
         resolved = []
         unresolved = []
         seen_users = set()
@@ -1326,6 +1367,8 @@ class Minigames(commands.Cog):
         for entry in entries:
             normalized = normalize_queens_name(entry.linkedin_name)
             if entry.is_you:
+                if importer_is_bot:
+                    continue  # bot's artificial solve — never rated
                 link = importer_link
             else:
                 link = cf_common.user_db.get_minigame_player_link_by_name(
@@ -1958,6 +2001,185 @@ class Minigames(commands.Cog):
                 int(getattr(row, 'message_id', 0)),
             ))
         await ctx.send(file=discord_file)
+
+    # ── Queens scraper plumbing (used by ;queens play / update / login) ───
+
+    @staticmethod
+    def _queens_state_path(guild_id):
+        """Resolve the storage_state.json path for this guild.
+
+        Per-guild override stored in guild_config; falls back to the
+        scraper's default (``extra/.queens_state.json`` next to the script).
+        Returns a ``pathlib.Path``.
+        """
+        raw = cf_common.user_db.get_guild_config(
+            guild_id, _QUEENS_STATE_PATH_KEY)
+        if raw:
+            return pathlib.Path(raw).expanduser()
+        return _QUEENS_DEFAULT_STATE_PATH
+
+    async def _run_queens_scraper(self, guild_id, *, auto_play):
+        """Spawn the scraper's ``fetch`` subprocess.
+
+        ``auto_play=True`` makes the scraper solve today's puzzle if the
+        leaderboard isn't visible (used by ``;queens play``).
+        ``auto_play=False`` only fetches what's currently visible (used by
+        ``;queens update``).
+
+        Returns ``(payload, error_message)``: exactly one is non-None.
+        The payload is the parsed JSON dict including the ``status`` field
+        (``ok`` / ``not_played`` / ``session_expired`` / ``error``).
+        """
+        if not _QUEENS_SCRAPER_SCRIPT.exists():
+            return None, (
+                f'Scraper script missing at `{_QUEENS_SCRAPER_SCRIPT}`.')
+        state_path = self._queens_state_path(guild_id)
+        cmd = [sys.executable, str(_QUEENS_SCRAPER_SCRIPT),
+               '--state', str(state_path), 'fetch', '--json']
+        if auto_play:
+            cmd.append('--auto-play')
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env={**os.environ, 'PYTHONIOENCODING': 'utf-8'},
+            )
+        except FileNotFoundError as exc:
+            return None, f'Could not launch scraper: {exc}'
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=_QUEENS_SCRAPER_TIMEOUT)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return None, (
+                f'Scraper timed out after {_QUEENS_SCRAPER_TIMEOUT}s.')
+        stdout_text = stdout.decode('utf-8', errors='replace').strip()
+        stderr_text = stderr.decode('utf-8', errors='replace').strip()
+        if not stdout_text:
+            tail = stderr_text or '(no output)'
+            return None, f'Scraper produced no output. stderr: `{tail[-800:]}`'
+        try:
+            payload = json.loads(stdout_text.splitlines()[-1])
+        except json.JSONDecodeError as exc:
+            return None, (
+                f'Could not parse scraper output as JSON: {exc}. '
+                f'Tail of stdout: ```{stdout_text[-800:]}```')
+        if not isinstance(payload, dict):
+            return None, f'Scraper JSON was not an object: `{payload!r}`'
+        return payload, None
+
+    async def _run_queens_whoami(self, guild_id):
+        """Run the scraper's ``whoami`` subcommand.
+
+        Returns ``(name, error_message)``: exactly one is non-None.
+        Same JSON-status conventions as ``_run_queens_scraper``.
+        """
+        state_path = self._queens_state_path(guild_id)
+        if not state_path.exists():
+            return None, (
+                f'No session file at `{state_path}`. '
+                'Upload one with `;queens login` (attach state.json).')
+        if not _QUEENS_SCRAPER_SCRIPT.exists():
+            return None, f'Scraper script missing at `{_QUEENS_SCRAPER_SCRIPT}`.'
+        cmd = [sys.executable, str(_QUEENS_SCRAPER_SCRIPT),
+               '--state', str(state_path), 'whoami']
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env={**os.environ, 'PYTHONIOENCODING': 'utf-8'},
+            )
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=_QUEENS_WHOAMI_TIMEOUT)
+        except (FileNotFoundError, asyncio.TimeoutError) as exc:
+            return None, f'whoami failed: {exc}'
+        stdout_text = stdout.decode('utf-8', errors='replace').strip()
+        if not stdout_text:
+            return None, 'whoami produced no output.'
+        try:
+            payload = json.loads(stdout_text.splitlines()[-1])
+        except json.JSONDecodeError as exc:
+            return None, f'whoami JSON parse error: {exc}'
+        status = payload.get('status')
+        if status == 'ok':
+            return payload.get('name'), None
+        if status == 'session_expired':
+            return None, 'Session expired — upload a fresh state file.'
+        return None, payload.get('error') or f'whoami status: {status}'
+
+    @staticmethod
+    def _queens_status_message(status):
+        """Human-readable fallback for an unexpected scraper status string."""
+        return {
+            'session_expired': (
+                'LinkedIn session has expired. A mod needs to run '
+                '`;queens login` with a fresh state file.'),
+            'not_played': (
+                "The bot hasn't solved today's Queens puzzle yet. "
+                'Ask a mod to run `;queens play`.'),
+        }.get(status, f'Unexpected scraper status: `{status}`')
+
+    def _queens_resolve_importer(self, guild, payload):
+        """Determine which Discord user owns the bot's LinkedIn account.
+
+        Strategy: look up by the scraper-reported LinkedIn name (or
+        configured fallback).  The matching ``minigame_player_link``'s
+        owner is the importer.  Returns (member, error_message).
+        """
+        # Preferred path: name reported by scraper → matching link.
+        # Fallback: stored Discord ID from a previous successful login.
+        stored_id = cf_common.user_db.get_guild_config(
+            guild.id, _QUEENS_IMPORTER_KEY)
+        if stored_id:
+            member = guild.get_member(int(stored_id))
+            if member is not None:
+                link = cf_common.user_db.get_minigame_player_link(
+                    guild.id, QUEENS_GAME.name, member.id)
+                if link is not None:
+                    return member, None
+        return None, (
+            'No Queens importer is linked for this guild yet. A mod needs '
+            'to run `;queens login` (with the LinkedIn session file '
+            'attached) to set the bot account.')
+
+    async def _do_queens_import(self, ctx, payload, *, source_label):
+        """Apply a scraper payload's ``raw_text`` through the existing import
+        pipeline.  Posts a success embed to ``ctx.channel``.
+
+        ``source_label`` is a short string that prefixes the success message
+        (e.g. ``'Update'`` or ``'Play'``).
+        """
+        importer, err = self._queens_resolve_importer(ctx.guild, payload)
+        if importer is None:
+            raise MinigameCogError(err)
+
+        raw_text = payload.get('raw_text') or ''
+        today_iso = dt.datetime.now(dt.timezone.utc).date().isoformat()
+        fake_ctx = SimpleNamespace(
+            guild=ctx.guild,
+            author=importer,
+            channel=ctx.channel,
+            bot=self.bot,
+        )
+        preview = self._make_queens_import_preview(
+            fake_ctx, today_iso, raw_text)
+        saved = self._save_queens_import(fake_ctx, preview)
+        lines = [
+            f'{source_label} of {QUEENS_GAME.display_name} '
+            f'#{preview.puzzle_number} {today_iso}:',
+            f'- Saved **{saved.resolved}** registered result(s).',
+        ]
+        if saved.unresolved:
+            lines.append(
+                f'- Stored **{saved.unresolved}** unresolved name(s) for '
+                'later registration.')
+        if not saved.resolved and not saved.unresolved:
+            lines.append(
+                '- Leaderboard was empty — nothing to save.')
+        await ctx.send(embed=discord_common.embed_success('\n'.join(lines)))
 
     # ── Listeners ───────────────────────────────────────────────────────
 
@@ -3862,6 +4084,293 @@ class Minigames(commands.Cog):
         self._clear_queens_connection_account(ctx.guild.id)
         await ctx.send(embed=discord_common.embed_success(
             'Cleared the LinkedIn Queens connection account.'))
+
+    # ── Scraper-driven commands (login / play / update / settings) ─────
+
+    @queens.command(
+        name='install',
+        brief='(Admin) Install Playwright + Chromium for the scraper')
+    @commands.has_role(constants.TLE_ADMIN)
+    async def queens_install(self, ctx):
+        """Install Playwright and the Chromium browser into the bot's Python
+        environment, without needing shell access to the host.
+
+        Requires:
+          - Internet egress (to download from PyPI and Playwright's CDN)
+          - ~200 MB free disk
+          - Write access to ``sys.executable``'s site-packages and to the
+            bot user's cache directory (default: ``~/.cache/ms-playwright``)
+
+        Idempotent: re-running is a no-op when both are already installed.
+        Runs as the bot user with whatever permissions it already has — no
+        sudo, no system packages.  If Chromium fails to launch later due to
+        missing system libraries (``libnss3``, ``libxkbcommon0``, etc.),
+        that's a host-level fix only you can do via SSH.
+        """
+        self._require_enabled(ctx.guild.id, QUEENS_GAME)
+        msg = await ctx.send(embed=discord_common.embed_neutral(
+            'Installing scraper dependencies. This downloads ~170 MB and '
+            'takes 1–3 minutes.\n\n'
+            'Step 1/2: `pip install playwright` …'))
+
+        rc, out = await self._run_install_step(
+            [sys.executable, '-m', 'pip', 'install', '--upgrade', 'playwright'],
+            timeout=300)
+        if rc != 0:
+            raise MinigameCogError(
+                f'`pip install playwright` failed (rc={rc}). Tail:\n'
+                f'```{(out or "(no output)")[-1500:]}```')
+
+        await msg.edit(embed=discord_common.embed_neutral(
+            '✓ Step 1/2: `pip install playwright` complete.\n\n'
+            'Step 2/2: `playwright install chromium` (~170 MB) …'))
+
+        rc, out = await self._run_install_step(
+            [sys.executable, '-m', 'playwright', 'install', 'chromium'],
+            timeout=900)
+        if rc != 0:
+            raise MinigameCogError(
+                f'`playwright install chromium` failed (rc={rc}). Tail:\n'
+                f'```{(out or "(no output)")[-1500:]}```')
+
+        await msg.edit(embed=discord_common.embed_success(
+            '✓ Playwright + Chromium installed for this bot.\n'
+            'Next: upload your LinkedIn session with `;queens login` '
+            '(attach `extra/.queens_state.json` generated on your laptop).'))
+
+    @staticmethod
+    async def _run_install_step(cmd, *, timeout):
+        """Spawn an install subprocess and capture combined stdout+stderr.
+
+        Returns ``(returncode, captured_text)``.  Never raises; timeouts come
+        back as ``returncode == -1``.
+        """
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                env={**os.environ, 'PYTHONIOENCODING': 'utf-8'},
+            )
+        except (FileNotFoundError, PermissionError) as exc:
+            return -2, f'Could not launch `{cmd[0]}`: {exc}'
+        try:
+            stdout, _ = await asyncio.wait_for(
+                proc.communicate(), timeout=timeout)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return -1, '(timed out — try running it manually on the host)'
+        return proc.returncode, stdout.decode('utf-8', errors='replace')
+
+    @queens.command(
+        name='login',
+        brief='(Mod) Upload a fresh LinkedIn session file',
+        usage='(attach extra/.queens_state.json to the message)')
+    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    async def queens_login(self, ctx):
+        self._require_enabled(ctx.guild.id, QUEENS_GAME)
+        attachments = list(getattr(ctx.message, 'attachments', None) or [])
+        json_atts = [a for a in attachments
+                     if getattr(a, 'filename', '').lower().endswith('.json')]
+        if not json_atts:
+            raise MinigameCogError(
+                'Attach a `.queens_state.json` file (produced by running '
+                '`python extra/queens_scrape.py login` on any machine with '
+                'a browser) to this message.')
+        attachment = json_atts[0]
+        size = int(getattr(attachment, 'size', 0) or 0)
+        if size and size > _QUEENS_STATE_MAX_BYTES:
+            raise MinigameCogError(
+                f'Attachment is {size} bytes — refusing anything over '
+                f'{_QUEENS_STATE_MAX_BYTES}.')
+        raw = await attachment.read()
+        try:
+            data = json.loads(raw.decode('utf-8'))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise MinigameCogError(
+                f'Attachment is not valid JSON: {exc}.')
+        cookies = data.get('cookies') if isinstance(data, dict) else None
+        if not isinstance(cookies, list):
+            raise MinigameCogError(
+                'JSON does not look like a Playwright storage_state '
+                '(no `cookies` array).')
+        has_li_at = any(
+            isinstance(c, dict) and c.get('name') == 'li_at'
+            for c in cookies)
+        if not has_li_at:
+            raise MinigameCogError(
+                'No `li_at` cookie found — this does not look like a '
+                'LinkedIn session.')
+
+        state_path = self._queens_state_path(ctx.guild.id)
+        try:
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            state_path.write_bytes(raw)
+        except OSError as exc:
+            raise MinigameCogError(
+                f'Could not write session file to `{state_path}`: {exc}.')
+
+        lines = [f'Session saved to `{state_path}`.']
+
+        # Auto-link the importer: ask the scraper who we are, then either
+        # adopt an existing minigame_player_link or create one for the
+        # uploading mod.  Refuse if the LinkedIn name is already taken by a
+        # different Discord user.
+        name, err = await self._run_queens_whoami(ctx.guild.id)
+        if name is None:
+            lines.append(
+                f'Note: could not detect LinkedIn name automatically '
+                f'({err}). Importer not linked yet — first successful '
+                '`;queens play` may sort this out.')
+            await ctx.send(embed=discord_common.embed_success('\n'.join(lines)))
+            return
+
+        normalized = normalize_queens_name(name)
+        existing = cf_common.user_db.get_minigame_player_link_by_name(
+            ctx.guild.id, QUEENS_GAME.name, normalized)
+        if existing is not None and str(existing.user_id) != str(ctx.author.id):
+            owner = self._queens_public_user_name(
+                ctx.guild, existing.user_id,
+                {str(existing.user_id): existing})
+            raise MinigameCogError(
+                f'LinkedIn account `{name}` is already linked to '
+                f'`{owner}`. They need to `;queens unregister` first, or '
+                'log in as a different LinkedIn account.')
+
+        # Either no existing link, or it already belongs to ctx.author —
+        # in either case, (re)assert ownership for ctx.author.
+        self._cmd_queens_register_link(ctx, ctx.author, name)
+        cf_common.user_db.set_guild_config(
+            ctx.guild.id, _QUEENS_IMPORTER_KEY, str(ctx.author.id))
+        lines.append(
+            f'Linked LinkedIn account `{name}` → '
+            f'`{_safe_member_name(ctx.author)}` (importer).')
+        await ctx.send(embed=discord_common.embed_success('\n'.join(lines)))
+
+    @queens.command(
+        name='play',
+        brief='(Mod) Solve today\'s puzzle + refresh the leaderboard')
+    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    async def queens_play(self, ctx):
+        self._require_enabled(ctx.guild.id, QUEENS_GAME)
+        # Pre-flight: importer must be resolvable before we burn 30+ seconds
+        # in the scraper.
+        importer, err = self._queens_resolve_importer(ctx.guild, {})
+        if importer is None:
+            raise MinigameCogError(err)
+
+        await ctx.send(embed=discord_common.embed_neutral(
+            'Running the scraper now — this can take up to '
+            f'{_QUEENS_SCRAPER_TIMEOUT}s while the puzzle solves.'))
+        payload, error = await self._run_queens_scraper(
+            ctx.guild.id, auto_play=True)
+        if error is not None:
+            raise MinigameCogError(error)
+        status = payload.get('status')
+        if status != 'ok':
+            raise MinigameCogError(self._queens_status_message(status))
+        await self._do_queens_import(ctx, payload, source_label='Play')
+
+    @queens.command(
+        name='update',
+        brief='Refresh the LinkedIn Queens leaderboard '
+              f'(rate-limited to once per {_QUEENS_UPDATE_THROTTLE_SECONDS}s)')
+    async def queens_update(self, ctx):
+        self._require_enabled(ctx.guild.id, QUEENS_GAME)
+        kvs_key = f'{_QUEENS_UPDATE_THROTTLE_PREFIX}{ctx.guild.id}'
+        last = cf_common.user_db.kvs_get(kvs_key)
+        if last:
+            try:
+                elapsed = time.time() - float(last)
+            except (TypeError, ValueError):
+                elapsed = _QUEENS_UPDATE_THROTTLE_SECONDS
+            if elapsed < _QUEENS_UPDATE_THROTTLE_SECONDS:
+                wait = int(_QUEENS_UPDATE_THROTTLE_SECONDS - elapsed) + 1
+                raise MinigameCogError(
+                    f'`;queens update` is rate-limited. Try again in {wait}s.')
+
+        importer, err = self._queens_resolve_importer(ctx.guild, {})
+        if importer is None:
+            raise MinigameCogError(err)
+        # Set the throttle BEFORE the slow subprocess so concurrent users
+        # don't both pass the gate.
+        cf_common.user_db.kvs_set(kvs_key, str(time.time()))
+
+        payload, error = await self._run_queens_scraper(
+            ctx.guild.id, auto_play=False)
+        if error is not None:
+            raise MinigameCogError(error)
+        status = payload.get('status')
+        if status == 'not_played':
+            raise MinigameCogError(self._queens_status_message(status))
+        if status != 'ok':
+            raise MinigameCogError(self._queens_status_message(status))
+        await self._do_queens_import(ctx, payload, source_label='Update')
+
+    @queens.command(
+        name='settings',
+        brief='Show the LinkedIn Queens scraper config for this guild')
+    async def queens_settings(self, ctx):
+        self._require_enabled(ctx.guild.id, QUEENS_GAME)
+        state_path = self._queens_state_path(ctx.guild.id)
+        path_default = state_path == _QUEENS_DEFAULT_STATE_PATH
+        state_exists = state_path.exists()
+        importer_id = cf_common.user_db.get_guild_config(
+            ctx.guild.id, _QUEENS_IMPORTER_KEY)
+        importer_label = '`not linked` — `;queens login` to set'
+        if importer_id:
+            member = ctx.guild.get_member(int(importer_id))
+            if member is not None:
+                link = cf_common.user_db.get_minigame_player_link(
+                    ctx.guild.id, QUEENS_GAME.name, member.id)
+                ln = (_queens_public_link_name(link) if link
+                      else '`no link`')
+                importer_label = f'{_safe_member_name(member)} (LinkedIn: `{ln}`)'
+            else:
+                importer_label = f'`{importer_id}` (not in guild)'
+        last_update = cf_common.user_db.kvs_get(
+            f'{_QUEENS_UPDATE_THROTTLE_PREFIX}{ctx.guild.id}')
+        last_text = 'never'
+        if last_update:
+            try:
+                last_text = dt.datetime.fromtimestamp(
+                    float(last_update), tz=dt.timezone.utc
+                ).strftime('%Y-%m-%d %H:%M:%S UTC')
+            except (TypeError, ValueError):
+                pass
+        lines = [
+            f'importer: {importer_label}',
+            f'state file: `{state_path}`'
+            + ('' if not path_default else ' (default)')
+            + ('' if state_exists else ' — **missing!**'),
+            f'last update: `{last_text}`',
+            f'rate limit: `;queens update` once per '
+            f'`{_QUEENS_UPDATE_THROTTLE_SECONDS}s`',
+        ]
+        await ctx.send(embed=discord_common.embed_neutral('\n'.join(lines)))
+
+    @queens.command(
+        name='state-path', aliases=['statepath'],
+        brief='(Mod) Override where the scraper looks for state.json',
+        usage='/abs/path/to/state.json | clear')
+    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    async def queens_state_path(self, ctx, *, path: str = None):
+        self._require_enabled(ctx.guild.id, QUEENS_GAME)
+        if path is None:
+            raise MinigameCogError(
+                'Usage: `;queens state-path /abs/path/to/state.json` '
+                'or `;queens state-path clear`.')
+        if path.strip().lower() == 'clear':
+            cf_common.user_db.delete_guild_config(
+                ctx.guild.id, _QUEENS_STATE_PATH_KEY)
+            await ctx.send(embed=discord_common.embed_success(
+                f'Cleared the override. Default is `{_QUEENS_DEFAULT_STATE_PATH}`.'))
+            return
+        cf_common.user_db.set_guild_config(
+            ctx.guild.id, _QUEENS_STATE_PATH_KEY, path.strip())
+        await ctx.send(embed=discord_common.embed_success(
+            f'Scraper will use `{path.strip()}` for the session file.'))
 
     @queens.command(name='ban',
                     brief='(Mod) Block a user from Queens imports/ratings',
