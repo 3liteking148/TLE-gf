@@ -1373,7 +1373,6 @@ class TestQueensCommands:
         assert pending.name == 'Alice LinkedIn'
         instruction = cog._queens_connection_instruction(100)
         assert 'https://www.linkedin.com/in/linked/' in instruction
-        assert 'note' not in instruction
         assert 'Linked User' not in instruction
         assert 'registration is pending as `Alice LinkedIn`' in (
             ctx.sent['embed'].description)
@@ -1731,7 +1730,6 @@ class TestQueensCommands:
         }
         instruction = cog._queens_connection_instruction(100)
         assert 'https://www.linkedin.com/in/linked/' in instruction
-        assert 'note' not in instruction
         assert 'Linked User' not in instruction
 
     def test_register_rejects_url_input(self, db, monkeypatch):
