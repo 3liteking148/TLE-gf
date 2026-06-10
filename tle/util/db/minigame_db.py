@@ -291,6 +291,25 @@ class MinigameDbMixin:
             params
         ).fetchall()
 
+    def get_stored_minigame_results_for_guild(self, guild_id, game):
+        return self.conn.execute(
+            f'''
+            SELECT 'live' AS storage, live_rows.*
+            FROM (
+                {self._minigame_select('minigame_result')}
+                WHERE guild_id = ? AND game = ?
+            ) live_rows
+            UNION ALL
+            SELECT 'imported' AS storage, imported_rows.*
+            FROM (
+                {self._minigame_select('minigame_import_result')}
+                WHERE guild_id = ? AND game = ?
+            ) imported_rows
+            ORDER BY puzzle_date DESC, puzzle_number DESC, message_id DESC
+            ''',
+            (str(guild_id), game, str(guild_id), game)
+        ).fetchall()
+
     def delete_minigame_result_for_user_puzzle(self, guild_id, game, user_id, puzzle_number):
         live_rc = self.conn.execute(
             '''
@@ -308,6 +327,24 @@ class MinigameDbMixin:
         ).rowcount
         self.conn.commit()
         return live_rc + imported_rc
+
+    def delete_stored_minigame_result_row(
+            self, guild_id, game, storage, message_id, puzzle_number):
+        tables = {
+            'live': 'minigame_result',
+            'imported': 'minigame_import_result',
+        }
+        table = tables[storage]
+        rc = self.conn.execute(
+            f'''
+            DELETE FROM {table}
+            WHERE guild_id = ? AND game = ? AND message_id = ?
+              AND puzzle_number = ?
+            ''',
+            (str(guild_id), game, str(message_id), int(puzzle_number))
+        ).rowcount
+        self.conn.commit()
+        return rc
 
     def delete_minigame_results_for_puzzle(self, guild_id, game, puzzle_number):
         live_rc = self.conn.execute(
