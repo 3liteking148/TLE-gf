@@ -1122,7 +1122,7 @@ class TestQueensImport:
         ]
         ratings = db.get_minigame_ratings(100, 'queens')
         assert [row.user_id for row in ratings] == ['301']
-        assert ratings[0].games == 0
+        assert ratings[0].games == 1
 
     def test_register_claims_previously_unresolved_import_rows(self, db, monkeypatch):
         monkeypatch.setattr(cf_common, 'user_db', db)
@@ -1610,6 +1610,9 @@ class TestQueensImport:
         db.save_minigame_result(
             3, 100, 'queens', 200, 302, _queens_number('2026-06-08'), '2026-06-08',
             0, 10, False, 'slow imperfect')
+        db.save_minigame_result(
+            4, 100, 'queens', 200, 300, _queens_number('2026-06-09'), '2026-06-09',
+            100, 5, True, 'alice solo')
 
         cog = Minigames(bot=None)
         cog._recompute_minigame_ratings(100, QUEENS_GAME)
@@ -1621,7 +1624,9 @@ class TestQueensImport:
         assert set(queens) == {'300', '301', '302'}
         assert queens['300'].rating > queens['301'].rating
         assert abs(queens['301'].rating - queens['302'].rating) < 1e-9
-        assert all(row.games == 1 for row in queens.values())
+        assert queens['300'].games == 2
+        assert queens['301'].games == 1
+        assert queens['302'].games == 1
 
         akari = db.get_minigame_rating(100, 'akari', 999)
         assert akari.rating == 1500
@@ -2615,6 +2620,7 @@ class TestQueensCommands:
         def _capture(guild, rating_rows, registrants, **kwargs):
             captured.append({
                 'user_ids': [row.user_id for row in rating_rows],
+                'games': [row.games for row in rating_rows],
                 'registrants': set(registrants),
                 'identity_label': kwargs['identity_label'],
                 'mark_registered': kwargs['mark_registered'],
@@ -2625,6 +2631,7 @@ class TestQueensCommands:
 
         asyncio.run(cog._cmd_queens_ratings(ctx))
         assert captured[-1]['user_ids'] == ['300']
+        assert captured[-1]['games'] == [1]
         assert captured[-1]['identity_label'] == 'LinkedIn'
         assert captured[-1]['mark_registered'] is False
         assert 'file' in ctx.sent['kwargs']

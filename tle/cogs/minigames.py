@@ -1218,6 +1218,25 @@ class Minigames(commands.Cog):
             logger.error('Failed to recompute Akari ratings for guild %s',
                          guild_id, exc_info=True)
 
+    @staticmethod
+    def _queens_played_day_counts(rows):
+        days_by_user = {}
+        for row in rows:
+            days_by_user.setdefault(str(row.user_id), set()).add(
+                _format_queens_date(row))
+        return {
+            user_id: len(days)
+            for user_id, days in days_by_user.items()
+        }
+
+    def _with_queens_played_games(self, rows, states):
+        counts = self._queens_played_day_counts(rows)
+        return {
+            user_id: state._replace(
+                games=counts.get(str(state.user_id), state.games))
+            for user_id, state in states.items()
+        }
+
     def _recompute_minigame_ratings(self, guild_id, game):
         try:
             rating = game.rating
@@ -1233,6 +1252,8 @@ class Minigames(commands.Cog):
                 rows = self._filter_queens_registered_result_rows(guild_id, rows)
             kwargs = self._rating_compute_kwargs(game)
             states = compute_ratings(rows, **kwargs)
+            if game.name == QUEENS_GAME.name:
+                states = self._with_queens_played_games(rows, states)
             if game.name == AKARI_GAME.name:
                 cf_common.user_db.replace_akari_ratings(
                     guild_id, states.values(), time.time())
@@ -1276,6 +1297,8 @@ class Minigames(commands.Cog):
         rows = self._filter_akari_rows(
             rows, excluded_ids=excluded_ids, included_ids=included_ids)
         states = compute_ratings(rows, **self._rating_compute_kwargs(game))
+        if game.name == QUEENS_GAME.name:
+            states = self._with_queens_played_games(rows, states)
         return sorted(
             states.values(),
             key=lambda s: (-s.rating, -s.games, int(s.user_id)),
@@ -1297,6 +1320,8 @@ class Minigames(commands.Cog):
             rows, histories=histories,
             include_decay_in_history=include_decay,
             **self._rating_compute_kwargs(game))
+        if game.name == QUEENS_GAME.name:
+            states = self._with_queens_played_games(rows, states)
         key = str(user_id)
         return states.get(key), histories.get(key, [])
 
