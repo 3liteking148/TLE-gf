@@ -1155,14 +1155,13 @@ class Minigames(commands.Cog):
                 'using `;queens connection set LinkedIn Name profile_url`.'
             )
         if account.get('url'):
-            account_text = account['url']
+            account_text = f'[this LinkedIn account]({account["url"]})'
         else:
-            account_text = 'the configured account'
+            account_text = 'the configured LinkedIn account'
         return (
-            f'In order to join the rating system, send a LinkedIn connection '
-            f'request to {account_text}. If you are already connected but not '
-            'registered, disconnect on LinkedIn and send the connection request '
-            'again.'
+            'To join the rating system, send a LinkedIn connection request '
+            f'to {account_text}. If you are already connected but not '
+            'registered, disconnect on LinkedIn first, then send a new request.'
         )
 
     async def _resolve_queens_registration_args(self, ctx, first, rest):
@@ -1410,9 +1409,9 @@ class Minigames(commands.Cog):
             f'{who} {QUEENS_GAME.display_name} registration is pending as '
             f'`{link_name}`.',
             self._queens_connection_instruction(ctx.guild.id),
-            f'I will check received LinkedIn requests in about '
-            f'{_QUEENS_PENDING_REGISTRATION_DELAY}s. If no matching request is '
-            'found, this pending registration expires after the check finishes.',
+            f'You have {_QUEENS_PENDING_REGISTRATION_DELAY} seconds to send '
+            'the request. After that, I will check received LinkedIn requests '
+            'and expire this registration if no matching request is found.',
         ])))
 
     def _queue_queens_registration(self, ctx, member, linkedin_text,
