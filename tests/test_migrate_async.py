@@ -1280,6 +1280,16 @@ class TestPillboardExportCommand:
         monkeypatch.setattr(migrate_mod, '_EXPORT_DIR', tmp_path)
 
         guild = _FakeGuild(GUILD)
+        context_msg_1 = _FakeMessage(
+            msg_id=331,
+            content='first context message',
+            author=_FakeUser(775, 'Context1'),
+        )
+        context_msg_2 = _FakeMessage(
+            msg_id=332,
+            content='second context message',
+            author=_FakeUser(776, 'Context2'),
+        )
         original = _FakeMessage(
             msg_id=333,
             content='original message text',
@@ -1294,8 +1304,15 @@ class TestPillboardExportCommand:
             ),
             author=_FakeUser(123, 'OldBot'),
         )
-        source_channel = _FakeChannel(channel_id=222, messages=[original])
+        source_channel = _FakeChannel(
+            channel_id=222,
+            messages=[context_msg_1, context_msg_2, original],
+        )
         old_channel = _FakeChannel(channel_id=100, messages=[old_bot_msg])
+        context_msg_1.channel = source_channel
+        context_msg_1.guild = guild
+        context_msg_2.channel = source_channel
+        context_msg_2.guild = guild
         original.channel = source_channel
         original.guild = guild
         old_bot_msg.channel = old_channel
@@ -1314,7 +1331,8 @@ class TestPillboardExportCommand:
                 self.sent.append((content, kwargs))
 
         ctx = _ExportCtx()
-        _run(cog.pillboard_export.__wrapped__(cog, ctx, old_channel, PILL))
+        _run(cog.pillboard_export.__wrapped__(
+            cog, ctx, old_channel, '+context=2', PILL))
 
         exported = list(tmp_path.glob('pillboard_export_*.json'))
         assert len(exported) == 1
@@ -1323,8 +1341,14 @@ class TestPillboardExportCommand:
         assert payload['summary']['parsed'] == 1
         assert payload['summary']['fetched'] == 1
         assert payload['summary']['failed'] == 0
+        assert payload['summary']['context_fetched'] == 1
+        assert payload['summary']['context_failed'] == 0
+        assert payload['context_limit'] == 2
         assert payload['messages'][0]['pillboard']['displayed_count'] == 3
         assert payload['messages'][0]['original']['content'] == (
             'original message text')
         assert payload['messages'][0]['original']['author']['id'] == '777'
+        assert [
+            row['content'] for row in payload['messages'][0]['context_before']
+        ] == ['first context message', 'second context message']
         assert 'file' in ctx.sent[-1][1]

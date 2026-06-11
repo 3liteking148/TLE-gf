@@ -45,6 +45,7 @@ _MAX_RETRIES = 5
 _RETRY_BASE_DELAY = 2.0
 _EXPORT_DIR = pathlib.Path('extra') / 'pillboard_exports'
 _EXPORT_PROGRESS_INTERVAL = 250
+_EXPORT_CONTEXT_LIMIT_MAX = 50
 
 
 
@@ -220,6 +221,7 @@ class Migrate(commands.Cog):
     def _parse_export_args(args):
         emojis = []
         limit = None
+        context_limit = 0
         for arg in args:
             if arg.startswith('+limit='):
                 try:
@@ -230,17 +232,51 @@ class Migrate(commands.Cog):
                 if limit <= 0:
                     raise commands.BadArgument(
                         '+limit must be a positive integer.')
+            elif arg.startswith('+context='):
+                try:
+                    context_limit = int(arg.split('=', 1)[1])
+                except ValueError as exc:
+                    raise commands.BadArgument(
+                        '+context must be an integer.') from exc
+                if context_limit < 0:
+                    raise commands.BadArgument(
+                        '+context must be a non-negative integer.')
+                if context_limit > _EXPORT_CONTEXT_LIMIT_MAX:
+                    raise commands.BadArgument(
+                        f'+context must be at most {_EXPORT_CONTEXT_LIMIT_MAX}.')
             else:
                 emojis.append(arg)
-        return set(emojis), limit
+        return set(emojis), limit, context_limit
+
+    async def _fetch_message_context_before(self, source_channel, original_msg,
+                                            context_limit):
+        if context_limit <= 0:
+            return []
+
+        async def fetch_context():
+            messages = []
+            async for msg in source_channel.history(
+                    before=original_msg, limit=context_limit,
+                    oldest_first=False):
+                messages.append(msg)
+            messages.reverse()
+            return [self._message_json_payload(msg) for msg in messages]
+
+        return await discord_retry(
+            fetch_context,
+            max_retries=_MAX_RETRIES,
+            base_delay=_RETRY_BASE_DELAY,
+        )
 
     async def _build_pillboard_export(self, old_channel, emoji_filter, limit,
-                                      progress_cb=None):
+                                      context_limit=0, progress_cb=None):
         rows = []
         scanned = 0
         parsed_count = 0
         fetched = 0
         failed = 0
+        context_fetched = 0
+        context_failed = 0
 
         async for old_bot_msg in old_channel.history(
                 oldest_first=True, limit=limit):
@@ -270,6 +306,11 @@ class Migrate(commands.Cog):
                     ),
                 },
                 'original': None,
+                'context_before': [],
+                'context_fetch_status': (
+                    'not_requested' if context_limit == 0 else 'pending'
+                ),
+                'context_fetch_error': None,
                 'fetch_status': 'ok',
                 'fetch_error': None,
             }
@@ -285,10 +326,27 @@ class Migrate(commands.Cog):
                     discord.HTTPException, RetryExhaustedError) as exc:
                 row['fetch_status'] = type(exc).__name__
                 row['fetch_error'] = str(exc)
+                if context_limit > 0:
+                    row['context_fetch_status'] = 'original_fetch_failed'
                 failed += 1
             else:
                 row['original'] = self._message_json_payload(original_msg)
                 fetched += 1
+                if context_limit > 0:
+                    try:
+                        row['context_before'] = (
+                            await self._fetch_message_context_before(
+                                source_channel, original_msg, context_limit)
+                        )
+                    except (discord.NotFound, discord.Forbidden,
+                            discord.HTTPException,
+                            RetryExhaustedError) as exc:
+                        row['context_fetch_status'] = type(exc).__name__
+                        row['context_fetch_error'] = str(exc)
+                        context_failed += 1
+                    else:
+                        row['context_fetch_status'] = 'ok'
+                        context_fetched += 1
             rows.append(row)
             if (
                     progress_cb is not None
@@ -306,6 +364,8 @@ class Migrate(commands.Cog):
             'parsed': parsed_count,
             'fetched': fetched,
             'failed': failed,
+            'context_fetched': context_fetched,
+            'context_failed': context_failed,
             'rows': rows,
         }
 
@@ -652,6 +712,7 @@ class Migrate(commands.Cog):
           ;migrate export #old-pillboard :pill:
           ;migrate export #old-pillboard :pill: :chocolate_bar:
           ;migrate export #old-pillboard +limit=100 :pill:
+          ;migrate export #old-pillboard +limit=1 +context=10
         """
         await self._cmd_pillboard_export(ctx, old_channel, *args)
 
@@ -664,12 +725,13 @@ class Migrate(commands.Cog):
         Usage:
           ;pillboard-export #pillboard
           ;pillboard-export #pillboard +limit=100
+          ;pillboard-export #pillboard +limit=1 +context=10
         """
         await self._cmd_pillboard_export(ctx, pillboard_channel, *args)
 
     async def _cmd_pillboard_export(self, ctx, old_channel, *args):
         try:
-            emoji_filter, limit = self._parse_export_args(args)
+            emoji_filter, limit, context_limit = self._parse_export_args(args)
         except commands.BadArgument as exc:
             await ctx.send(str(exc))
             return
@@ -697,18 +759,22 @@ class Migrate(commands.Cog):
                 pass
 
         result = await self._build_pillboard_export(
-            old_channel, emoji_filter, limit, progress_cb=progress_cb)
+            old_channel, emoji_filter, limit, context_limit,
+            progress_cb=progress_cb)
         payload = {
             'exported_at': time.time(),
             'guild_id': str(ctx.guild.id),
             'pillboard_channel_id': str(old_channel.id),
             'emoji_filter': sorted(emoji_filter),
             'limit': limit,
+            'context_limit': context_limit,
             'summary': {
                 'scanned': result['scanned'],
                 'parsed': result['parsed'],
                 'fetched': result['fetched'],
                 'failed': result['failed'],
+                'context_fetched': result['context_fetched'],
+                'context_failed': result['context_failed'],
                 'seconds': round(time.time() - started_at, 3),
             },
             'messages': result['rows'],
@@ -726,8 +792,14 @@ class Migrate(commands.Cog):
         summary = (
             f'Pillboard export complete: scanned **{result["scanned"]}**, '
             f'parsed **{result["parsed"]}**, fetched **{result["fetched"]}**, '
-            f'failed **{result["failed"]}**.'
+            f'failed **{result["failed"]}**'
         )
+        if context_limit > 0:
+            summary += (
+                f', context fetched **{result["context_fetched"]}**, '
+                f'context failed **{result["context_failed"]}**'
+            )
+        summary += '.'
         upload_limit = getattr(ctx.guild, 'filesize_limit', 8 * 1024 * 1024)
         if len(data) <= upload_limit:
             await ctx.send(

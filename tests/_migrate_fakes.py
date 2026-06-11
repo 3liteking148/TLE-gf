@@ -82,13 +82,21 @@ class _FakeChannel:
             return self._messages[msg_id]
         raise discord.NotFound(None, 'Not found')
 
-    async def history(self, after=None, oldest_first=True, limit=None):
+    async def history(self, after=None, before=None, oldest_first=True, limit=None):
         msgs = sorted(self._messages.values(), key=lambda m: m.id,
                        reverse=not oldest_first)
-        after_id = after.id if after else 0
+        after_id = after.id if after else None
+        before_id = before.id if before else None
+        yielded = 0
         for m in msgs:
-            if m.id > after_id:
-                yield m
+            if after_id is not None and m.id <= after_id:
+                continue
+            if before_id is not None and m.id >= before_id:
+                continue
+            yield m
+            yielded += 1
+            if limit is not None and yielded >= limit:
+                break
 
     async def send(self, content=None, embeds=None, files=None):
         global _next_send_id
