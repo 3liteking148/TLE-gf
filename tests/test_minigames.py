@@ -3131,6 +3131,15 @@ class TestQueensCommands:
         assert weekdays == {0, 2}
         assert date_bounds is not None
 
+        (remaining, excluded_ids, included_ids, weekdays, date_bounds) = asyncio.run(
+            cog._extract_queens_rating_filters(
+                ctx, ['+weekday=monday,wednesday,saturday']))
+        assert remaining == []
+        assert excluded_ids == set()
+        assert included_ids == set()
+        assert weekdays == {0, 2, 5}
+        assert date_bounds is None
+
         with pytest.raises(MinigameCogError, match='Unknown Queens weekday'):
             asyncio.run(cog._extract_queens_rating_filters(ctx, ['+dow=funday']))
 
