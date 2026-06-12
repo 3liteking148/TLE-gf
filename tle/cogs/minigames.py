@@ -5379,7 +5379,7 @@ class Minigames(commands.Cog):
 
     # ── Queens commands ─────────────────────────────────────────────────
 
-    @commands.group(name='queens', aliases=['queen', 'linkedinqueens'],
+    @commands.group(name='queens', aliases=['queen'],
                     brief='LinkedIn Queens commands',
                     invoke_without_command=True)
     async def queens(self, ctx):
