@@ -2924,10 +2924,21 @@ class TestQueensCommands:
                 [str(point.puzzle_date) for point in history]
                 for history, _name in series
             ]
+            rating_series['ratings'] = [
+                [point.rating for point in history]
+                for history, _name in series
+            ]
             return fake_file
 
         def _performance(series):
             perf_series['names'] = [name for _history, name, _rating in series]
+            perf_series['dates'] = [
+                [str(point.puzzle_date) for point in history]
+                for history, _name, _rating in series
+            ]
+            perf_series['ratings'] = [
+                rating for _history, _name, rating in series
+            ]
             return fake_file
 
         monkeypatch.setattr(minigames_module, 'plot_akari_rating', _rating)
@@ -2935,20 +2946,32 @@ class TestQueensCommands:
 
         asyncio.run(cog._cmd_queens_rating(ctx, [alice, bob]))
         assert rating_series['names'] == ['Alice LinkedIn', 'Bob LinkedIn']
+        full_alice_rating_dates = rating_series['dates'][0]
+        full_alice_rating_values = rating_series['ratings'][0]
         assert ctx.sent['embed'].title == 'LinkedIn Queens ratings — 2 players'
         assert ctx.sent['kwargs']['file'] is fake_file
 
         asyncio.run(cog._cmd_queens_rating(ctx, [alice], weekdays={0, 2}))
         assert rating_series['dates'] == [['2026-06-08', '2026-06-10']]
 
-        date_bounds = parse_date_args(('d>=09062026', 'd<11062026'))
+        date_bounds = parse_date_args(('d>=09062026', 'd<10062026'))
+        date_start_index = full_alice_rating_dates.index('2026-06-09')
         asyncio.run(cog._cmd_queens_rating(
             ctx, [alice], date_bounds=date_bounds))
-        assert rating_series['dates'] == [['2026-06-09', '2026-06-10']]
+        assert rating_series['dates'] == [['2026-06-09']]
+        assert rating_series['ratings'] == [
+            [full_alice_rating_values[date_start_index]]
+        ]
 
         asyncio.run(cog._cmd_queens_performance(ctx, [alice]))
         assert perf_series['names'] == ['Alice LinkedIn']
         assert ctx.sent['embed'].title == 'LinkedIn Queens performance — Alice'
+
+        asyncio.run(cog._cmd_queens_performance(
+            ctx, [alice], date_bounds=date_bounds))
+        assert perf_series['dates'] == [['2026-06-09']]
+        assert perf_series['ratings'] == [
+            round(full_alice_rating_values[date_start_index])]
 
         pages = []
         monkeypatch.setattr(

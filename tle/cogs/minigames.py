@@ -463,6 +463,25 @@ def _filter_queens_rating_date_rows(rows, date_bounds):
     return filtered
 
 
+def _filter_queens_rating_date_history(history, date_bounds):
+    if date_bounds is None:
+        return history
+    dlo, dhi, plo, phi = date_bounds
+    filtered = []
+    for point in history:
+        puzzle_date = normalize_puzzle_date(point.puzzle_date)
+        timestamp = dt.datetime.combine(puzzle_date, dt.time.min).timestamp()
+        puzzle_number = int(point.puzzle_number)
+        if timestamp < dlo or timestamp >= dhi:
+            continue
+        if puzzle_number < plo:
+            continue
+        if phi and puzzle_number >= phi:
+            continue
+        filtered.append(point)
+    return filtered
+
+
 def _format_queens_weekday_filter(weekdays):
     if weekdays is None:
         return ''
@@ -2738,20 +2757,20 @@ class Minigames(commands.Cog):
             for member in members:
                 self._require_queens_registered_member(ctx.guild.id, member)
 
-        filtered = bool(excluded_ids or included_ids or weekdays is not None
-                        or date_bounds is not None)
+        filtered = bool(excluded_ids or included_ids or weekdays is not None)
         per_member = []
         for member in members:
             if filtered:
                 row, history = self._minigame_user_data(
                     ctx.guild.id, QUEENS_GAME, member.id,
                     excluded_ids=excluded_ids, included_ids=included_ids,
-                    weekdays=weekdays, date_bounds=date_bounds)
+                    weekdays=weekdays)
             else:
                 row = cf_common.user_db.get_minigame_rating(
                     ctx.guild.id, QUEENS_GAME.name, member.id)
                 history = self._minigame_user_history(
                     ctx.guild.id, QUEENS_GAME, member.id)
+            history = _filter_queens_rating_date_history(history, date_bounds)
             if row is None:
                 raise MinigameCogError(
                     f'No {QUEENS_GAME.display_name} rating for '
@@ -2768,12 +2787,27 @@ class Minigames(commands.Cog):
         ]
         discord_file = plot_akari_rating(series)
 
+        def _display_rating(row, history):
+            return history[-1].rating if date_bounds is not None else row.rating
+
+        def _display_peak(row, history):
+            if date_bounds is None:
+                return row.peak
+            return max(point.rating for point in history)
+
+        def _display_games(row, history):
+            if date_bounds is None:
+                return row.games
+            return sum(1 for point in history
+                       if not getattr(point, 'is_decay', False))
+
         if len(per_member) == 1:
             member, row, history = per_member[0]
             display_name = self._queens_public_user_name(ctx.guild, member.id)
-            rating = round(row.rating)
+            rating = round(_display_rating(row, history))
             rank = rank_for_rating(rating)
-            peak_rank = rank_for_rating(round(row.peak))
+            peak = round(_display_peak(row, history))
+            peak_rank = rank_for_rating(peak)
             last_contest = next((h for h in reversed(history)
                                  if h.performance is not None), None)
             last_change_str = (f'{last_contest.delta:+.0f}'
@@ -2788,19 +2822,26 @@ class Minigames(commands.Cog):
                 color=rank.color_embed,
             )
             embed.add_field(name='Rating', value=f'{rating} ({rank.title_abbr})')
-            embed.add_field(name='Peak', value=f'{round(row.peak)} ({peak_rank.title_abbr})')
-            embed.add_field(name='Games', value=str(row.games))
+            embed.add_field(name='Peak', value=f'{peak} ({peak_rank.title_abbr})')
+            embed.add_field(name='Games', value=str(_display_games(row, history)))
             embed.add_field(name='Last change', value=last_change_str)
             embed.add_field(name='Last performance', value=last_perf_str)
         else:
-            _top_member, top_row, _history = max(
-                per_member, key=lambda t: t[1].rating)
-            top_rank = rank_for_rating(round(top_row.rating))
+            _top_member, top_row, top_history = max(
+                per_member, key=lambda t: _display_rating(t[1], t[2]))
+            top_rank = rank_for_rating(
+                round(_display_rating(top_row, top_history)))
+
+            def _rating_line(member, row, history):
+                rating = round(_display_rating(row, history))
+                return (
+                    f'**{self._queens_public_user_name(ctx.guild, member.id)}**: '
+                    f'{rating} ({rank_for_rating(rating).title_abbr})'
+                )
+
             lines = [
-                f'**{self._queens_public_user_name(ctx.guild, member.id)}**: '
-                f'{round(row.rating)} '
-                f'({rank_for_rating(round(row.rating)).title_abbr})'
-                for member, row, _history in per_member
+                _rating_line(member, row, history)
+                for member, row, history in per_member
             ]
             embed = discord.Embed(
                 title=(f'{QUEENS_GAME.display_name} ratings — '
@@ -2822,20 +2863,20 @@ class Minigames(commands.Cog):
             for member in members:
                 self._require_queens_registered_member(ctx.guild.id, member)
 
-        filtered = bool(excluded_ids or included_ids or weekdays is not None
-                        or date_bounds is not None)
+        filtered = bool(excluded_ids or included_ids or weekdays is not None)
         per_member = []
         for member in members:
             if filtered:
                 row, history = self._minigame_user_data(
                     ctx.guild.id, QUEENS_GAME, member.id,
                     excluded_ids=excluded_ids, included_ids=included_ids,
-                    weekdays=weekdays, date_bounds=date_bounds)
+                    weekdays=weekdays)
             else:
                 row = cf_common.user_db.get_minigame_rating(
                     ctx.guild.id, QUEENS_GAME.name, member.id)
                 history = self._minigame_user_history(
                     ctx.guild.id, QUEENS_GAME, member.id)
+            history = _filter_queens_rating_date_history(history, date_bounds)
             if row is None:
                 raise MinigameCogError(
                     f'No {QUEENS_GAME.display_name} rating for '
@@ -2848,8 +2889,11 @@ class Minigames(commands.Cog):
             per_member.append((member, row, history, contest_history))
 
         series = [
-            (history, self._queens_legend_name(ctx.guild.id, member),
-             round(row.rating))
+            (
+                history,
+                self._queens_legend_name(ctx.guild.id, member),
+                round(history[-1].rating if date_bounds is not None else row.rating),
+            )
             for member, row, history, _contest_history in per_member
         ]
         discord_file = plot_akari_performance(series)
