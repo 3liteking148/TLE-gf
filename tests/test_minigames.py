@@ -124,6 +124,12 @@ class FakeMinigameDb(MinigameDbMixin):
             )
         ''')
         self.conn.execute('''
+            CREATE TABLE IF NOT EXISTS kvs (
+                key   TEXT PRIMARY KEY,
+                value TEXT
+            )
+        ''')
+        self.conn.execute('''
             CREATE TABLE IF NOT EXISTS minigame_player_link (
                 guild_id        TEXT NOT NULL,
                 game            TEXT NOT NULL,
@@ -242,6 +248,23 @@ class FakeMinigameDb(MinigameDbMixin):
         ).rowcount
         self.conn.commit()
         return rc
+
+    def kvs_set(self, key, value):
+        self.conn.execute(
+            'INSERT OR REPLACE INTO kvs (key, value) VALUES (?, ?)',
+            (key, value)
+        )
+        self.conn.commit()
+
+    def kvs_get(self, key):
+        row = self.conn.execute(
+            'SELECT value FROM kvs WHERE key = ?', (key,)
+        ).fetchone()
+        return row.value if row else None
+
+    def kvs_delete(self, key):
+        self.conn.execute('DELETE FROM kvs WHERE key = ?', (key,))
+        self.conn.commit()
 
     def close(self):
         self.conn.close()

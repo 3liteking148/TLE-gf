@@ -62,7 +62,12 @@ class _StubCog:
 _commands_mod.Cog = _StubCog
 _commands_mod.has_role = lambda role: (lambda f: f)
 _commands_mod.has_any_role = lambda *roles: (lambda f: f)
-_commands_mod.command = lambda **kw: (lambda f: f)
+def _stub_command(**kw):
+    def decorator(f):
+        f.__wrapped__ = f
+        return f
+    return decorator
+_commands_mod.command = _stub_command
 _commands_mod.Converter = type('Converter', (), {})
 def _member_converter_convert(self, ctx, argument):
     """Stub convert — tries guild.get_member_named (case-sensitive like real discord.py)."""
@@ -181,6 +186,12 @@ class _StubEmbed:
         return e
 
 _discord_mod.Embed = _StubEmbed
+_discord_mod.File = type('File', (), {
+    '__init__': lambda self, fp=None, filename=None, **kw: (
+        setattr(self, 'fp', fp),
+        setattr(self, 'filename', filename),
+    ) and None,
+})
 _discord_mod.MessageType = type('MessageType', (), {'default': 0, 'reply': 1})
 
 class _StubColor:
