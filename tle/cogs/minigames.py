@@ -8,7 +8,6 @@ import logging
 import os
 import pathlib
 import re
-import statistics
 import sys
 import time
 from collections import namedtuple
@@ -47,7 +46,7 @@ from tle.cogs._minigame_queens import (
 )
 from tle.cogs._minigame_stats import (
     plot_akari_performance, plot_akari_rating,
-    plot_akari_stats, plot_guessgame_stats,
+    plot_akari_stats, plot_guessgame_stats, plot_queens_stats,
 )
 from tle.cogs._migrate_retry import discord_retry, RetryExhaustedError
 from tle.util.akari_rating import rank_for_rating
@@ -3097,32 +3096,11 @@ class Minigames(commands.Cog):
                 f'`{display_name}`.')
 
         results = [best[day] for day in sorted(best)]
-        total = len(results)
-        clean = [row for row in results if row.is_perfect]
-        no_mistakes = [row for row in results if int(row.accuracy) == 100]
-        times = [int(row.time_seconds) for row in results]
-        current, longest, latest = _queens_streak_info(results)
-        clean_rate = len(clean) / total * 100 if total else 0
-        lines = [
-            f'Player: `{display_name}`',
-            f'Queens days: **{total}**',
-            f'Clean: **{len(clean)}** ({clean_rate:.0f}%)',
-            f'No mistakes: **{len(no_mistakes)}**',
-            '',
-            f'Best time: **{format_duration(min(times))}**',
-            f'Average time: **{format_duration(sum(times) / len(times))}**',
-            f'Median time: **{format_duration(statistics.median(times))}**',
-            '',
-            f'Current clean streak: **{current}**',
-            f'Longest clean streak: **{longest}**',
-            f'Latest: **{_format_queens_date(latest)}** in **{format_duration(latest.time_seconds)}**',
-        ]
-        await ctx.send(embed=discord.Embed(
-            title=(f'{QUEENS_GAME.display_name} Stats'
-                   f'{_queens_weekday_filter_suffix(weekdays)}'),
-            description='\n'.join(lines),
-            color=discord_common.random_cf_color(),
-        ))
+        discord_file = plot_queens_stats(
+            results,
+            display_name,
+            title_suffix=_queens_weekday_filter_suffix(weekdays))
+        await ctx.send(file=discord_file)
 
     async def _cmd_queens_stats_date(self, ctx, date_arg, *,
                                      show_all=False, excluded_ids=None,

@@ -1741,6 +1741,23 @@ class TestQueensCommands:
         guild = _FakeGuild(100, members=[alice])
         ctx = self._make_ctx(guild, alice)
         cog = Minigames(bot=None)
+        rendered = []
+        fake_file = SimpleNamespace(filename='queens-stats.png')
+
+        def fake_queens_stats(results, display_name, *, title_suffix=''):
+            rendered.append({
+                'dates': [
+                    minigames_module.normalize_puzzle_date(row.puzzle_date)
+                    .isoformat()
+                    for row in results
+                ],
+                'display_name': display_name,
+                'title_suffix': title_suffix,
+            })
+            return fake_file
+
+        monkeypatch.setattr(
+            minigames_module, 'plot_queens_stats', fake_queens_stats)
 
         self._save_queens_result(db, 1, alice.id, '2026-06-08', 5, True, 100)
         self._save_queens_result(db, 2, alice.id, '2026-06-09', 9, False, 0)
@@ -1748,23 +1765,24 @@ class TestQueensCommands:
         self._save_queens_result(db, 4, alice.id, '2026-06-11', 6, True, 100)
 
         asyncio.run(cog._cmd_queens_stats(ctx))
-        stats = ctx.sent['embed']
-        assert stats.title == 'LinkedIn Queens Stats'
-        assert 'Queens days: **4**' in stats.description
-        assert 'Clean: **3**' in stats.description
-        assert 'Current clean streak: **2**' in stats.description
-        assert 'Latest: **2026-06-11**' in stats.description
+        assert ctx.sent['embed'] is None
+        assert ctx.sent['kwargs']['file'] is fake_file
+        assert rendered[-1] == {
+            'dates': [
+                '2026-06-08', '2026-06-09', '2026-06-10', '2026-06-11',
+            ],
+            'display_name': 'Alice',
+            'title_suffix': '',
+        }
 
         asyncio.run(cog._cmd_queens_stats(ctx, 'd>=10062026'))
-        filtered = ctx.sent['embed']
-        assert 'Queens days: **2**' in filtered.description
+        assert ctx.sent['kwargs']['file'] is fake_file
+        assert rendered[-1]['dates'] == ['2026-06-10', '2026-06-11']
 
         asyncio.run(cog._cmd_queens_stats(ctx, '+dow=mon,wed'))
-        weekday_filtered = ctx.sent['embed']
-        assert weekday_filtered.title == 'LinkedIn Queens Stats (Mon/Wed)'
-        assert 'Queens days: **2**' in weekday_filtered.description
-        assert 'Clean: **2**' in weekday_filtered.description
-        assert 'Latest: **2026-06-10**' in weekday_filtered.description
+        assert ctx.sent['kwargs']['file'] is fake_file
+        assert rendered[-1]['title_suffix'] == ' (Mon/Wed)'
+        assert rendered[-1]['dates'] == ['2026-06-08', '2026-06-10']
 
         asyncio.run(cog._cmd_queens_streak(ctx))
         streak = ctx.sent['embed']
