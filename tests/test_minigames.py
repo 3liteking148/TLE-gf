@@ -3110,11 +3110,8 @@ class TestQueensCommands:
          recalculate) = asyncio.run(cog._parse_queens_rating_args(
             ctx, ['+recalculate'], allow_recalculate=True))
         assert members == [alice]
-        assert excluded_ids == set()
-        assert included_ids == set()
-        assert weekdays is None
-        assert date_bounds is None
         assert recalculate is True
+        assert not (excluded_ids or included_ids or weekdays or date_bounds)
 
         with pytest.raises(MinigameCogError, match='only supported'):
             asyncio.run(cog._parse_queens_rating_args(ctx, ['+recalculate']))
@@ -3135,10 +3132,8 @@ class TestQueensCommands:
             cog._extract_queens_rating_filters(
                 ctx, ['+weekday=monday,wednesday,saturday']))
         assert remaining == []
-        assert excluded_ids == set()
-        assert included_ids == set()
         assert weekdays == {0, 2, 5}
-        assert date_bounds is None
+        assert not (excluded_ids or included_ids or date_bounds)
 
         with pytest.raises(MinigameCogError, match='Unknown Queens weekday'):
             asyncio.run(cog._extract_queens_rating_filters(ctx, ['+dow=funday']))
