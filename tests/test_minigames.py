@@ -2941,6 +2941,11 @@ class TestQueensCommands:
         asyncio.run(cog._cmd_queens_rating(ctx, [alice], weekdays={0, 2}))
         assert rating_series['dates'] == [['2026-06-08', '2026-06-10']]
 
+        date_bounds = parse_date_args(('d>=09062026', 'd<11062026'))
+        asyncio.run(cog._cmd_queens_rating(
+            ctx, [alice], date_bounds=date_bounds))
+        assert rating_series['dates'] == [['2026-06-09', '2026-06-10']]
+
         asyncio.run(cog._cmd_queens_performance(ctx, [alice]))
         assert perf_series['names'] == ['Alice LinkedIn']
         assert ctx.sent['embed'].title == 'LinkedIn Queens performance — Alice'
@@ -3043,16 +3048,23 @@ class TestQueensCommands:
         with pytest.raises(MinigameCogError, match='do not use decay'):
             asyncio.run(cog._extract_queens_rating_filters(ctx, ['+decay']))
 
-        remaining, excluded_ids, included_ids, weekdays = asyncio.run(
+        (remaining, excluded_ids, included_ids, weekdays, date_bounds) = asyncio.run(
             cog._extract_queens_rating_filters(
-                ctx, ['+dow=mon,wed', '+include=alice']))
+                ctx, [
+                    '+dow=mon,wed', '+include=alice',
+                    'd>=08062026', 'd<10062026',
+                ]))
         assert remaining == []
         assert excluded_ids == set()
         assert included_ids == {'300'}
         assert weekdays == {0, 2}
+        assert date_bounds is not None
 
         with pytest.raises(MinigameCogError, match='Unknown Queens weekday'):
             asyncio.run(cog._extract_queens_rating_filters(ctx, ['+dow=funday']))
+
+        with pytest.raises(MinigameCogError, match='invalid date'):
+            asyncio.run(cog._extract_queens_rating_filters(ctx, ['d>=bad']))
 
     def test_queens_results_renders_date_results_image(
             self, db, monkeypatch):

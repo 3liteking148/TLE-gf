@@ -35,7 +35,7 @@ from tle.util import tasks
 from tle.cogs._minigame_common import (
     compute_vs, compute_vs_matchups, compute_streak, compute_longest_streak, compute_top,
     pick_best_results, format_duration, normalize_puzzle_date, parse_date_args,
-    resolve_scoring, strip_codeblock,
+    resolve_scoring, strip_codeblock, _NO_TIME_BOUND,
 )
 from tle.cogs._minigame_akari import (
     AKARI_GAME, expected_puzzle_number, looks_like_non_pro_akari, puzzle_date_for,
@@ -426,6 +426,43 @@ def _filter_queens_weekday_rows(rows, weekdays):
     ]
 
 
+def _split_queens_rating_date_filter(args):
+    remaining = []
+    date_args = []
+    for arg in args:
+        text = str(arg).strip()
+        lower = text.lower()
+        if lower.startswith('d>=') or lower.startswith('d<'):
+            date_args.append(text)
+        else:
+            remaining.append(arg)
+    if not date_args:
+        return remaining, None
+    try:
+        return remaining, parse_date_args(date_args)
+    except (ValueError, cf_common.ParamParseError) as e:
+        raise MinigameCogError(str(e)) from e
+
+
+def _filter_queens_rating_date_rows(rows, date_bounds):
+    if date_bounds is None:
+        return rows
+    dlo, dhi, plo, phi = date_bounds
+    filtered = []
+    for row in rows:
+        puzzle_date = normalize_puzzle_date(row.puzzle_date)
+        timestamp = dt.datetime.combine(puzzle_date, dt.time.min).timestamp()
+        puzzle_number = int(row.puzzle_number)
+        if timestamp < dlo or timestamp >= dhi:
+            continue
+        if puzzle_number < plo:
+            continue
+        if phi and puzzle_number >= phi:
+            continue
+        filtered.append(row)
+    return filtered
+
+
 def _format_queens_weekday_filter(weekdays):
     if weekdays is None:
         return ''
@@ -441,6 +478,31 @@ def _format_queens_weekday_filter(weekdays):
 def _queens_weekday_filter_suffix(weekdays):
     label = _format_queens_weekday_filter(weekdays)
     return f' ({label})' if label else ''
+
+
+def _format_queens_date_filter(date_bounds):
+    if date_bounds is None:
+        return ''
+    dlo, dhi, _plo, _phi = date_bounds
+    parts = []
+    if dlo:
+        parts.append(
+            f'from {dt.datetime.fromtimestamp(dlo).date().isoformat()}')
+    if dhi < _NO_TIME_BOUND:
+        parts.append(
+            f'before {dt.datetime.fromtimestamp(dhi).date().isoformat()}')
+    return ', '.join(parts)
+
+
+def _queens_filter_suffix(*, weekdays=None, date_bounds=None):
+    parts = [
+        part for part in (
+            _format_queens_weekday_filter(weekdays),
+            _format_queens_date_filter(date_bounds),
+        )
+        if part
+    ]
+    return f' ({", ".join(parts)})' if parts else ''
 
 
 def _queens_update_target_date(results_day):
@@ -1528,7 +1590,8 @@ class Minigames(commands.Cog):
         return kwargs
 
     def _minigame_rating_rows(self, guild_id, game, *, excluded_ids=None,
-                              included_ids=None, weekdays=None):
+                              included_ids=None, weekdays=None,
+                              date_bounds=None):
         self._sync_minigame_results_for_read(guild_id, game)
         rows = cf_common.user_db.get_minigame_results_for_guild(
             guild_id, game.name)
@@ -1536,6 +1599,7 @@ class Minigames(commands.Cog):
         if game.name == QUEENS_GAME.name:
             rows = self._filter_queens_registered_result_rows(guild_id, rows)
             rows = _filter_queens_weekday_rows(rows, weekdays)
+            rows = _filter_queens_rating_date_rows(rows, date_bounds)
         rows = self._filter_akari_rows(
             rows, excluded_ids=excluded_ids, included_ids=included_ids)
         states = compute_ratings(rows, **self._rating_compute_kwargs(game))
@@ -1548,7 +1612,8 @@ class Minigames(commands.Cog):
 
     def _minigame_user_data(self, guild_id, game, user_id, *,
                             include_decay=False, excluded_ids=None,
-                            included_ids=None, weekdays=None):
+                            included_ids=None, weekdays=None,
+                            date_bounds=None):
         self._sync_minigame_results_for_read(guild_id, game)
         rows = cf_common.user_db.get_minigame_results_for_guild(
             guild_id, game.name)
@@ -1556,6 +1621,7 @@ class Minigames(commands.Cog):
         if game.name == QUEENS_GAME.name:
             rows = self._filter_queens_registered_result_rows(guild_id, rows)
             rows = _filter_queens_weekday_rows(rows, weekdays)
+            rows = _filter_queens_rating_date_rows(rows, date_bounds)
         rows = self._filter_akari_rows(
             rows, excluded_ids=excluded_ids, included_ids=included_ids)
         histories = {}
@@ -1570,17 +1636,18 @@ class Minigames(commands.Cog):
 
     def _minigame_user_history(self, guild_id, game, user_id, *,
                                include_decay=False, excluded_ids=None,
-                               included_ids=None, weekdays=None):
+                               included_ids=None, weekdays=None,
+                               date_bounds=None):
         state, history = self._minigame_user_data(
             guild_id, game, user_id, include_decay=include_decay,
             excluded_ids=excluded_ids, included_ids=included_ids,
-            weekdays=weekdays)
+            weekdays=weekdays, date_bounds=date_bounds)
         del state
         return history
 
     def _minigame_puzzle_change_info(self, guild_id, game, puzzle_number, *,
                                      excluded_ids=None, included_ids=None,
-                                     weekdays=None):
+                                     weekdays=None, date_bounds=None):
         self._sync_minigame_results_for_read(guild_id, game)
         rows = cf_common.user_db.get_minigame_results_for_guild(
             guild_id, game.name)
@@ -1588,6 +1655,7 @@ class Minigames(commands.Cog):
         if game.name == QUEENS_GAME.name:
             rows = self._filter_queens_registered_result_rows(guild_id, rows)
             rows = _filter_queens_weekday_rows(rows, weekdays)
+            rows = _filter_queens_rating_date_rows(rows, date_bounds)
         rows = self._filter_akari_rows(
             rows, excluded_ids=excluded_ids, included_ids=included_ids)
         histories = {}
@@ -2592,35 +2660,37 @@ class Minigames(commands.Cog):
 
     async def _extract_queens_rating_filters(self, ctx, args):
         args, weekdays = _split_queens_weekday_filter(args)
+        args, date_bounds = _split_queens_rating_date_filter(args)
         (remaining, include_decay, excluded_ids, included_ids,
          _include_inactive, test_decay) = await self._extract_akari_filters(
             ctx, args)
         if include_decay or test_decay:
             raise MinigameCogError(
                 f'{QUEENS_GAME.display_name} ratings do not use decay.')
-        return remaining, excluded_ids, included_ids, weekdays
+        return remaining, excluded_ids, included_ids, weekdays, date_bounds
 
     async def _parse_queens_rating_args(self, ctx, args, *,
                                         member_required=False):
-        remaining, excluded_ids, included_ids, weekdays = (
+        remaining, excluded_ids, included_ids, weekdays, date_bounds = (
             await self._extract_queens_rating_filters(ctx, args))
         members = [await self._resolve_member(ctx, token) for token in remaining]
         if not members:
             if member_required:
                 raise MinigameCogError('A user is required for this command.')
             members = [ctx.author]
-        return members, excluded_ids, included_ids, weekdays
+        return members, excluded_ids, included_ids, weekdays, date_bounds
 
     async def _cmd_queens_ratings(self, ctx, *, show_all=False,
                                   excluded_ids=None, included_ids=None,
-                                  weekdays=None):
+                                  weekdays=None, date_bounds=None):
         self._require_enabled(ctx.guild.id, QUEENS_GAME)
         self._recompute_minigame_ratings(ctx.guild.id, QUEENS_GAME)
-        if excluded_ids or included_ids or weekdays is not None:
+        if (excluded_ids or included_ids or weekdays is not None
+                or date_bounds is not None):
             rows = self._minigame_rating_rows(
                 ctx.guild.id, QUEENS_GAME,
                 excluded_ids=excluded_ids, included_ids=included_ids,
-                weekdays=weekdays)
+                weekdays=weekdays, date_bounds=date_bounds)
         else:
             rows = cf_common.user_db.get_minigame_ratings(
                 ctx.guild.id, QUEENS_GAME.name)
@@ -2639,13 +2709,16 @@ class Minigames(commands.Cog):
             weekday_label = _format_queens_weekday_filter(weekdays)
             if weekday_label:
                 suffix_parts.append(weekday_label)
+            date_label = _format_queens_date_filter(date_bounds)
+            if date_label:
+                suffix_parts.append(date_label)
             title = (
                 f'{QUEENS_GAME.display_name} Ratings '
                 f'({", ".join(suffix_parts)})')
         else:
             title = (
                 f'{QUEENS_GAME.display_name} Ratings'
-                f'{_queens_weekday_filter_suffix(weekdays)}')
+                f'{_queens_filter_suffix(weekdays=weekdays, date_bounds=date_bounds)}')
         discord_file = _get_akari_rating_table_image_file(
             ctx.guild, shown, linked_ids,
             title=title,
@@ -2658,21 +2731,22 @@ class Minigames(commands.Cog):
     async def _cmd_queens_rating(self, ctx, members, *,
                                  require_registered=True,
                                  excluded_ids=None, included_ids=None,
-                                 weekdays=None):
+                                 weekdays=None, date_bounds=None):
         self._require_enabled(ctx.guild.id, QUEENS_GAME)
         self._recompute_minigame_ratings(ctx.guild.id, QUEENS_GAME)
         if require_registered:
             for member in members:
                 self._require_queens_registered_member(ctx.guild.id, member)
 
-        filtered = bool(excluded_ids or included_ids or weekdays is not None)
+        filtered = bool(excluded_ids or included_ids or weekdays is not None
+                        or date_bounds is not None)
         per_member = []
         for member in members:
             if filtered:
                 row, history = self._minigame_user_data(
                     ctx.guild.id, QUEENS_GAME, member.id,
                     excluded_ids=excluded_ids, included_ids=included_ids,
-                    weekdays=weekdays)
+                    weekdays=weekdays, date_bounds=date_bounds)
             else:
                 row = cf_common.user_db.get_minigame_rating(
                     ctx.guild.id, QUEENS_GAME.name, member.id)
@@ -2741,21 +2815,22 @@ class Minigames(commands.Cog):
     async def _cmd_queens_performance(self, ctx, members, *,
                                       require_registered=True,
                                       excluded_ids=None, included_ids=None,
-                                      weekdays=None):
+                                      weekdays=None, date_bounds=None):
         self._require_enabled(ctx.guild.id, QUEENS_GAME)
         self._recompute_minigame_ratings(ctx.guild.id, QUEENS_GAME)
         if require_registered:
             for member in members:
                 self._require_queens_registered_member(ctx.guild.id, member)
 
-        filtered = bool(excluded_ids or included_ids or weekdays is not None)
+        filtered = bool(excluded_ids or included_ids or weekdays is not None
+                        or date_bounds is not None)
         per_member = []
         for member in members:
             if filtered:
                 row, history = self._minigame_user_data(
                     ctx.guild.id, QUEENS_GAME, member.id,
                     excluded_ids=excluded_ids, included_ids=included_ids,
-                    weekdays=weekdays)
+                    weekdays=weekdays, date_bounds=date_bounds)
             else:
                 row = cf_common.user_db.get_minigame_rating(
                     ctx.guild.id, QUEENS_GAME.name, member.id)
@@ -2819,7 +2894,7 @@ class Minigames(commands.Cog):
     async def _cmd_queens_history(self, ctx, member, *,
                                   require_registered=True,
                                   excluded_ids=None, included_ids=None,
-                                  weekdays=None):
+                                  weekdays=None, date_bounds=None):
         self._require_enabled(ctx.guild.id, QUEENS_GAME)
         self._recompute_minigame_ratings(ctx.guild.id, QUEENS_GAME)
         if require_registered:
@@ -2828,7 +2903,7 @@ class Minigames(commands.Cog):
         history = self._minigame_user_history(
             ctx.guild.id, QUEENS_GAME, member.id,
             excluded_ids=excluded_ids, included_ids=included_ids,
-            weekdays=weekdays)
+            weekdays=weekdays, date_bounds=date_bounds)
         played_history = [h for h in history if not h.is_decay]
         if not played_history:
             raise MinigameCogError(
@@ -2984,7 +3059,8 @@ class Minigames(commands.Cog):
 
     async def _cmd_queens_stats_date(self, ctx, date_arg, *,
                                      show_all=False, excluded_ids=None,
-                                     included_ids=None, weekdays=None):
+                                     included_ids=None, weekdays=None,
+                                     date_bounds=None):
         self._require_enabled(ctx.guild.id, QUEENS_GAME)
         self._sync_queens_materialized_results(
             ctx.guild.id, migrate_legacy=False)
@@ -3019,7 +3095,7 @@ class Minigames(commands.Cog):
             puzzle_info = self._minigame_puzzle_change_info(
                 ctx.guild.id, QUEENS_GAME, next(iter(puzzle_numbers)),
                 excluded_ids=excluded_ids, included_ids=included_ids,
-                weekdays=weekdays)
+                weekdays=weekdays, date_bounds=date_bounds)
             registrants = (
                 set(puzzle_info.keys())
                 if show_all
@@ -3029,7 +3105,7 @@ class Minigames(commands.Cog):
             ctx.guild, rows,
             f'{QUEENS_GAME.display_name} #{puzzle_number} '
             f'{puzzle_date.isoformat()} Results'
-            f'{_queens_weekday_filter_suffix(weekdays)}',
+            f'{_queens_filter_suffix(weekdays=weekdays, date_bounds=date_bounds)}',
             puzzle_info=puzzle_info,
             registrants=registrants,
             identity_label='LinkedIn',
@@ -5973,37 +6049,39 @@ class Minigames(commands.Cog):
         await self._cmd_queens_stats(ctx, *args)
 
     @queens.group(name='results', brief='Show Queens date leaderboard',
-                  usage='[date|number] [+exclude=…] [+include=…] [+dow=mon,wed|weekday|weekend]',
+                  usage='[date|number] [+exclude=…] [+include=…] [+dow=mon,wed|weekday|weekend] [d>=date] [d<date]',
                   invoke_without_command=True)
     async def queens_results(self, ctx, *args):
-        remaining, excluded_ids, included_ids, weekdays = (
+        remaining, excluded_ids, included_ids, weekdays, date_bounds = (
             await self._extract_queens_rating_filters(ctx, args))
         if len(remaining) > 1:
             raise MinigameCogError(
                 'Usage: `;queens results [date|number] '
-                '[+exclude=…] [+include=…] [+dow=mon,wed|weekday|weekend]`.')
+                '[+exclude=…] [+include=…] [+dow=mon,wed|weekday|weekend] '
+                '[d>=date] [d<date]`.')
         date_arg = remaining[0] if remaining else dt.date.today().isoformat()
         await self._cmd_queens_stats_date(
             ctx, date_arg,
             excluded_ids=excluded_ids, included_ids=included_ids,
-            weekdays=weekdays)
+            weekdays=weekdays, date_bounds=date_bounds)
 
     @queens_results.command(name='debug',
                             brief='(Mod) Date results with ratings for ALL players',
-                            usage='[date|number] [+exclude=…] [+include=…] [+dow=mon,wed|weekday|weekend]')
+                            usage='[date|number] [+exclude=…] [+include=…] [+dow=mon,wed|weekday|weekend] [d>=date] [d<date]')
     @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
     async def queens_results_debug(self, ctx, *args):
-        remaining, excluded_ids, included_ids, weekdays = (
+        remaining, excluded_ids, included_ids, weekdays, date_bounds = (
             await self._extract_queens_rating_filters(ctx, args))
         if len(remaining) > 1:
             raise MinigameCogError(
                 'Usage: `;queens results debug [date|number] '
-                '[+exclude=…] [+include=…] [+dow=mon,wed|weekday|weekend]`.')
+                '[+exclude=…] [+include=…] [+dow=mon,wed|weekday|weekend] '
+                '[d>=date] [d<date]`.')
         date_arg = remaining[0] if remaining else dt.date.today().isoformat()
         await self._cmd_queens_stats_date(
             ctx, date_arg, show_all=True,
             excluded_ids=excluded_ids, included_ids=included_ids,
-            weekdays=weekdays)
+            weekdays=weekdays, date_bounds=date_bounds)
 
     @queens.group(name='import', brief='Preview a pasted Queens leaderboard',
                   usage='date <pasted leaderboard>',
@@ -6074,76 +6152,76 @@ class Minigames(commands.Cog):
         await self._cmd_queens_clean(ctx, start_date, end_date)
 
     @queens.group(name='ratings', brief='Show Queens rating leaderboard',
-                  usage='[+exclude=…] [+include=…] [+dow=mon,wed|weekday|weekend]',
+                  usage='[+exclude=…] [+include=…] [+dow=mon,wed|weekday|weekend] [d>=date] [d<date]',
                   invoke_without_command=True)
     async def queens_ratings(self, ctx, *args):
         self._require_enabled(ctx.guild.id, QUEENS_GAME)
-        remaining, excluded_ids, included_ids, weekdays = (
+        remaining, excluded_ids, included_ids, weekdays, date_bounds = (
             await self._extract_queens_rating_filters(ctx, args))
         if remaining:
             raise MinigameCogError(
                 'Usage: `;queens ratings [+exclude=…] [+include=…] '
-                '[+dow=mon,wed|weekday|weekend]`.')
+                '[+dow=mon,wed|weekday|weekend] [d>=date] [d<date]`.')
         await self._cmd_queens_ratings(
             ctx, excluded_ids=excluded_ids, included_ids=included_ids,
-            weekdays=weekdays)
+            weekdays=weekdays, date_bounds=date_bounds)
 
     @queens.group(name='rating',
                   brief='Show Queens rating graph',
-                  usage='[@user1 @user2 ...] [+exclude=…] [+include=…] [+dow=mon,wed|weekday|weekend]',
+                  usage='[@user1 @user2 ...] [+exclude=…] [+include=…] [+dow=mon,wed|weekday|weekend] [d>=date] [d<date]',
                   invoke_without_command=True)
     async def queens_rating(self, ctx, *args):
-        members, excluded_ids, included_ids, weekdays = (
+        members, excluded_ids, included_ids, weekdays, date_bounds = (
             await self._parse_queens_rating_args(ctx, args))
         await self._cmd_queens_rating(
             ctx, members,
             excluded_ids=excluded_ids, included_ids=included_ids,
-            weekdays=weekdays)
+            weekdays=weekdays, date_bounds=date_bounds)
 
     @queens_rating.command(name='debug',
                            brief='(Mod) Rating graph for any rated user',
-                           usage='@user1 [@user2 ...] [+exclude=…] [+include=…] [+dow=mon,wed|weekday|weekend]')
+                           usage='@user1 [@user2 ...] [+exclude=…] [+include=…] [+dow=mon,wed|weekday|weekend] [d>=date] [d<date]')
     @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
     async def queens_rating_debug(self, ctx, *args):
-        members, excluded_ids, included_ids, weekdays = (
+        members, excluded_ids, included_ids, weekdays, date_bounds = (
             await self._parse_queens_rating_args(
                 ctx, args, member_required=True))
         await self._cmd_queens_rating(
             ctx, members, require_registered=False,
             excluded_ids=excluded_ids, included_ids=included_ids,
-            weekdays=weekdays)
+            weekdays=weekdays, date_bounds=date_bounds)
 
     @queens.group(name='performance', aliases=['perf'],
                   brief='Show Queens performance graph',
-                  usage='[@user1 @user2 ...] [+exclude=…] [+include=…] [+dow=mon,wed|weekday|weekend]',
+                  usage='[@user1 @user2 ...] [+exclude=…] [+include=…] [+dow=mon,wed|weekday|weekend] [d>=date] [d<date]',
                   invoke_without_command=True)
     async def queens_performance(self, ctx, *args):
-        members, excluded_ids, included_ids, weekdays = (
+        members, excluded_ids, included_ids, weekdays, date_bounds = (
             await self._parse_queens_rating_args(ctx, args))
         await self._cmd_queens_performance(
             ctx, members,
             excluded_ids=excluded_ids, included_ids=included_ids,
-            weekdays=weekdays)
+            weekdays=weekdays, date_bounds=date_bounds)
 
     @queens_performance.command(name='debug',
                                 brief='(Mod) Performance graph for any rated user',
-                                usage='@user1 [@user2 ...] [+exclude=…] [+include=…] [+dow=mon,wed|weekday|weekend]')
+                                usage='@user1 [@user2 ...] [+exclude=…] [+include=…] [+dow=mon,wed|weekday|weekend] [d>=date] [d<date]')
     @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
     async def queens_performance_debug(self, ctx, *args):
-        members, excluded_ids, included_ids, weekdays = (
+        members, excluded_ids, included_ids, weekdays, date_bounds = (
             await self._parse_queens_rating_args(
                 ctx, args, member_required=True))
         await self._cmd_queens_performance(
             ctx, members, require_registered=False,
             excluded_ids=excluded_ids, included_ids=included_ids,
-            weekdays=weekdays)
+            weekdays=weekdays, date_bounds=date_bounds)
 
     @queens.group(name='history',
                   brief='Paginated Queens rating delta log',
-                  usage='[@user] [+exclude=…] [+include=…] [+dow=mon,wed|weekday|weekend]',
+                  usage='[@user] [+exclude=…] [+include=…] [+dow=mon,wed|weekday|weekend] [d>=date] [d<date]',
                   invoke_without_command=True)
     async def queens_history(self, ctx, *args):
-        members, excluded_ids, included_ids, weekdays = (
+        members, excluded_ids, included_ids, weekdays, date_bounds = (
             await self._parse_queens_rating_args(ctx, args))
         if len(members) != 1:
             raise MinigameCogError(
@@ -6151,14 +6229,14 @@ class Minigames(commands.Cog):
         await self._cmd_queens_history(
             ctx, members[0],
             excluded_ids=excluded_ids, included_ids=included_ids,
-            weekdays=weekdays)
+            weekdays=weekdays, date_bounds=date_bounds)
 
     @queens_history.command(name='debug',
                             brief='(Mod) Rating delta log for any rated user',
-                            usage='@user [+exclude=…] [+include=…] [+dow=mon,wed|weekday|weekend]')
+                            usage='@user [+exclude=…] [+include=…] [+dow=mon,wed|weekday|weekend] [d>=date] [d<date]')
     @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
     async def queens_history_debug(self, ctx, *args):
-        members, excluded_ids, included_ids, weekdays = (
+        members, excluded_ids, included_ids, weekdays, date_bounds = (
             await self._parse_queens_rating_args(
                 ctx, args, member_required=True))
         if len(members) != 1:
@@ -6167,7 +6245,7 @@ class Minigames(commands.Cog):
         await self._cmd_queens_history(
             ctx, members[0], require_registered=False,
             excluded_ids=excluded_ids, included_ids=included_ids,
-            weekdays=weekdays)
+            weekdays=weekdays, date_bounds=date_bounds)
 
     @queens_ratings.command(name='recompute',
                             brief='(Mod) Rebuild the Queens rating snapshot')
@@ -6177,19 +6255,19 @@ class Minigames(commands.Cog):
 
     @queens_ratings.command(name='debug', aliases=['all'],
                             brief='(Mod) Leaderboard including unregistered rated users',
-                            usage='[+exclude=…] [+include=…] [+dow=mon,wed|weekday|weekend]')
+                            usage='[+exclude=…] [+include=…] [+dow=mon,wed|weekday|weekend] [d>=date] [d<date]')
     @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
     async def queens_ratings_debug(self, ctx, *args):
-        remaining, excluded_ids, included_ids, weekdays = (
+        remaining, excluded_ids, included_ids, weekdays, date_bounds = (
             await self._extract_queens_rating_filters(ctx, args))
         if remaining:
             raise MinigameCogError(
                 'Usage: `;queens ratings debug [+exclude=…] [+include=…] '
-                '[+dow=mon,wed|weekday|weekend]`.')
+                '[+dow=mon,wed|weekday|weekend] [d>=date] [d<date]`.')
         await self._cmd_queens_ratings(
             ctx, show_all=True,
             excluded_ids=excluded_ids, included_ids=included_ids,
-            weekdays=weekdays)
+            weekdays=weekdays, date_bounds=date_bounds)
 
     # ── GuessGame commands: ;minigames guessgame … ──────────────────────
 
@@ -6306,6 +6384,17 @@ class Minigames(commands.Cog):
         _remaining, parsed = _split_queens_weekday_filter(
             Minigames._slash_queens_weekday_args(weekdays))
         return parsed
+
+    @staticmethod
+    def _slash_queens_date_bounds(date_filter):
+        if not date_filter:
+            return None
+        args = str(date_filter).split()
+        remaining, date_bounds = _split_queens_rating_date_filter(args)
+        if remaining:
+            raise MinigameCogError(
+                'Use date filters like `d>=01062026 d<08062026`.')
+        return date_bounds
 
     async def _slash_send_error(self, interaction, error):
         try:
@@ -6852,17 +6941,20 @@ class Minigames(commands.Cog):
     @queens_slash.command(name='results', description='Show a Queens date leaderboard')
     @app_commands.describe(
         date='Date or puzzle number (defaults to today)',
-        weekdays='Queens days: mon,wed, weekday, or weekend')
+        weekdays='Queens days: mon,wed, weekday, or weekend',
+        date_filter='Rating date filter, e.g. d>=01062026 d<08062026')
     async def slash_queens_results(
         self, interaction: discord.Interaction,
         date: Optional[str] = None,
         weekdays: Optional[str] = None,
+        date_filter: Optional[str] = None,
     ):
         await interaction.response.defer()
         try:
             await self._cmd_queens_stats_date(
                 _SlashCtx(interaction), date or dt.date.today().isoformat(),
-                weekdays=self._slash_queens_weekdays(weekdays))
+                weekdays=self._slash_queens_weekdays(weekdays),
+                date_bounds=self._slash_queens_date_bounds(date_filter))
         except MinigameCogError as e:
             await self._slash_send_error(interaction, e)
         except Exception:
@@ -6871,16 +6963,19 @@ class Minigames(commands.Cog):
 
     @queens_slash.command(name='ratings', description='Show Queens rating leaderboard')
     @app_commands.describe(
-        weekdays='Queens days: mon,wed, weekday, or weekend')
+        weekdays='Queens days: mon,wed, weekday, or weekend',
+        date_filter='Rating date filter, e.g. d>=01062026 d<08062026')
     async def slash_queens_ratings(
         self, interaction: discord.Interaction,
         weekdays: Optional[str] = None,
+        date_filter: Optional[str] = None,
     ):
         await interaction.response.defer()
         try:
             await self._cmd_queens_ratings(
                 _SlashCtx(interaction),
-                weekdays=self._slash_queens_weekdays(weekdays))
+                weekdays=self._slash_queens_weekdays(weekdays),
+                date_bounds=self._slash_queens_date_bounds(date_filter))
         except MinigameCogError as e:
             await self._slash_send_error(interaction, e)
         except Exception:
@@ -6890,18 +6985,21 @@ class Minigames(commands.Cog):
     @queens_slash.command(name='rating', description="Show a user's Queens rating graph")
     @app_commands.describe(
         member='Player (defaults to you)',
-        weekdays='Queens days: mon,wed, weekday, or weekend')
+        weekdays='Queens days: mon,wed, weekday, or weekend',
+        date_filter='Rating date filter, e.g. d>=01062026 d<08062026')
     async def slash_queens_rating(
         self, interaction: discord.Interaction,
         member: Optional[discord.Member] = None,
         weekdays: Optional[str] = None,
+        date_filter: Optional[str] = None,
     ):
         await interaction.response.defer()
         target = member or interaction.user
         try:
             await self._cmd_queens_rating(
                 _SlashCtx(interaction), [target],
-                weekdays=self._slash_queens_weekdays(weekdays))
+                weekdays=self._slash_queens_weekdays(weekdays),
+                date_bounds=self._slash_queens_date_bounds(date_filter))
         except MinigameCogError as e:
             await self._slash_send_error(interaction, e)
         except Exception:
@@ -6911,18 +7009,21 @@ class Minigames(commands.Cog):
     @queens_slash.command(name='performance', description="Show a user's Queens performance graph")
     @app_commands.describe(
         member='Player (defaults to you)',
-        weekdays='Queens days: mon,wed, weekday, or weekend')
+        weekdays='Queens days: mon,wed, weekday, or weekend',
+        date_filter='Rating date filter, e.g. d>=01062026 d<08062026')
     async def slash_queens_performance(
         self, interaction: discord.Interaction,
         member: Optional[discord.Member] = None,
         weekdays: Optional[str] = None,
+        date_filter: Optional[str] = None,
     ):
         await interaction.response.defer()
         target = member or interaction.user
         try:
             await self._cmd_queens_performance(
                 _SlashCtx(interaction), [target],
-                weekdays=self._slash_queens_weekdays(weekdays))
+                weekdays=self._slash_queens_weekdays(weekdays),
+                date_bounds=self._slash_queens_date_bounds(date_filter))
         except MinigameCogError as e:
             await self._slash_send_error(interaction, e)
         except Exception:
@@ -6932,18 +7033,21 @@ class Minigames(commands.Cog):
     @queens_slash.command(name='history', description="Show a user's Queens rating delta log")
     @app_commands.describe(
         member='Player (defaults to you)',
-        weekdays='Queens days: mon,wed, weekday, or weekend')
+        weekdays='Queens days: mon,wed, weekday, or weekend',
+        date_filter='Rating date filter, e.g. d>=01062026 d<08062026')
     async def slash_queens_history(
         self, interaction: discord.Interaction,
         member: Optional[discord.Member] = None,
         weekdays: Optional[str] = None,
+        date_filter: Optional[str] = None,
     ):
         await interaction.response.defer()
         target = member or interaction.user
         try:
             await self._cmd_queens_history(
                 _SlashCtx(interaction), target,
-                weekdays=self._slash_queens_weekdays(weekdays))
+                weekdays=self._slash_queens_weekdays(weekdays),
+                date_bounds=self._slash_queens_date_bounds(date_filter))
         except MinigameCogError as e:
             await self._slash_send_error(interaction, e)
         except Exception:
