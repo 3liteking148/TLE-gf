@@ -1573,7 +1573,7 @@ class Minigames(commands.Cog):
             logger.error('Failed to recompute Akari ratings for guild %s',
                          guild_id, exc_info=True)
 
-    def _recompute_live_ingest_ratings(self, guild_id, game):
+    def _recompute_game_ratings(self, guild_id, game):
         if game.rating is None:
             return
         self._recompute_minigame_ratings(guild_id, game)
@@ -3632,7 +3632,7 @@ class Minigames(commands.Cog):
                     return
                 saved = await self._ingest_message(message, game)
                 if saved:
-                    self._recompute_live_ingest_ratings(message.guild.id, game)
+                    self._recompute_game_ratings(message.guild.id, game)
             except Exception:
                 logger.error('Error ingesting message %s', message.id, exc_info=True)
 
@@ -3664,7 +3664,7 @@ class Minigames(commands.Cog):
                 changed += cf_common.user_db.delete_imported_minigame_result(after.id)
                 await self._notify_non_pro_mode(after)
                 if changed:
-                    self._recompute_live_ingest_ratings(after.guild.id, game)
+                    self._recompute_game_ratings(after.guild.id, game)
                 return
             # Delete all existing live results for this message, then re-ingest.
             # Handles the case where an edit removes some results from a multi-result message.
@@ -3675,7 +3675,7 @@ class Minigames(commands.Cog):
             else:
                 changed += cf_common.user_db.delete_imported_minigame_result(after.id)
             if changed:
-                self._recompute_live_ingest_ratings(after.guild.id, game)
+                self._recompute_game_ratings(after.guild.id, game)
         except Exception:
             logger.error('Error handling message edit %s', after.id, exc_info=True)
 
@@ -3689,7 +3689,7 @@ class Minigames(commands.Cog):
             deleted += cf_common.user_db.delete_imported_minigame_result(payload.message_id)
             cf_common.user_db.delete_raw_message(payload.message_id)
             if deleted and old is not None and old.game in self.GAMES:
-                self._recompute_live_ingest_ratings(
+                self._recompute_game_ratings(
                     payload.guild_id, self.GAMES[old.game])
         except Exception:
             logger.error('Error handling message delete %s', payload.message_id, exc_info=True)
@@ -3835,8 +3835,7 @@ class Minigames(commands.Cog):
             self._import_tasks.pop(key, None)
             # Recompute once after the whole import (committed batches persist even
             # on cancel/fail), rather than per imported row.
-            if game.name == AKARI_GAME.name:
-                self._recompute_akari_ratings(guild_id)
+            self._recompute_game_ratings(guild_id, game)
             await self._notify_import_complete(guild_id, game, status)
 
     # ── Shared command implementations ──────────────────────────────────
@@ -5016,8 +5015,7 @@ class Minigames(commands.Cog):
         deleted = cf_common.user_db.clear_imported_minigame_results(
             ctx.guild.id, game.name)
         self._import_status.pop(key, None)
-        if game.name == AKARI_GAME.name:
-            self._recompute_akari_ratings(ctx.guild.id)
+        self._recompute_game_ratings(ctx.guild.id, game)
         await ctx.send(embed=discord_common.embed_success(
             f'Deleted {deleted} imported {game.display_name} row(s). '
             f'Raw messages preserved for reparse.'))
@@ -5055,8 +5053,7 @@ class Minigames(commands.Cog):
                 parsed_count += 1
         cf_common.user_db.conn.commit()
 
-        if game.name == AKARI_GAME.name:
-            self._recompute_akari_ratings(ctx.guild.id)
+        self._recompute_game_ratings(ctx.guild.id, game)
 
         lines = [
             f'raw messages scanned: **{len(raw_messages)}**',
@@ -6238,6 +6235,11 @@ class Minigames(commands.Cog):
                            end_date: str = None):
         await self._cmd_queens_clean(ctx, start_date, end_date)
 
+    @queens.command(name='reparse', brief='(Mod) Reparse all stored raw Queens messages')
+    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    async def queens_reparse(self, ctx):
+        await self._cmd_reparse(ctx, QUEENS_GAME)
+
     @queens.group(name='ratings', brief='Show Queens rating leaderboard',
                   usage='[+exclude=…] [+include=…] [+dow=mon,wed|weekday|weekend] [d>=date] [d<date]',
                   invoke_without_command=True)
@@ -7232,6 +7234,22 @@ class Minigames(commands.Cog):
         try:
             await self._cmd_queens_clean(
                 _SlashCtx(interaction), start_date, end_date)
+        except MinigameCogError as e:
+            await self._slash_send_error(interaction, e)
+        except Exception:
+            logger.exception('Unhandled error in slash command')
+            await self._slash_send_error(interaction, 'An unexpected error occurred.')
+
+    @queens_slash.command(name='reparse', description='Reparse all stored raw Queens messages')
+    async def slash_queens_reparse(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        if not self._has_mod_role(interaction):
+            return await self._slash_send_error(
+                interaction,
+                f'You need the `{constants.TLE_ADMIN}` or '
+                f'`{constants.TLE_MODERATOR}` role.')
+        try:
+            await self._cmd_reparse(_SlashCtx(interaction), QUEENS_GAME)
         except MinigameCogError as e:
             await self._slash_send_error(interaction, e)
         except Exception:

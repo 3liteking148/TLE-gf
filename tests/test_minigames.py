@@ -3560,6 +3560,48 @@ class TestCogIngest:
         assert rating is not None
         assert rating.games == 1
 
+    def test_queens_reparse_uses_raw_share_messages(self, db, monkeypatch):
+        monkeypatch.setattr(cf_common, 'user_db', db)
+        monkeypatch.setattr(
+            minigames_module.discord_common, 'embed_success',
+            lambda desc: SimpleNamespace(description=desc))
+        db.set_minigame_player_link(
+            1, 'queens', 999, 'Alice LinkedIn',
+            normalize_queens_name('Alice LinkedIn'), None, 1.0, 999)
+        content = (
+            'Queens #774 | 1:26\n'
+            'No mistakes & no hints\n'
+            'First \U0001f451s: \U0001f7eb \U0001f7e7 \U0001f7e6\n'
+            'lnkd.in/queens.'
+        )
+        db.save_raw_message(123, 1, 10, 999, '2026-06-13T12:00:00', content)
+        sent = {}
+
+        async def send(content=None, *, embed=None, **kwargs):
+            sent['content'] = content
+            sent['embed'] = embed
+            sent['kwargs'] = kwargs
+
+        ctx = SimpleNamespace(
+            guild=_FakeGuild(1),
+            channel=_FakeChannel(10),
+            author=_FakeDiscordMember(
+                999, 'mod', roles=[SimpleNamespace(name=constants.TLE_MODERATOR)]),
+            send=send,
+        )
+        cog = Minigames(bot=None)
+
+        asyncio.run(Minigames.queens_reparse.__wrapped__(cog, ctx))
+
+        rows = db.get_minigame_results_for_user(1, 'queens', 999)
+        assert len(rows) == 1
+        assert rows[0].puzzle_number == 774
+        assert rows[0].time_seconds == 86
+        assert 'results parsed: **1**' in sent['embed'].description
+        rating = db.get_minigame_rating(1, 'queens', 999)
+        assert rating is not None
+        assert rating.games == 1
+
     def test_ignores_disabled_feature(self, db, monkeypatch):
         monkeypatch.setattr(cf_common, 'user_db', db)
         db.set_minigame_channel(1, _GAME, 10)
