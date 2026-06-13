@@ -5199,6 +5199,49 @@ class Minigames(commands.Cog):
             f'Deleted {deleted} imported {game.display_name} row(s). '
             f'Raw messages preserved for reparse.'))
 
+    async def _cmd_import_orphans(self, ctx, game):
+        """Temporary audit: list imported results that have no live counterpart
+        for the same (user, puzzle) — i.e. rows that exist only because of an
+        ``import start``.  Handy for spotting junk left behind by a bad import.
+        """
+        rows = cf_common.user_db.get_import_only_minigame_results(
+            ctx.guild.id, game.name)
+        if not rows:
+            await ctx.send(embed=discord_common.embed_success(
+                f'No import-only {game.display_name} results — every imported '
+                f'result has a live counterpart.'))
+            return
+
+        per_page = 10
+        title = (f'{game.display_name} import-only results '
+                 f'({len(rows)} total)')
+        pages = []
+        for page_idx, chunk in enumerate(paginator.chunkify(rows, per_page)):
+            lines = []
+            for i, row in enumerate(chunk):
+                rank = page_idx * per_page + i + 1
+                name = self._minigame_public_user_name(
+                    ctx.guild, game, row.user_id)
+                if row.is_perfect:
+                    result_str = f'\N{GLOWING STAR} {format_duration(row.time_seconds)}'
+                else:
+                    result_str = f'{row.accuracy}% {format_duration(row.time_seconds)}'
+                date_str = normalize_puzzle_date(row.puzzle_date).isoformat()
+                lines.append(
+                    f'**{rank}.** `{name}` \N{MIDDLE DOT} '
+                    f'#{row.puzzle_number} \N{MIDDLE DOT} {date_str} '
+                    f'\N{MIDDLE DOT} {result_str} '
+                    f'\N{MIDDLE DOT} msg `{row.message_id}`')
+            embed = discord.Embed(
+                title=title,
+                description='\n'.join(lines),
+                color=discord_common.random_cf_color(),
+            )
+            pages.append((None, embed))
+        paginator.paginate(
+            self.bot, ctx.channel, pages, wait_time=300,
+            set_pagenum_footers=True, author_id=ctx.author.id)
+
     async def _cmd_reparse(self, ctx, game):
         raw_messages = cf_common.user_db.get_raw_messages_for_guild(ctx.guild.id)
         if not raw_messages:
@@ -5452,6 +5495,12 @@ class Minigames(commands.Cog):
     @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
     async def akari_import_clear(self, ctx):
         await self._cmd_import_clear(ctx, AKARI_GAME)
+
+    @akari_import.command(name='orphans',
+                          brief='(Temp, mod) List imported results with no live counterpart')
+    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    async def akari_import_orphans(self, ctx):
+        await self._cmd_import_orphans(ctx, AKARI_GAME)
 
     @akari.command(name='reparse', brief='Reparse all stored raw messages')
     @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)

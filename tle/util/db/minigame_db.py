@@ -320,6 +320,32 @@ class MinigameDbMixin:
             (str(guild_id), game)
         ).fetchall()
 
+    def get_import_only_minigame_results(self, guild_id, game):
+        """Imported results that have no live counterpart for the same
+        (user, puzzle).
+
+        Audit helper: surfaces rows that exist only because of an
+        ``import start`` backfill — useful for spotting junk left behind by a
+        bad import.  A result is keyed on (user_id, puzzle_number); an imported
+        row is "orphaned" when the user has no live result for that puzzle.
+        """
+        return self.conn.execute(
+            f'''
+            {self._minigame_select('minigame_import_result')}
+            WHERE guild_id = ? AND game = ?
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM minigame_result live
+                  WHERE live.guild_id = minigame_import_result.guild_id
+                    AND live.game = minigame_import_result.game
+                    AND live.user_id = minigame_import_result.user_id
+                    AND live.puzzle_number = minigame_import_result.puzzle_number
+              )
+            ORDER BY CAST(puzzle_number AS INTEGER) DESC, user_id
+            ''',
+            (str(guild_id), game)
+        ).fetchall()
+
     def delete_minigame_result_for_user_puzzle(self, guild_id, game, user_id, puzzle_number):
         live_rc = self.conn.execute(
             '''

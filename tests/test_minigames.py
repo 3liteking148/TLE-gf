@@ -822,6 +822,26 @@ class TestDbMixin:
         assert rc == 2
         assert db.get_minigame_result_for_user_puzzle(100, _GAME, 300, 445) is None
 
+    def test_import_only_results_excludes_rows_with_live_counterpart(self, db):
+        # puzzle 445: imported AND live for same user -> not orphaned
+        db.save_minigame_result(1, 100, _GAME, 200, 300, 445, '2026-03-26', 100, 60, True, 'live')
+        db.save_imported_minigame_result(2, 100, _GAME, 200, 300, 445, '2026-03-26', 96, 50, False, 'imp')
+        # puzzle 446: imported only -> orphaned
+        db.save_imported_minigame_result(3, 100, _GAME, 200, 300, 446, '2026-03-27', 90, 70, False, 'imp')
+        # puzzle 447: imported for a different user, no live -> orphaned
+        db.save_imported_minigame_result(4, 100, _GAME, 200, 301, 447, '2026-03-28', 100, 80, True, 'imp')
+
+        orphans = db.get_import_only_minigame_results(100, _GAME)
+        assert {(r.user_id, r.puzzle_number) for r in orphans} == {
+            ('300', 446), ('301', 447)}
+
+    def test_import_only_live_match_uses_user_and_puzzle_not_message(self, db):
+        # same (user, puzzle) but the live row carries a different message id;
+        # the imported row should still be considered "present in live".
+        db.save_minigame_result(99, 100, _GAME, 200, 300, 445, '2026-03-26', 100, 60, True, 'live')
+        db.save_imported_minigame_result(2, 100, _GAME, 200, 300, 445, '2026-03-26', 96, 50, False, 'imp')
+        assert db.get_import_only_minigame_results(100, _GAME) == []
+
     def test_delete_results_for_puzzle(self, db):
         db.save_minigame_result(1, 100, _GAME, 200, 300, 445, '2026-03-26', 100, 89, True, 'c1')
         db.save_minigame_result(2, 100, _GAME, 200, 301, 445, '2026-03-26', 100, 90, True, 'c2')
