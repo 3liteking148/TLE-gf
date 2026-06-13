@@ -53,6 +53,50 @@ def current_puzzle_number():
     return expected_puzzle_number(dt.date.today())
 
 
+def akari_date_number_mismatch(content):
+    """Return mismatch details when a share's header number conflicts with date."""
+    lines = [line.strip() for line in content.splitlines() if line.strip()]
+    if len(lines) < 2:
+        return None
+
+    header_idx = None
+    header_line = None
+    for i, line in enumerate(lines):
+        if _HEADER_RE.match(line):
+            header_idx = i
+            header_line = line
+            break
+    if header_idx is None or header_idx + 2 >= len(lines):
+        return None
+    if not any('🕓' in line for line in lines[header_idx + 2:]):
+        return None
+
+    num_match = _HEADER_NUM_RE.search(header_line)
+    if num_match is None:
+        return None
+
+    date_match = _DATE_RE.search(lines[header_idx + 1])
+    if date_match is None:
+        return None
+
+    try:
+        puzzle_number = int(num_match.group(1))
+        puzzle_date = _parse_date(date_match.group(1))
+    except ValueError:
+        return None
+
+    expected_date = puzzle_date_for(puzzle_number)
+    if expected_date == puzzle_date:
+        return None
+
+    return SimpleNamespace(
+        puzzle_number=puzzle_number,
+        puzzle_date=puzzle_date,
+        expected_date=expected_date,
+        expected_number=_puzzle_number_from_date(puzzle_date),
+    )
+
+
 def _parse_time(time_text):
     parts = [int(part) for part in time_text.split(':')]
     if len(parts) == 2:
@@ -136,7 +180,12 @@ def parse_akari_message(content):
         return []
 
     num_match = _HEADER_NUM_RE.search(header_line)
-    puzzle_number = int(num_match.group(1)) if num_match else _puzzle_number_from_date(puzzle_date)
+    if num_match:
+        puzzle_number = int(num_match.group(1))
+        if puzzle_date_for(puzzle_number) != puzzle_date:
+            return []
+    else:
+        puzzle_number = _puzzle_number_from_date(puzzle_date)
 
     return [ParsedResult(
         puzzle_number=puzzle_number,

@@ -24,7 +24,7 @@ from tle.cogs._minigame_common import (
     resolve_scoring,
     strip_codeblock,
 )
-from tle.cogs._minigame_akari import AKARI_GAME, parse_akari_message
+from tle.cogs._minigame_akari import AKARI_GAME, parse_akari_message, puzzle_date_for
 from tle.cogs._minigame_guessgame import (
     GUESSGAME_GAME,
     parse_guessgame_message,
@@ -310,7 +310,7 @@ class TestParsing:
 
     def test_parse_perfect_word(self):
         results = parse_akari_message(
-            'Daily Akari 500\n'
+            'Daily Akari 445\n'
             '✅March 26, 2026✅\n'
             'Perfect   🕓 2:15\n'
             'https://dailyakari.com/'
@@ -372,6 +372,13 @@ class TestParsing:
 
     def test_parse_rejects_invalid_message(self):
         assert parse_akari_message('hello world') == []
+
+    def test_parse_rejects_mismatched_number_and_date(self):
+        assert parse_akari_message(
+            'Daily Akari 446\n'
+            '✅2026-03-26✅\n'
+            '🌟 Perfect!   🕓 1:29'
+        ) == []
 
     def test_parse_rejects_non_pro_mode(self):
         # Non-pro dailyakari.com share format: header + date + time + ✅ Solved,
@@ -2770,6 +2777,14 @@ class TestQueensCommands:
                     'time_seconds': 10,
                 },
                 {
+                    'linkedin_name': 'Cara LinkedIn',
+                    'puzzle_number': _queens_number('2026-06-09'),
+                    'puzzle_date': '2026-06-08',
+                    'time_seconds': 9,
+                    'no_hints': True,
+                    'no_mistakes': True,
+                },
+                {
                     'linkedin_name': 'Unknown LinkedIn',
                     'puzzle_number': _queens_number('2026-06-09'),
                     'puzzle_date': '2026-06-09',
@@ -2815,7 +2830,7 @@ class TestQueensCommands:
         assert '**2** registered LinkedIn name(s)' in description
         assert '**1** unregistered LinkedIn name(s)' in description
         assert 'Skipped **1** already-saved result(s)' in description
-        assert 'Ignored **1** malformed entry/entries' in description
+        assert 'Ignored **2** malformed entry/entries' in description
 
         claimed = cog._cmd_queens_register_link(ctx, unknown, 'Unknown LinkedIn')
         assert claimed == 1
@@ -4002,9 +4017,12 @@ class TestCogSafety:
         that get committed by a later DB operation."""
         monkeypatch.setattr(cf_common, 'user_db', db)
 
-        akari_fmt = 'Daily Akari {n}\n\u27052026-03-26\u2705\n\U0001f31f \U0001f553 1:29\nhttps://dailyakari.com/'
         messages = [
-            _FakeMessage(i, 1, 10, 999, akari_fmt.format(n=i))
+            _FakeMessage(
+                i, 1, 10, 999,
+                f'Daily Akari {444 + i}\n'
+                f'\u2705{puzzle_date_for(444 + i).isoformat()}\u2705\n'
+                '\U0001f31f \U0001f553 1:29\nhttps://dailyakari.com/')
             for i in range(1, 6)
         ]
 
@@ -4896,8 +4914,9 @@ class TestCogRating:
 
     @staticmethod
     def _akari_msg_n(msg_id, user_id, puzzle, body, guild=1, channel=10):
+        puzzle_date = puzzle_date_for(puzzle).isoformat()
         return _FakeMessage(msg_id, guild, channel, user_id,
-                            f'Daily Akari {puzzle}\n✅2026-03-26✅\n{body}\n'
+                            f'Daily Akari {puzzle}\n✅{puzzle_date}✅\n{body}\n'
                             f'https://dailyakari.com/')
 
     @staticmethod
@@ -5103,8 +5122,9 @@ class TestAkariExcludeFilter:
 
     @staticmethod
     def _akari_msg_n(msg_id, user_id, puzzle, body, guild=1, channel=10):
+        puzzle_date = puzzle_date_for(puzzle).isoformat()
         return _FakeMessage(msg_id, guild, channel, user_id,
-                            f'Daily Akari {puzzle}\n✅2026-03-26✅\n{body}\n'
+                            f'Daily Akari {puzzle}\n✅{puzzle_date}✅\n{body}\n'
                             f'https://dailyakari.com/')
 
     @staticmethod
@@ -5547,6 +5567,31 @@ class TestAkariNonProMode:
         body = msg.replies[0]['kwargs'].get('embed', '')
         assert 'Pro Mode' in body
 
+    def test_on_message_replies_to_date_number_mismatch(self, db, monkeypatch):
+        monkeypatch.setattr(cf_common, 'user_db', db)
+        TestCogRating._enable(db)
+        self._capture_embed_text(monkeypatch)
+        cog = Minigames(bot=None)
+        msg = _FakeMessage(
+            10, 1, 10, 999,
+            'Daily Akari 446\n'
+            '✅2026-03-26✅\n'
+            '🌟 Perfect!   🕓 1:29')
+
+        asyncio.run(cog.on_message(msg))
+
+        assert db.get_minigame_result(10) is None
+        raws = db.conn.execute(
+            'SELECT raw_content FROM minigame_raw_message WHERE message_id = ?',
+            ('10',)).fetchall()
+        assert raws == []
+        assert len(msg.replies) == 1
+        body = msg.replies[0]['kwargs'].get('embed', '')
+        assert 'Invalid submission' in body
+        assert 'mismatch' in body.lower()
+        assert 'Result not counted' in body
+        assert 'never play this game again' in body
+
     def test_on_message_keeps_raw_for_future_reparse(self, db, monkeypatch):
         # Non-pro messages are stored in the raw cache so we can reparse them
         # later if the format becomes supported.
@@ -5595,6 +5640,136 @@ class TestAkariNonProMode:
         asyncio.run(cog.on_message_edit(msg, edited))
         assert db.get_minigame_result(4) is None
         assert len(edited.replies) == 1
+
+    def test_on_message_edit_to_mismatch_deletes_old_result(self, db, monkeypatch):
+        monkeypatch.setattr(cf_common, 'user_db', db)
+        TestCogRating._enable(db)
+        self._capture_embed_text(monkeypatch)
+        cog = Minigames(bot=None)
+
+        msg = _FakeMessage(
+            11, 1, 10, 999,
+            'Daily Akari 445\n'
+            '✅2026-03-26✅\n'
+            '🌟 Perfect!   🕓 1:29')
+        asyncio.run(cog.on_message(msg))
+        assert db.get_minigame_result(11) is not None
+
+        edited = _FakeMessage(
+            11, 1, 10, 999,
+            'Daily Akari 446\n'
+            '✅2026-03-26✅\n'
+            '🌟 Perfect!   🕓 1:29')
+        asyncio.run(cog.on_message_edit(msg, edited))
+
+        assert db.get_minigame_result(11) is None
+        assert len(edited.replies) == 1
+        body = edited.replies[0]['kwargs'].get('embed', '')
+        assert 'Invalid submission' in body
+        assert 'mismatch' in body.lower()
+        assert 'never play this game again' in body
+
+    def test_import_replies_to_historical_date_number_mismatch(
+            self, db, monkeypatch):
+        monkeypatch.setattr(cf_common, 'user_db', db)
+        self._capture_embed_text(monkeypatch)
+        msg = _FakeMessage(
+            12, 1, 10, 999,
+            'Daily Akari 446\n'
+            '✅2026-03-26✅\n'
+            '🌟 Perfect!   🕓 1:29')
+
+        class _HistoryChannel(_FakeChannel):
+            def history(self, **_kwargs):
+                async def _gen():
+                    yield msg
+                return _gen()
+
+        class _Bot:
+            def __init__(self, channel):
+                self._channel = channel
+
+            def get_channel(self, _channel_id):
+                return self._channel
+
+        cog = Minigames(bot=_Bot(_HistoryChannel(10)))
+        cog._import_status[(1, 'akari')] = {
+            'state': 'running',
+            'channel_id': 10,
+            'scanned': 0,
+            'done': 0,
+            'skipped': [],
+            'error': None,
+            'latest_message_id': None,
+            'started_at': dt.datetime.now(),
+        }
+
+        asyncio.run(cog._run_import(1, 10, AKARI_GAME))
+
+        assert db.get_minigame_result(12) is None
+        raws = db.conn.execute(
+            'SELECT raw_content FROM minigame_raw_message WHERE message_id = ?',
+            ('12',)).fetchall()
+        assert raws == []
+        assert len(msg.replies) == 1
+        body = msg.replies[0]['kwargs'].get('embed', '')
+        assert 'Invalid submission' in body
+        assert 'never play this game again' in body
+
+    def test_reparse_replies_to_stored_date_number_mismatch(
+            self, db, monkeypatch):
+        monkeypatch.setattr(cf_common, 'user_db', db)
+        self._capture_embed_text(monkeypatch)
+        monkeypatch.setattr(
+            minigames_module.discord_common, 'embed_success',
+            lambda desc: SimpleNamespace(description=desc))
+        msg = _FakeMessage(
+            13, 1, 10, 999,
+            'Daily Akari 446\n'
+            '✅2026-03-26✅\n'
+            '🌟 Perfect!   🕓 1:29')
+        db.save_raw_message(
+            msg.id, msg.guild.id, msg.channel.id, msg.author.id,
+            msg.created_at.isoformat(), msg.content)
+
+        class _FetchChannel(_FakeChannel):
+            async def fetch_message(self, message_id):
+                assert int(message_id) == msg.id
+                return msg
+
+        class _Bot:
+            def __init__(self, channel):
+                self._channel = channel
+
+            def get_channel(self, _channel_id):
+                return self._channel
+
+        sent = {}
+
+        async def send(content=None, *, embed=None, **kwargs):
+            sent['content'] = content
+            sent['embed'] = embed
+            sent['kwargs'] = kwargs
+
+        ctx = SimpleNamespace(
+            guild=_FakeGuild(1),
+            channel=_FakeChannel(10),
+            author=_FakeDiscordMember(
+                999, 'mod', roles=[SimpleNamespace(name=constants.TLE_MODERATOR)]),
+            send=send,
+        )
+        cog = Minigames(bot=_Bot(_FetchChannel(10)))
+
+        asyncio.run(cog._cmd_reparse(ctx, AKARI_GAME))
+
+        imported = db.conn.execute(
+            'SELECT 1 FROM minigame_import_result WHERE message_id = ?',
+            ('13',)).fetchall()
+        assert imported == []
+        assert len(msg.replies) == 1
+        body = msg.replies[0]['kwargs'].get('embed', '')
+        assert 'Invalid submission' in body
+        assert 'never play this game again' in body
 
 
 class TestRatingDisplayNoLeak:

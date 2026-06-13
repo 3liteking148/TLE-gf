@@ -374,6 +374,27 @@ class MinigameDbMixin:
         self.conn.commit()
         return live_rc + imported_rc
 
+    def delete_minigame_results_for_date_range(
+            self, guild_id, game, start_date, end_date_exclusive):
+        with self.conn:
+            live_rc = self.conn.execute(
+                '''
+                DELETE FROM minigame_result
+                WHERE guild_id = ? AND game = ?
+                  AND puzzle_date >= ? AND puzzle_date < ?
+                ''',
+                (str(guild_id), game, str(start_date), str(end_date_exclusive))
+            ).rowcount
+            imported_rc = self.conn.execute(
+                '''
+                DELETE FROM minigame_import_result
+                WHERE guild_id = ? AND game = ?
+                  AND puzzle_date >= ? AND puzzle_date < ?
+                ''',
+                (str(guild_id), game, str(start_date), str(end_date_exclusive))
+            ).rowcount
+        return live_rc + imported_rc
+
     def delete_minigame_results_for_game(self, guild_id, game):
         live_rc = self.conn.execute(
             '''
@@ -490,6 +511,19 @@ class MinigameDbMixin:
             WHERE guild_id = ? AND game = ? AND puzzle_number = ?
             ''',
             (str(guild_id), game, int(puzzle_number))
+        ).rowcount
+        self.conn.commit()
+        return rc
+
+    def delete_minigame_unresolved_results_for_date_range(
+            self, guild_id, game, start_date, end_date_exclusive):
+        rc = self.conn.execute(
+            '''
+            DELETE FROM minigame_unresolved_result
+            WHERE guild_id = ? AND game = ?
+              AND puzzle_date >= ? AND puzzle_date < ?
+            ''',
+            (str(guild_id), game, str(start_date), str(end_date_exclusive))
         ).rowcount
         self.conn.commit()
         return rc

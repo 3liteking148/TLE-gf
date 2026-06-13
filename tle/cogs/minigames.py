@@ -37,7 +37,8 @@ from tle.cogs._minigame_common import (
     resolve_scoring, strip_codeblock, _NO_TIME_BOUND,
 )
 from tle.cogs._minigame_akari import (
-    AKARI_GAME, expected_puzzle_number, looks_like_non_pro_akari, puzzle_date_for,
+    AKARI_GAME, akari_date_number_mismatch, expected_puzzle_number,
+    looks_like_non_pro_akari, puzzle_date_for,
 )
 from tle.cogs._minigame_guessgame import GUESSGAME_GAME
 from tle.cogs._minigame_queens import (
@@ -2787,17 +2788,17 @@ class Minigames(commands.Cog):
         if parsed_end < parsed_start:
             raise MinigameCogError('Queens clean end date cannot be before start date.')
 
-        deleted = 0
-        unresolved_deleted = 0
         days = (parsed_end - parsed_start).days + 1
-        for day_index in range(days):
-            puzzle_date = parsed_start + dt.timedelta(days=day_index)
-            for puzzle_number in _queens_puzzle_numbers_for_date(puzzle_date):
-                deleted += cf_common.user_db.delete_minigame_results_for_puzzle(
-                    ctx.guild.id, QUEENS_GAME.name, puzzle_number)
-                unresolved_deleted += (
-                    cf_common.user_db.delete_minigame_unresolved_results_for_puzzle(
-                        ctx.guild.id, QUEENS_GAME.name, puzzle_number))
+        end_exclusive = parsed_end + dt.timedelta(days=1)
+        deleted = cf_common.user_db.delete_minigame_results_for_date_range(
+            ctx.guild.id, QUEENS_GAME.name,
+            _queens_puzzle_date_text(parsed_start),
+            _queens_puzzle_date_text(end_exclusive))
+        unresolved_deleted = (
+            cf_common.user_db.delete_minigame_unresolved_results_for_date_range(
+                ctx.guild.id, QUEENS_GAME.name,
+                _queens_puzzle_date_text(parsed_start),
+                _queens_puzzle_date_text(end_exclusive)))
 
         if not deleted and not unresolved_deleted:
             raise MinigameCogError(
@@ -3684,6 +3685,49 @@ class Minigames(commands.Cog):
             logger.warning('Failed to notify non-pro mode for message %s',
                            message.id, exc_info=True)
 
+    @staticmethod
+    def _invalid_minigame_submission_message(game, content):
+        if game.name != AKARI_GAME.name:
+            return None
+        mismatch = akari_date_number_mismatch(content)
+        if mismatch is None:
+            return None
+        return (
+            f'Invalid submission: puzzle number/date mismatch. '
+            f'Daily Akari #{mismatch.puzzle_number} '
+            f'is for {mismatch.expected_date.isoformat()}, but this message says '
+            f'{mismatch.puzzle_date.isoformat()} (that date is '
+            f'#{mismatch.expected_number}). Result not counted. '
+            f'You should never play this game again.')
+
+    async def _notify_invalid_minigame_submission(self, message, game, content):
+        body = self._invalid_minigame_submission_message(game, content)
+        if body is None:
+            return False
+        embed = discord_common.embed_alert(body)
+        try:
+            await discord_retry(
+                lambda: message.reply(embed=embed, mention_author=False))
+        except (RetryExhaustedError, discord.HTTPException):
+            logger.warning('Failed to notify invalid minigame message %s',
+                           message.id, exc_info=True)
+        return True
+
+    async def _notify_invalid_minigame_submission_from_raw(self, row, game, content):
+        if self.bot is None:
+            return False
+        try:
+            channel = await self._resolve_channel(int(row.channel_id))
+            message = await channel.fetch_message(int(row.message_id))
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException,
+                AttributeError, TypeError, ValueError):
+            logger.warning(
+                'Failed to fetch invalid minigame message %s for retroactive reply',
+                getattr(row, 'message_id', None), exc_info=True)
+            return False
+        return await self._notify_invalid_minigame_submission(
+            message, game, content)
+
     async def _notify_banned_submission(self, message, game):
         """Reply to a banned user's parsable Akari post explaining the ban.
 
@@ -3715,7 +3759,10 @@ class Minigames(commands.Cog):
         if game is not None:
             try:
                 cleaned = strip_codeblock(message.content)
+                invalid_message = self._invalid_minigame_submission_message(
+                    game, cleaned)
                 is_submission = bool(game.parse(cleaned)) or (
+                    invalid_message is not None) or (
                     game.name == AKARI_GAME.name
                     and looks_like_non_pro_akari(message.content))
                 if self._is_akari_banned(message.guild.id, message.author.id, game):
@@ -3724,6 +3771,10 @@ class Minigames(commands.Cog):
                     if is_submission:
                         await self._notify_banned_submission(message, game)
                     return  # never save/ingest for banned users
+                if invalid_message is not None:
+                    await self._notify_invalid_minigame_submission(
+                        message, game, cleaned)
+                    return
                 # Save raw content for future reparse
                 cf_common.user_db.save_raw_message(
                     message.id, message.guild.id, message.channel.id,
@@ -3749,11 +3800,13 @@ class Minigames(commands.Cog):
         game = self._game_for_channel(after)
         if game is None:
             return
+        cleaned = strip_codeblock(after.content)
+        invalid_message = self._invalid_minigame_submission_message(game, cleaned)
         is_non_pro = (game.name == AKARI_GAME.name
                       and looks_like_non_pro_akari(after.content))
         if self._is_akari_banned(after.guild.id, after.author.id, game):
             try:
-                if game.parse(strip_codeblock(after.content)) or is_non_pro:
+                if game.parse(cleaned) or is_non_pro or invalid_message is not None:
                     await self._notify_banned_submission(after, game)
             except Exception:
                 logger.warning('Failed to notify banned edit %s',
@@ -3762,6 +3815,13 @@ class Minigames(commands.Cog):
         try:
             # Update raw content so future reparse uses the edited version
             cf_common.user_db.update_raw_message(after.id, after.content)
+            if invalid_message is not None:
+                changed = cf_common.user_db.delete_minigame_result(after.id)
+                changed += cf_common.user_db.delete_imported_minigame_result(after.id)
+                await self._notify_invalid_minigame_submission(after, game, cleaned)
+                if changed:
+                    self._recompute_game_ratings(after.guild.id, game)
+                return
             # An edit into a non-pro shape: drop any prior result for this
             # message and tell the user.  Same skip-the-ingest path on_message
             # uses for fresh non-pro posts.
@@ -3775,7 +3835,7 @@ class Minigames(commands.Cog):
             # Delete all existing live results for this message, then re-ingest.
             # Handles the case where an edit removes some results from a multi-result message.
             changed = cf_common.user_db.delete_minigame_result(after.id)
-            results = game.parse(strip_codeblock(after.content))
+            results = game.parse(cleaned)
             if results:
                 changed += await self._ingest_message(after, game)
             else:
@@ -3864,6 +3924,12 @@ class Minigames(commands.Cog):
                 if self._is_akari_banned(guild_id, message.author.id, game):
                     continue  # skip banned users entirely (no raw, no result)
 
+                cleaned = strip_codeblock(message.content)
+                if await self._notify_invalid_minigame_submission(
+                        message, game, cleaned):
+                    status.setdefault('skipped', []).append(str(message.id))
+                    continue
+
                 # Save every non-bot message for future reparse
                 cf_common.user_db.save_raw_message(
                     message.id, guild_id, channel_id, message.author.id,
@@ -3872,11 +3938,10 @@ class Minigames(commands.Cog):
                 )
                 uncommitted += 1
 
-                cleaned = strip_codeblock(message.content)
                 results = game.parse(cleaned)
                 if not results:
                     if game.detect and game.detect.search(cleaned):
-                        status['skipped'].append(str(message.id))
+                        status.setdefault('skipped', []).append(str(message.id))
                         logger.warning(
                             '%s import: detected but unparseable msg=%s user=%s content=%r',
                             game.display_name, message.id, message.author.id,
@@ -5141,6 +5206,11 @@ class Minigames(commands.Cog):
             if self._is_akari_banned(row.guild_id, row.user_id, game):
                 continue  # banned users' raw rows stay in the store but produce no results
             cleaned = strip_codeblock(row.raw_content)
+            if self._invalid_minigame_submission_message(game, cleaned) is not None:
+                skipped.append(row.message_id)
+                await self._notify_invalid_minigame_submission_from_raw(
+                    row, game, cleaned)
+                continue
             results = game.parse(cleaned)
             if not results:
                 if game.detect and game.detect.search(cleaned):
@@ -5697,7 +5767,7 @@ class Minigames(commands.Cog):
     @queens.command(
         name='install',
         brief='(Mod) Install Playwright + Chromium for the scraper')
-    @queens_mod_only()
+    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
     async def queens_install(self, ctx):
         """Install Playwright and the Chromium browser into the bot's Python
         environment, without needing shell access to the host.
@@ -5792,7 +5862,7 @@ class Minigames(commands.Cog):
         name='login',
         brief='(Mod) Upload a fresh LinkedIn session file',
         usage='[LinkedIn Name] (attach extra/.queens_state.json to the message)')
-    @queens_mod_only()
+    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
     async def queens_login(self, ctx, *, linkedin_name: str = None):
         self._require_enabled(ctx.guild.id, QUEENS_GAME)
         attachments = list(getattr(ctx.message, 'attachments', None) or [])
@@ -5956,6 +6026,11 @@ class Minigames(commands.Cog):
         puzzle_date_iso = entry.get('puzzle_date')
         if puzzle_date_iso:
             puzzle_date = dt.date.fromisoformat(puzzle_date_iso)
+            expected_date = _queens_date_for_puzzle_number(puzzle_number)
+            if puzzle_date != expected_date:
+                raise ValueError(
+                    f'Queens puzzle #{puzzle_number} is for '
+                    f'{expected_date.isoformat()}, not {puzzle_date.isoformat()}')
         else:
             puzzle_date = _queens_date_for_puzzle_number(puzzle_number)
         return (
@@ -6201,7 +6276,7 @@ class Minigames(commands.Cog):
         name='state-path', aliases=['statepath'],
         brief='(Mod) Override where the scraper looks for state.json',
         usage='/abs/path/to/state.json | clear')
-    @queens_mod_only()
+    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
     async def queens_state_path(self, ctx, *, path: str = None):
         self._require_enabled(ctx.guild.id, QUEENS_GAME)
         if path is None:
