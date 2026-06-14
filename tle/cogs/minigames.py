@@ -8,8 +8,10 @@ import logging
 import os
 import pathlib
 import re
+import sqlite3
 import sys
 import time
+import zipfile
 from collections import namedtuple
 from types import SimpleNamespace
 from typing import Optional
@@ -52,6 +54,9 @@ from tle.cogs._minigame_stats import (
 from tle.cogs._migrate_retry import discord_retry, RetryExhaustedError
 from tle.util.akari_rating import rank_for_rating
 from tle.util.minigame_rating import compute_ratings
+from tle.util.db.minigame_db import (
+    merged_minigame_winners, diff_merged_winners,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -187,6 +192,10 @@ _QUEENS_STATE_MAX_BYTES = 256 * 1024
 # Backfill JSON files can be much larger (years of history × many
 # players).  10 MiB covers any realistic LinkedIn export.
 _QUEENS_BACKFILL_MAX_BYTES = 10 * 1024 * 1024
+# Uploaded snapshot for ``;mg akari diff``.  A full backup DB zips to a few MiB;
+# an akari-only export is tiny.  25 MiB covers a zipped full backup with room to
+# spare while still rejecting anything absurd.
+_AKARI_DIFF_MAX_BYTES = 25 * 1024 * 1024
 # tle/cogs/minigames.py → repo root → extra/queens_scrape.py
 _QUEENS_SCRAPER_SCRIPT = (
     pathlib.Path(__file__).resolve().parent.parent.parent
@@ -5242,6 +5251,170 @@ class Minigames(commands.Cog):
             self.bot, ctx.channel, pages, wait_time=300,
             set_pagenum_footers=True, author_id=ctx.author.id)
 
+    @staticmethod
+    def _format_winner_value(value):
+        """Render a merged-winner ``(time, is_perfect, accuracy)`` tuple."""
+        if value is None:
+            return '\N{EM DASH}'
+        time_seconds, is_perfect, accuracy = value
+        result = ('\N{GLOWING STAR}' if is_perfect
+                  else f'{accuracy}%')
+        return f'{result} {format_duration(time_seconds)}'
+
+    async def _cmd_akari_export(self, ctx, game):
+        """Send a small sqlite snapshot of the two result tables (this game's
+        rows only) — the file ``;mg akari diff`` consumes."""
+        os.makedirs(constants.TEMP_DIR, exist_ok=True)
+        out_path = os.path.join(
+            constants.TEMP_DIR, f'{game.name}_snapshot_{ctx.message.id}.db')
+        src = cf_common.user_db.conn
+        try:
+            if os.path.exists(out_path):
+                os.remove(out_path)
+            dst = sqlite3.connect(out_path)
+            try:
+                counts = {}
+                for tbl in ('minigame_result', 'minigame_import_result'):
+                    create = src.execute(
+                        "SELECT sql FROM sqlite_master WHERE type='table' "
+                        "AND name=?", (tbl,)).fetchone()
+                    if not create:
+                        raise MinigameCogError(f'`{tbl}` table is missing.')
+                    dst.execute(create[0])
+                    rows = src.execute(
+                        f'SELECT * FROM {tbl} WHERE game=?',
+                        (game.name,)).fetchall()
+                    if rows:
+                        placeholders = ','.join(['?'] * len(rows[0]))
+                        dst.executemany(
+                            f'INSERT INTO {tbl} VALUES ({placeholders})',
+                            [tuple(r) for r in rows])
+                    counts[tbl] = len(rows)
+                dst.commit()
+            finally:
+                dst.close()
+            await ctx.send(
+                content=(f'{game.display_name} snapshot — '
+                         f'{counts["minigame_result"]} live + '
+                         f'{counts["minigame_import_result"]} imported row(s). '
+                         f'Re-upload with `;mg akari diff` to compare later.'),
+                file=discord.File(out_path, filename=f'{game.name}_snapshot.db'))
+        finally:
+            if os.path.exists(out_path):
+                os.remove(out_path)
+
+    async def _cmd_akari_diff(self, ctx, game):
+        """Diff an uploaded snapshot's merged winners against the live DB.
+
+        Accepts a ``.db``/``.sqlite`` file (or a ``.zip`` containing one) holding
+        ``minigame_result`` + ``minigame_import_result`` — e.g. the output of
+        ``;mg akari export`` or any backup of the user DB.  Reports the
+        merged first-attempt-per-(user, puzzle) winners that were added, removed
+        or changed since the snapshot — the rows that actually affect standings.
+        """
+        attachments = list(getattr(ctx.message, 'attachments', None) or [])
+        atts = [a for a in attachments
+                if getattr(a, 'filename', '').lower().endswith(
+                    ('.db', '.sqlite', '.sqlite3', '.zip'))]
+        if not atts:
+            raise MinigameCogError(
+                'Attach a `.db` snapshot (from `;mg akari export` or a user-DB '
+                'backup) — or a `.zip` containing one — to this message.')
+        attachment = atts[0]
+        size = int(getattr(attachment, 'size', 0) or 0)
+        if size and size > _AKARI_DIFF_MAX_BYTES:
+            raise MinigameCogError(
+                f'Attachment is {size} bytes — refusing anything over '
+                f'{_AKARI_DIFF_MAX_BYTES}.')
+        raw = await attachment.read()
+
+        os.makedirs(constants.TEMP_DIR, exist_ok=True)
+        db_path = os.path.join(
+            constants.TEMP_DIR, f'{game.name}_diff_{ctx.message.id}.db')
+        try:
+            if attachment.filename.lower().endswith('.zip'):
+                try:
+                    with zipfile.ZipFile(io.BytesIO(raw)) as zf:
+                        members = [n for n in zf.namelist()
+                                   if n.lower().endswith(
+                                       ('.db', '.sqlite', '.sqlite3'))]
+                        if len(members) != 1:
+                            raise MinigameCogError(
+                                f'Zip must contain exactly one `.db` file '
+                                f'(found {len(members)}).')
+                        db_bytes = zf.read(members[0])
+                except zipfile.BadZipFile:
+                    raise MinigameCogError('Attachment is not a valid zip.')
+            else:
+                db_bytes = raw
+            with open(db_path, 'wb') as fh:
+                fh.write(db_bytes)
+
+            try:
+                snap = sqlite3.connect(f'file:{db_path}?mode=ro', uri=True)
+            except sqlite3.Error as exc:
+                raise MinigameCogError(f'Could not open snapshot: {exc}.')
+            try:
+                try:
+                    present = {r[0] for r in snap.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'")}
+                except sqlite3.DatabaseError:
+                    raise MinigameCogError(
+                        'Attachment is not a valid SQLite database.')
+                missing = {'minigame_result', 'minigame_import_result'} - present
+                if missing:
+                    raise MinigameCogError(
+                        f'Snapshot is missing table(s): {", ".join(sorted(missing))}.')
+                old = merged_minigame_winners(snap, ctx.guild.id, game.name)
+            finally:
+                snap.close()
+        finally:
+            if os.path.exists(db_path):
+                os.remove(db_path)
+
+        new = merged_minigame_winners(
+            cf_common.user_db.conn, ctx.guild.id, game.name)
+        added, removed, changed = diff_merged_winners(old, new)
+        total = len(added) + len(removed) + len(changed)
+        if total == 0:
+            await ctx.send(embed=discord_common.embed_success(
+                f'No differences — {len(new)} {game.display_name} merged '
+                f'result(s) match the snapshot exactly.'))
+            return
+
+        def line(marker, key, old_val, new_val):
+            user_id, puzzle_number = key
+            name = self._minigame_public_user_name(ctx.guild, game, user_id)
+            if old_val is not None and new_val is not None:
+                detail = (f'{self._format_winner_value(old_val)} '
+                          f'\N{LONG RIGHTWARDS ARROW} '
+                          f'{self._format_winner_value(new_val)}')
+            elif new_val is not None:
+                detail = f'{self._format_winner_value(new_val)} _(new)_'
+            else:
+                detail = f'{self._format_winner_value(old_val)} _(removed)_'
+            return f'{marker} `#{puzzle_number}` `{name}` \N{MIDDLE DOT} {detail}'
+
+        lines = (
+            [line('\N{CLOCKWISE RIGHTWARDS AND LEFTWARDS OPEN CIRCLE ARROWS}',
+                  k, o, n) for k, o, n in changed]
+            + [line('\N{HEAVY MINUS SIGN}', k, o, n) for k, o, n in removed]
+            + [line('\N{HEAVY PLUS SIGN}', k, o, n) for k, o, n in added])
+
+        title = (f'{game.display_name} diff vs snapshot — '
+                 f'{len(changed)} changed, {len(removed)} removed, '
+                 f'{len(added)} added')
+        per_page = 12
+        pages = []
+        for chunk in paginator.chunkify(lines, per_page):
+            pages.append((None, discord.Embed(
+                title=title,
+                description='\n'.join(chunk),
+                color=discord_common.random_cf_color())))
+        paginator.paginate(
+            self.bot, ctx.channel, pages, wait_time=300,
+            set_pagenum_footers=True, author_id=ctx.author.id)
+
     async def _cmd_reparse(self, ctx, game):
         raw_messages = cf_common.user_db.get_raw_messages_for_guild(ctx.guild.id)
         if not raw_messages:
@@ -5506,6 +5679,18 @@ class Minigames(commands.Cog):
     @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
     async def akari_reparse(self, ctx):
         await self._cmd_reparse(ctx, AKARI_GAME)
+
+    @akari.command(name='export', brief='(Mod) Download a snapshot of the result tables')
+    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    async def akari_export(self, ctx):
+        await self._cmd_akari_export(ctx, AKARI_GAME)
+
+    @akari.command(name='diff',
+                   brief='(Mod) Diff an uploaded snapshot against current results',
+                   usage='(attach a .db / .zip snapshot)')
+    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    async def akari_diff(self, ctx):
+        await self._cmd_akari_diff(ctx, AKARI_GAME)
 
     @akari.group(name='ratings', brief='Show Akari rating leaderboard',
                  usage='[+test] [+inactive] [+exclude=…] [+include=…]',

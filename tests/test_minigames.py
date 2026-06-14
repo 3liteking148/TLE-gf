@@ -14,7 +14,9 @@ from tle.cogs import minigames as minigames_module
 from tle.util import codeforces_common as cf_common
 from tle.util.db.user_db_conn import namedtuple_factory
 from tle.util.db.user_db_upgrades import upgrade_1_14_0, upgrade_1_15_0
-from tle.util.db.minigame_db import MinigameDbMixin
+from tle.util.db.minigame_db import (
+    MinigameDbMixin, merged_minigame_winners, diff_merged_winners,
+)
 from tle.cogs._minigame_common import (
     compute_vs,
     compute_streak,
@@ -834,6 +836,38 @@ class TestDbMixin:
         orphans = db.get_import_only_minigame_results(100, _GAME)
         assert {(r.user_id, r.puzzle_number) for r in orphans} == {
             ('300', 446), ('301', 447)}
+
+    def test_merged_winners_first_attempt_and_live_precedence(self, db):
+        # user 300 puzzle 445: live (msg 20) + an EARLIER imported post (msg 10)
+        # -> earliest message wins -> imported 96%/50s.
+        db.save_minigame_result(20, 100, _GAME, 200, 300, 445, '2026-03-26', 100, 60, True, 'c1')
+        db.save_imported_minigame_result(10, 100, _GAME, 200, 300, 445, '2026-03-26', 96, 50, False, 'c2')
+        # user 301 puzzle 446: live only.
+        db.save_minigame_result(30, 100, _GAME, 200, 301, 446, '2026-03-27', 100, 70, True, 'c3')
+        winners = merged_minigame_winners(db.conn, 100, _GAME)
+        assert winners[('300', 445)] == (50, 0, 96)   # earlier imported post wins
+        assert winners[('301', 446)] == (70, 1, 100)
+
+    def test_diff_merged_winners_classifies_changes(self, db):
+        old = {('a', 1): (60, 1, 100), ('b', 2): (90, 0, 95), ('c', 3): (10, 1, 100)}
+        new = {('a', 1): (60, 1, 100),          # unchanged
+               ('b', 2): (120, 1, 100),         # changed
+               ('d', 4): (30, 1, 100)}          # added; ('c',3) removed
+        added, removed, changed = diff_merged_winners(old, new)
+        assert [k for k, _, _ in added] == [('d', 4)]
+        assert [k for k, _, _ in removed] == [('c', 3)]
+        assert changed == [(('b', 2), (90, 0, 95), (120, 1, 100))]
+
+    def test_diff_merged_winners_against_separate_snapshot_db(self, db):
+        # Snapshot: user 300 has a perfect 1:00 on puzzle 445.
+        db.save_minigame_result(1, 100, _GAME, 200, 300, 445, '2026-03-26', 100, 60, True, 'c')
+        snapshot = merged_minigame_winners(db.conn, 100, _GAME)
+        # Later an EARLIER imported post (msg 0) surfaces a worse 2:00 result.
+        db.save_imported_minigame_result(0, 100, _GAME, 200, 300, 445, '2026-03-26', 100, 120, True, 'c')
+        current = merged_minigame_winners(db.conn, 100, _GAME)
+        added, removed, changed = diff_merged_winners(snapshot, current)
+        assert not added and not removed
+        assert changed == [(('300', 445), (60, 1, 100), (120, 1, 100))]
 
     def test_import_only_live_match_uses_user_and_puzzle_not_message(self, db):
         # same (user, puzzle) but the live row carries a different message id;
