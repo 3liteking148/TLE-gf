@@ -854,6 +854,7 @@ def upgrade_1_33_0(db):
             channel_id     TEXT NOT NULL,
             message_id     TEXT,
             thread_id      TEXT,
+            thread_intro_id TEXT,
             event_id       TEXT NOT NULL,
             sport_key      TEXT NOT NULL,
             home_team      TEXT NOT NULL,
@@ -995,3 +996,15 @@ def upgrade_1_35_0(db):
     ''')
     db.commit()
     logger.info('1.35.0: betting fixture duplicate guard created')
+
+
+@registry.register('1.36.0', 'Betting thread intro message tracking')
+def upgrade_1_36_0(db):
+    """Track the first message inside each betting thread for in-place edits."""
+    logger.info('1.36.0: Adding betting thread intro message tracking')
+    try:
+        db.execute('ALTER TABLE bet_market ADD COLUMN thread_intro_id TEXT')
+        logger.info('1.36.0: Added bet_market.thread_intro_id')
+    except Exception as e:
+        logger.debug('1.36.0: thread_intro_id already exists or unavailable: %s', e)
+    db.commit()

@@ -7,7 +7,7 @@ import pytest
 
 from tle.util.db.user_db_conn import UserDbConn, namedtuple_factory, bet_fixture_key
 from tle.util.db.user_db_upgrades import (
-    upgrade_1_33_0, upgrade_1_34_0, upgrade_1_35_0,
+    upgrade_1_33_0, upgrade_1_34_0, upgrade_1_35_0, upgrade_1_36_0,
 )
 from tle.util import odds_api
 from tle.util import football_data
@@ -622,6 +622,11 @@ class TestMarket:
         assert db.bet_market_get_active_by_thread(GUILD, THREAD).market_id == mid
         assert db.bet_market_get_active_by_thread(GUILD, 'nope') is None
 
+    def test_thread_intro_tracking(self, db):
+        mid = _make_market(db)
+        db.bet_market_set_thread_intro(mid, '444')
+        assert db.bet_market_get(mid).thread_intro_id == '444'
+
     def test_exists_open_for_event(self, db):
         _make_market(db)
         assert db.bet_market_exists_open_for_event(GUILD, 'evt1') is True
@@ -719,6 +724,16 @@ class TestPool:
         db.bet_place(GUILD, mid, USER_B, 'home', 200, 1.0, 1000)
         pool = {p.pick: (p.cnt, p.total) for p in db.bet_pool(mid)}
         assert pool['home'] == (2, 300)
+
+    def test_active_wagers_for_user_lists_open_markets(self, db):
+        mid = _make_market(db)
+        db.bet_market_set_thread(mid, THREAD)
+        db.bet_place(GUILD, mid, USER_A, 'home', 100, 1.0, 1000)
+        rows = db.bet_active_wagers_for_user(GUILD, USER_A)
+        assert len(rows) == 1
+        assert rows[0].market_id == mid
+        assert rows[0].thread_id == THREAD
+        assert rows[0].pick == 'home'
 
 
 class TestSettle:
@@ -978,9 +993,13 @@ class TestMigration:
             'odds_away, created_by, created_at) '
             'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
             ('1', '2', 'e', 'soccer_epl', 'A', 'B', 0.0, 2.0, 3.0, 4.0, '9', 0.0))
-        # thread_id + bets_closed columns exist
+        # thread_id + thread_intro_id + bets_closed columns exist
         conn.execute('UPDATE bet_market SET thread_id = ?, bets_closed = 1 '
                      'WHERE event_id = ?', ('77', 'e'))
+        conn.execute('UPDATE bet_market SET thread_intro_id = ? '
+                     'WHERE event_id = ?', ('88', 'e'))
+        market_cols = [r[1] for r in conn.execute('PRAGMA table_info(bet_market)')]
+        assert 'thread_intro_id' in market_cols
         # bet_wager has no odds/payout columns (derived from the frozen market)
         conn.execute(
             'INSERT INTO bet_wager (market_id, user_id, pick, stake, placed_at) '
@@ -1053,6 +1072,23 @@ class TestMigration:
             upgrade_1_35_0(conn)
         conn.close()
 
+    def test_upgrade_136_adds_thread_intro_column(self):
+        conn = sqlite3.connect(':memory:')
+        conn.row_factory = namedtuple_factory
+        conn.execute('''
+            CREATE TABLE bet_market (
+                market_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id TEXT NOT NULL,
+                channel_id TEXT NOT NULL,
+                message_id TEXT,
+                thread_id TEXT
+            )
+        ''')
+        upgrade_1_36_0(conn)
+        cols = [r[1] for r in conn.execute('PRAGMA table_info(bet_market)')]
+        assert 'thread_intro_id' in cols
+        conn.close()
+
     def test_userdb_existing_134_runs_fixture_migration(self, tmp_path):
         from tle.util.db.user_db_upgrades import registry
         path = tmp_path / 'user.db'
@@ -1074,12 +1110,14 @@ class TestMigration:
 
         db = UserDbConn(str(path))
         try:
-            assert registry.get_current_version(db.conn) == '1.35.0'
+            assert registry.get_current_version(db.conn) == '1.36.0'
             row = db.conn.execute(
                 'SELECT fixture_key FROM bet_market WHERE event_id = ?', ('e',)
             ).fetchone()
             assert row.fixture_key == bet_fixture_key(
                 'soccer_epl', 'Spain', 'Cape Verde', 10_000.0)
+            cols = [r.name for r in db.conn.execute('PRAGMA table_info(bet_market)')]
+            assert 'thread_intro_id' in cols
             indexes = [r.name for r in db.conn.execute('PRAGMA index_list(bet_market)')]
             assert 'idx_bet_market_open_fixture' in indexes
         finally:
@@ -1292,6 +1330,220 @@ class TestTransferCommand:
                 cog, ctx, source, source, '10'))
 
 
+class TestMeCommand:
+    def _run(self, coro):
+        import asyncio
+        return asyncio.run(coro)
+
+    def test_me_shows_balance_active_bets_and_history(self, db, monkeypatch):
+        from tle.util import codeforces_common as cf_common
+        from tle import constants
+        from tle.cogs.betting import Betting
+        monkeypatch.setattr(cf_common, 'user_db', db)
+        monkeypatch.setattr(constants, 'BET_START_BALANCE', 1000, raising=False)
+
+        mid = _make_market(db, commence=1e12)
+        db.bet_market_set_thread(mid, THREAD)
+        db.bet_place(GUILD, mid, USER_A, 'home', 100, 1.0, 1000)
+
+        author = type('Member', (), {
+            'id': USER_A,
+            'display_name': 'Alice',
+        })()
+
+        class _Ctx:
+            def __init__(self):
+                self.guild = type('G', (), {'id': int(GUILD)})()
+                self.author = author
+                self.sent = []
+
+            async def send(self, embed=None, **kw):
+                self.sent.append(embed)
+
+        ctx = _Ctx()
+        cog = Betting(bot=None)
+
+        self._run(Betting.me.__wrapped__(cog, ctx))
+
+        assert len(ctx.sent) == 1
+        embed = ctx.sent[0]
+        assert embed.title == 'Betting — Alice'
+        assert 'Balance: **900**' in embed.description
+        fields = {field['name']: field['value'] for field in embed.fields}
+        assert 'Active bets' in fields
+        assert 'Spain vs Cape Verde' in fields['Active bets']
+        assert f'<#{THREAD}>' in fields['Active bets']
+        assert 'Recent wallet activity' in fields
+
+
+class TestNotifyCommands:
+    def _run(self, coro):
+        import asyncio
+        return asyncio.run(coro)
+
+    def _role(self, *, permissions=0, assignable=True, mentionable=True,
+              managed=False, default=False):
+        return type('Role', (), {
+            'id': 444,
+            'name': 'notify-wc',
+            'mention': '<@&444>',
+            'managed': managed,
+            'mentionable': mentionable,
+            'permissions': type('Perms', (), {'value': permissions})(),
+            'is_assignable': lambda self: assignable,
+            'is_default': lambda self: default,
+        })()
+
+    def test_notifyrole_configures_role_id(self, db, monkeypatch):
+        from tle.util import codeforces_common as cf_common
+        from tle.cogs.betting import Betting
+        monkeypatch.setattr(cf_common, 'user_db', db)
+
+        role = self._role()
+
+        class _Ctx:
+            def __init__(self):
+                self.guild = type('G', (), {'id': int(GUILD)})()
+                self.sent = []
+
+            async def send(self, embed=None, **kw):
+                self.sent.append(embed)
+
+        ctx = _Ctx()
+        cog = Betting(bot=None)
+
+        self._run(Betting.notifyrole.__wrapped__(cog, ctx, role))
+
+        assert db.get_guild_config(GUILD, 'bet_notify_role') == '444'
+
+    def test_notifyrole_rejects_permissioned_role(self, db, monkeypatch):
+        from tle.util import codeforces_common as cf_common
+        from tle.cogs.betting import Betting, BettingCogError
+        monkeypatch.setattr(cf_common, 'user_db', db)
+
+        role = self._role(permissions=8)
+
+        class _Ctx:
+            def __init__(self):
+                self.guild = type('G', (), {'id': int(GUILD)})()
+
+            async def send(self, embed=None, **kw):
+                pass
+
+        ctx = _Ctx()
+        cog = Betting(bot=None)
+
+        with pytest.raises(BettingCogError):
+            self._run(Betting.notifyrole.__wrapped__(cog, ctx, role))
+        assert db.get_guild_config(GUILD, 'bet_notify_role') is None
+
+    def test_notifyrole_rejects_unassignable_role(self, db, monkeypatch):
+        from tle.util import codeforces_common as cf_common
+        from tle.cogs.betting import Betting, BettingCogError
+        monkeypatch.setattr(cf_common, 'user_db', db)
+
+        role = self._role(assignable=False)
+
+        class _Ctx:
+            def __init__(self):
+                self.guild = type('G', (), {'id': int(GUILD)})()
+
+            async def send(self, embed=None, **kw):
+                pass
+
+        ctx = _Ctx()
+        cog = Betting(bot=None)
+
+        with pytest.raises(BettingCogError):
+            self._run(Betting.notifyrole.__wrapped__(cog, ctx, role))
+        assert db.get_guild_config(GUILD, 'bet_notify_role') is None
+
+    def test_notifyrole_rejects_unpingable_role(self, db, monkeypatch):
+        from tle.util import codeforces_common as cf_common
+        from tle.cogs.betting import Betting, BettingCogError
+        monkeypatch.setattr(cf_common, 'user_db', db)
+
+        role = self._role(mentionable=False)
+
+        class _Ctx:
+            def __init__(self):
+                self.guild = type('G', (), {'id': int(GUILD)})()
+
+            async def send(self, embed=None, **kw):
+                pass
+
+        ctx = _Ctx()
+        cog = Betting(bot=None)
+
+        with pytest.raises(BettingCogError):
+            self._run(Betting.notifyrole.__wrapped__(cog, ctx, role))
+        assert db.get_guild_config(GUILD, 'bet_notify_role') is None
+
+    def test_clearnotifyrole_removes_config(self, db, monkeypatch):
+        from tle.util import codeforces_common as cf_common
+        from tle.cogs.betting import Betting
+        monkeypatch.setattr(cf_common, 'user_db', db)
+
+        db.set_guild_config(GUILD, 'bet_notify_role', '444')
+
+        class _Ctx:
+            def __init__(self):
+                self.guild = type('G', (), {'id': int(GUILD)})()
+                self.sent = []
+
+            async def send(self, embed=None, **kw):
+                self.sent.append(embed)
+
+        ctx = _Ctx()
+        cog = Betting(bot=None)
+
+        self._run(Betting.clearnotifyrole.__wrapped__(cog, ctx))
+
+        assert db.get_guild_config(GUILD, 'bet_notify_role') is None
+
+    def test_notify_toggles_configured_role_for_user(self, db, monkeypatch):
+        from tle.util import codeforces_common as cf_common
+        from tle.cogs.betting import Betting
+        monkeypatch.setattr(cf_common, 'user_db', db)
+
+        role = self._role()
+        db.set_guild_config(GUILD, 'bet_notify_role', str(role.id))
+
+        class _Member:
+            id = USER_A
+            display_name = 'Alice'
+
+            def __init__(self):
+                self.roles = []
+
+            async def add_roles(self, role_, reason=None):
+                self.roles.append(role_)
+
+            async def remove_roles(self, role_, reason=None):
+                self.roles = [r for r in self.roles if r.id != role_.id]
+
+        author = _Member()
+        guild = _FakeGuild(int(GUILD), _FakeChannel(222), roles=[role])
+
+        class _Ctx:
+            def __init__(self):
+                self.guild = guild
+                self.author = author
+                self.sent = []
+
+            async def send(self, embed=None, **kw):
+                self.sent.append(embed)
+
+        ctx = _Ctx()
+        cog = Betting(bot=None)
+
+        self._run(Betting.notify.__wrapped__(cog, ctx))
+        assert [r.id for r in author.roles] == [444]
+
+        self._run(Betting.notify.__wrapped__(cog, ctx))
+        assert author.roles == []
+
+
 class TestHistoryCommand:
     def _run(self, coro):
         import asyncio
@@ -1366,10 +1618,17 @@ class _FakeThread:
     def __init__(self, tid):
         self.id = tid
         self.sent = []
+        self._messages = {}
         self.archived = False
 
     async def send(self, embed=None, **kw):
-        self.sent.append(embed)
+        m = _FakeMsg(embed=embed, **kw)
+        self.sent.append(m)
+        self._messages[m.id] = m
+        return m
+
+    async def fetch_message(self, mid):
+        return self._messages[mid]
 
     async def edit(self, **kw):
         self.archived = kw.get('archived', self.archived)
@@ -1378,9 +1637,12 @@ class _FakeThread:
 class _FakeMsg:
     _n = 5000
 
-    def __init__(self):
+    def __init__(self, content=None, embed=None, **kw):
         _FakeMsg._n += 1
         self.id = _FakeMsg._n
+        self.content = content
+        self.embed = embed
+        self.kw = kw
         self.thread = None
         self.deleted = False
         self.edited_embed = None
@@ -1391,6 +1653,7 @@ class _FakeMsg:
 
     async def edit(self, embed=None, **kw):
         self.edited_embed = embed
+        self.embed = embed
 
     async def delete(self):
         self.deleted = True
@@ -1403,8 +1666,8 @@ class _FakeChannel:
         self.sent = []
         self._messages = {}
 
-    async def send(self, embed=None, **kw):
-        m = _FakeMsg()
+    async def send(self, content=None, embed=None, **kw):
+        m = _FakeMsg(content=content, embed=embed, **kw)
         self.sent.append(m)
         self._messages[m.id] = m
         return m
@@ -1414,12 +1677,16 @@ class _FakeChannel:
 
 
 class _FakeGuild:
-    def __init__(self, gid, channel):
+    def __init__(self, gid, channel, roles=None):
         self.id = gid
         self._channel = channel
+        self._roles = {int(role.id): role for role in roles or []}
 
     def get_channel(self, cid):
         return self._channel
+
+    def get_role(self, rid):
+        return self._roles.get(int(rid))
 
 
 class _FakeBot:
@@ -1496,7 +1763,38 @@ class TestAutoOpen:
             assert len(channel.sent) == 1                 # one announcement
             assert channel.sent[0].thread is not None     # thread created
             assert len(channel.sent[0].thread.sent) == 1  # intro embed posted
+            intro = channel.sent[0].thread.sent[0]
+            market = db.bet_market_get(market.market_id)
+            assert market.thread_intro_id == str(intro.id)
             assert market.market_id in cog._close_timers  # closes exactly at kickoff
+            cog._close_timers[market.market_id].cancel()
+
+        self._run(scenario())
+
+    def test_open_announcement_pings_configured_notify_role(self, setup,
+                                                            monkeypatch):
+        import time as _t
+        import discord
+        cog, db, channel = setup
+        db.set_guild_config(GUILD, 'bet_notify_role', '444')
+        ev = _wc_event(commence=_t.time() + 3600)
+        self._arm_events(cog, [ev], monkeypatch)
+
+        class _AllowedMentions:
+            def __init__(self, **kw):
+                self.kw = kw
+        monkeypatch.setattr(discord, 'AllowedMentions', _AllowedMentions,
+                            raising=False)
+
+        async def scenario():
+            await cog._refresh_schedule()
+            assert len(channel.sent) == 1
+            assert channel.sent[0].content == '<@&444>'
+            allowed = channel.sent[0].kw['allowed_mentions']
+            assert allowed.kw['roles'] is True
+            assert allowed.kw['users'] is False
+            assert allowed.kw['everyone'] is False
+            market = db.bet_market_get_active(GUILD, '222')
             cog._close_timers[market.market_id].cancel()
 
         self._run(scenario())
@@ -1520,6 +1818,32 @@ class TestAutoOpen:
             assert len(channel.sent) == 2
             assert len(thread.sent) == 1
             assert thread.archived is True
+            cog._close_timers[market.market_id].cancel()
+
+        self._run(scenario())
+
+    def test_pool_refresh_edits_first_thread_message(self, setup, monkeypatch):
+        import time as _t
+        cog, db, channel = setup
+        ev = _wc_event(commence=_t.time() + 3600)
+        self._arm_events(cog, [ev], monkeypatch)
+
+        async def scenario():
+            await cog._refresh_schedule()
+            market = db.bet_market_get_active(GUILD, '222')
+            thread = channel.sent[0].thread
+            cog.bot._channels[int(market.thread_id)] = thread
+            intro = thread.sent[0]
+
+            db.bet_place(GUILD, market.market_id, USER_A, 'home', 100, 1.0, 1000)
+            await cog._refresh_pool_message(market.market_id)
+
+            assert len(channel.sent) == 1
+            assert intro.edited_embed is not None
+            fields = {field['name']: field['value']
+                      for field in intro.edited_embed.fields}
+            assert 'Action so far' in fields
+            assert 'Spain: 1 (100' in fields['Action so far']
             cog._close_timers[market.market_id].cancel()
 
         self._run(scenario())

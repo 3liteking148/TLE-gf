@@ -15,9 +15,12 @@ Commands (group `;bet`, alias `;prediction`):
   ;bet matches [query]      list upcoming World Cup matches with odds
   ;bet open <n|event_id>    manually open a market early                    (admin)
   ;bet home|draw|away <amt> stake on an outcome (also: reply in the thread)
+  ;bet me                  show your betting summary
   ;bet balance [@user]      show a wallet balance
   ;bet daily                claim the daily allowance
   ;bet transfer @from @to <amt> move coins between users                 (admin)
+  ;bet notify               toggle the configured notification role
+  ;bet notifyrole @role     set role pinged when markets open             (admin)
   ;bet leaderboard [profit] richest wallets / net profit
   ;bet mybet                show your bet on the active market
   ;bet pending              list markets stuck open past kickoff
@@ -65,6 +68,8 @@ _SCHEDULE_TTL = 6 * 3600
 # Provider event ids can drift. Treat the same team pair near the same kickoff
 # as the same market so the 15-minute safety net cannot open a duplicate thread.
 _DUPLICATE_MATCH_WINDOW = 6 * 3600
+# Coalesce rapid thread bets into one first-message edit.
+_POOL_REFRESH_DELAY = 5
 
 _PICK_ALIASES = {
     'home': 'home', 'h': 'home', '1': 'home',
@@ -77,6 +82,7 @@ _KNOCKOUT_START_TS = datetime(2026, 6, 28, tzinfo=timezone.utc).timestamp()
 
 _CHANNEL_CONFIG_KEY = 'bet_channel'
 _PAUSED_CONFIG_KEY = 'bet_paused'
+_NOTIFY_ROLE_CONFIG_KEY = 'bet_notify_role'
 
 
 class BettingCogError(commands.CommandError):
@@ -391,6 +397,16 @@ def _no_mentions():
     return allowed.none() if allowed is not None and hasattr(allowed, 'none') else None
 
 
+def _role_mentions():
+    allowed = getattr(discord, 'AllowedMentions', None)
+    if allowed is None:
+        return None
+    try:
+        return allowed(everyone=False, users=False, roles=True, replied_user=False)
+    except TypeError:
+        return None
+
+
 def _api_key():
     return getattr(constants, 'ODDS_API_KEY', None)
 
@@ -423,6 +439,8 @@ class Betting(commands.Cog):
         self._open_timers = {}
         # market_id -> asyncio.Task: edit/announce exactly when betting closes.
         self._close_timers = {}
+        # market_id -> asyncio.Task: coalesced thread intro pool refresh.
+        self._pool_refresh_timers = {}
 
     @commands.Cog.listener()
     @discord_common.once
@@ -452,6 +470,10 @@ class Betting(commands.Cog):
             if not task.done():
                 task.cancel()
         self._close_timers.clear()
+        for task in list(self._pool_refresh_timers.values()):
+            if not task.done():
+                task.cancel()
+        self._pool_refresh_timers.clear()
 
     # ── Odds cache ─────────────────────────────────────────────────────
 
@@ -517,6 +539,82 @@ class Betting(commands.Cog):
             if odds is not None:
                 parts.append(f'{self._pick_label(market, neg)} — **{odds:.2f}**')
         return ' · '.join(parts)
+
+    def _pool_summary(self, market):
+        pool = cf_common.user_db.bet_pool(market.market_id)
+        if not pool:
+            return None
+        return ' · '.join(
+            f'{self._pick_label(market, p.pick)}: {p.cnt} ({p.total} {_COIN})'
+            for p in pool)
+
+    def _add_pool_field(self, embed, market):
+        summary = self._pool_summary(market)
+        if summary:
+            embed.add_field(name='Action so far', value=summary, inline=False)
+        return embed
+
+    def _configured_notify_role_id(self, guild_id):
+        if cf_common.user_db is None:
+            return None
+        role_id = cf_common.user_db.get_guild_config(
+            guild_id, _NOTIFY_ROLE_CONFIG_KEY)
+        if role_id is None:
+            return None
+        try:
+            int(role_id)
+        except (TypeError, ValueError):
+            return None
+        return str(role_id)
+
+    def _configured_notify_role(self, guild):
+        role_id = self._configured_notify_role_id(guild.id)
+        if role_id is None or not hasattr(guild, 'get_role'):
+            return None
+        return guild.get_role(int(role_id))
+
+    def _notify_role_mention(self, guild_id):
+        role_id = self._configured_notify_role_id(guild_id)
+        return f'<@&{role_id}>' if role_id is not None else None
+
+    def _open_announcement_kwargs(self, guild_id, event):
+        kwargs = {'embed': self._open_announce_embed(event)}
+        mention = self._notify_role_mention(guild_id)
+        if mention is not None:
+            kwargs['content'] = mention
+            kwargs['allowed_mentions'] = _role_mentions()
+        return kwargs
+
+    def _member_has_role(self, member, role_id):
+        return any(str(getattr(role, 'id', None)) == str(role_id)
+                   for role in getattr(member, 'roles', []) or [])
+
+    def _bot_can_ping_role(self, ctx, role):
+        if getattr(role, 'mentionable', True):
+            return True
+        me = getattr(ctx.guild, 'me', None)
+        perms = getattr(me, 'guild_permissions', None)
+        return (getattr(perms, 'administrator', False)
+                or getattr(perms, 'mention_everyone', False))
+
+    def _validate_notify_role(self, ctx, role):
+        if hasattr(role, 'is_default') and role.is_default():
+            raise BettingCogError('Configure a normal role, not `@everyone`.')
+        if getattr(role, 'managed', False):
+            raise BettingCogError('Managed roles cannot be used for notifications.')
+        is_assignable = getattr(role, 'is_assignable', None)
+        if callable(is_assignable) and not is_assignable():
+            raise BettingCogError(
+                'I cannot assign that role. Put my bot role above it and give '
+                'me Manage Roles.')
+        perms = getattr(role, 'permissions', None)
+        if getattr(perms, 'value', 0):
+            raise BettingCogError(
+                'The notification role must have no server permissions.')
+        if not self._bot_can_ping_role(ctx, role):
+            raise BettingCogError(
+                'That role is not mentionable. Make it mentionable or give me '
+                'Mention Everyone so market-open pings work.')
 
     def _find_market(self, ctx):
         """The open market relevant to where the command was run: the betting
@@ -612,13 +710,7 @@ class Betting(commands.Cog):
         embed = discord.Embed(
             title=f'⚽ {market.home_team} vs {market.away_team}{suffix}',
             description='\n'.join(lines), color=color)
-        pool = cf_common.user_db.bet_pool(market.market_id)
-        if pool:
-            summary = ' · '.join(
-                f'{self._pick_label(market, p.pick)}: {p.cnt} ({p.total} {_COIN})'
-                for p in pool)
-            embed.add_field(name='Action so far', value=summary, inline=False)
-        return embed
+        return self._add_pool_field(embed, market)
 
     def _thread_intro_embed(self, market):
         kickoff = int(market.commence_time)
@@ -651,8 +743,9 @@ class Betting(commands.Cog):
             f'Returns = stake × odds. Re-bet before kickoff to change it.\n'
             f'Kickoff: <t:{kickoff}:F> (<t:{kickoff}:R>)\n'
             '⏱️ **Betting closes at kickoff.**')
-        return discord.Embed(title='🎟️ Place your bets', description=desc,
-                             color=0x2ecc71)
+        embed = discord.Embed(title='🎟️ Place your bets', description=desc,
+                              color=0x2ecc71)
+        return self._add_pool_field(embed, market)
 
     def _thread_name(self, market):
         name = f'⚽ {market.home_team} vs {market.away_team} — bets'
@@ -733,6 +826,61 @@ class Betting(commands.Cog):
             except Exception:
                 logger.warning('schedule refresh after `;prediction here` '
                                'failed', exc_info=True)
+
+    @bet.command(name='notifyrole', aliases=['pingrole'],
+                 brief='Set the role pinged when a market opens (admin)',
+                 usage='[@role]')
+    @commands.has_role(constants.TLE_ADMIN)
+    async def notifyrole(self, ctx, role: discord.Role = None):
+        if role is None:
+            role_id = self._configured_notify_role_id(ctx.guild.id)
+            if role_id is None:
+                await ctx.send(embed=discord_common.embed_neutral(
+                    'No betting notification role is configured.'))
+            else:
+                await ctx.send(embed=discord_common.embed_neutral(
+                    f'Betting notification role: <@&{role_id}>.'))
+            return
+        self._validate_notify_role(ctx, role)
+        cf_common.user_db.set_guild_config(
+            ctx.guild.id, _NOTIFY_ROLE_CONFIG_KEY, str(role.id))
+        await ctx.send(embed=discord_common.embed_success(
+            f'Betting markets will ping {role.mention} when they open.'),
+            allowed_mentions=_no_mentions())
+
+    @bet.command(name='clearnotifyrole', aliases=['notifyroleoff', 'pingroleoff'],
+                 brief='Stop pinging a role when markets open (admin)')
+    @commands.has_role(constants.TLE_ADMIN)
+    async def clearnotifyrole(self, ctx):
+        cf_common.user_db.delete_guild_config(ctx.guild.id, _NOTIFY_ROLE_CONFIG_KEY)
+        await ctx.send(embed=discord_common.embed_success(
+            'Betting notification role cleared.'))
+
+    @bet.command(name='notify', aliases=['notifications'],
+                 brief='Toggle betting notifications for yourself')
+    async def notify(self, ctx):
+        role_id = self._configured_notify_role_id(ctx.guild.id)
+        if role_id is None:
+            raise BettingCogError(
+                'No betting notification role is configured yet.')
+        role = self._configured_notify_role(ctx.guild)
+        if role is None:
+            raise BettingCogError(
+                'The configured betting notification role no longer exists.')
+        try:
+            if self._member_has_role(ctx.author, role_id):
+                await ctx.author.remove_roles(role, reason='Betting notifications off')
+                await ctx.send(embed=discord_common.embed_success(
+                    f'Removed {role.mention} from you.'),
+                    allowed_mentions=_no_mentions())
+            else:
+                await ctx.author.add_roles(role, reason='Betting notifications on')
+                await ctx.send(embed=discord_common.embed_success(
+                    f'Added {role.mention} to you.'),
+                    allowed_mentions=_no_mentions())
+        except (discord.Forbidden, discord.HTTPException, AttributeError):
+            raise BettingCogError(
+                'I could not update that role. Check my role permissions.')
 
     @bet.command(name='check',
                  brief='Check betting API keys without exposing secrets (admin)')
@@ -860,7 +1008,8 @@ class Betting(commands.Cog):
         if market_id is None:
             raise BettingCogError('There is already an open market on that match.')
         try:
-            msg = await ctx.send(embed=self._open_announce_embed(event))
+            msg = await ctx.send(
+                **self._open_announcement_kwargs(ctx.guild.id, event))
         except discord.HTTPException:
             cf_common.user_db.bet_void(ctx.guild.id, market_id, time.time())
             raise
@@ -904,10 +1053,51 @@ class Betting(commands.Cog):
             return None
         cf_common.user_db.bet_market_set_thread(market_id, thread.id)
         try:
-            await thread.send(embed=self._thread_intro_embed(market))
+            intro = await thread.send(embed=self._thread_intro_embed(market))
+            if getattr(intro, 'id', None) is not None:
+                cf_common.user_db.bet_market_set_thread_intro(market_id, intro.id)
         except discord.HTTPException:
             pass
         return thread
+
+    def _schedule_pool_refresh(self, market_id):
+        if not self.bot:
+            return
+        existing = self._pool_refresh_timers.pop(market_id, None)
+        if existing is not None and not existing.done():
+            existing.cancel()
+        self._pool_refresh_timers[market_id] = asyncio.create_task(
+            self._pool_refresh_timer(market_id))
+
+    async def _pool_refresh_timer(self, market_id):
+        try:
+            await asyncio.sleep(_POOL_REFRESH_DELAY)
+            await self._refresh_pool_message(market_id)
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.warning('bet pool refresh failed for market %s', market_id,
+                           exc_info=True)
+        finally:
+            self._pool_refresh_timers.pop(market_id, None)
+
+    async def _refresh_pool_message(self, market_id):
+        if cf_common.user_db is None or not self.bot:
+            return
+        market = cf_common.user_db.bet_market_get(market_id)
+        if market is None or not market.thread_id:
+            return
+        intro_id = getattr(market, 'thread_intro_id', None)
+        if not intro_id:
+            return
+        thread = self.bot.get_channel(int(market.thread_id))
+        if thread is None:
+            return
+        try:
+            msg = await thread.fetch_message(int(intro_id))
+            await msg.edit(embed=self._thread_intro_embed(market))
+        except (discord.HTTPException, AttributeError, KeyError, ValueError):
+            logger.warning('could not refresh bet pool for market %s', market_id)
 
     async def _delete_message(self, msg):
         try:
@@ -979,6 +1169,7 @@ class Betting(commands.Cog):
         if status == 'insufficient':
             raise BettingCogError(
                 f'You only have **{data["balance"]}** {_COIN}. Try `;bet daily`.')
+        self._schedule_pool_refresh(market.market_id)
         await ctx.send(embed=discord_common.embed_success(
             f'Bet placed: **{data["stake"]}** {_COIN} on **{data["label"]}** @ '
             f'**{data["odds"]:.2f}** — returns **{data["potential"]}** {_COIN} '
@@ -1076,6 +1267,7 @@ class Betting(commands.Cog):
             return
         if status == 'ok':
             await self._react(message, '✅')
+            self._schedule_pool_refresh(market.market_id)
         elif status == 'closed':
             await self._react(message, '🔒')
         elif status == 'insufficient':
@@ -1095,6 +1287,58 @@ class Betting(commands.Cog):
             f'{discord.utils.escape_markdown(target.display_name)} has'
         await ctx.send(embed=discord_common.embed_neutral(
             f'{who} **{bal}** {_COIN}.'))
+
+    @bet.command(name='me', aliases=['profile', 'summary'],
+                 brief='Show your betting summary')
+    async def me(self, ctx):
+        balance = cf_common.user_db.bet_ensure_wallet(
+            ctx.guild.id, ctx.author.id, constants.BET_START_BALANCE)
+        wallet = cf_common.user_db.bet_wallet_get(ctx.guild.id, ctx.author.id)
+        wallet_rank = rank_line(
+            cf_common.user_db.bet_balance_leaderboard(ctx.guild.id),
+            ctx.author.id, 'balance', 'wallet')
+        profit_rank = rank_line(
+            cf_common.user_db.bet_profit_leaderboard(ctx.guild.id),
+            ctx.author.id, 'profit', 'profit')
+        daily = 'claimed today' if wallet and wallet.last_daily == _utc_today() \
+            else 'available'
+        name = discord.utils.escape_markdown(ctx.author.display_name)
+        embed = discord.Embed(
+            title=f'Betting — {name}',
+            description=(
+                f'Balance: **{balance}** {_COIN}\n'
+                f'{wallet_rank}\n'
+                f'{profit_rank}\n'
+                f'Daily: **{daily}**'),
+            color=0x3498db)
+
+        active = cf_common.user_db.bet_active_wagers_for_user(
+            ctx.guild.id, ctx.author.id, 5)
+        if active:
+            lines = []
+            for row in active:
+                odds = self._pick_odds(row, row.pick)
+                potential = payout_amount(row.stake, odds) if odds is not None else 0
+                odds_text = f'{odds:.2f}' if odds is not None else '?'
+                ref = f'<#{row.thread_id}>' if row.thread_id else f'<#{row.channel_id}>'
+                locked = ' locked' if row.bets_closed else ''
+                lines.append(
+                    f'{ref} **{row.home_team} vs {row.away_team}**{locked}: '
+                    f'{row.stake} {_COIN} on **{self._pick_label(row, row.pick)}** '
+                    f'@ {odds_text} → {potential} {_COIN}')
+            embed.add_field(name='Active bets', value='\n'.join(lines),
+                            inline=False)
+        else:
+            embed.add_field(name='Active bets', value='No active bets.',
+                            inline=False)
+
+        history = cf_common.user_db.bet_wallet_history(ctx.guild.id, ctx.author.id, 5)
+        if history:
+            embed.add_field(
+                name='Recent wallet activity',
+                value='\n'.join(self._wallet_txn_line(row) for row in history),
+                inline=False)
+        await ctx.send(embed=embed, allowed_mentions=_no_mentions())
 
     @bet.command(name='daily', aliases=['claim'], brief='Claim the daily allowance')
     async def daily(self, ctx):
@@ -1811,7 +2055,8 @@ class Betting(commands.Cog):
                         event.get('away_team'), guild_id)
             return
         try:
-            msg = await channel.send(embed=self._open_announce_embed(event))
+            msg = await channel.send(
+                **self._open_announcement_kwargs(guild_id, event))
         except discord.HTTPException:
             logger.warning('failed to post auto market for %s in guild %s',
                            event.get('event_id'), guild_id, exc_info=True)

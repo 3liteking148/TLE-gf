@@ -583,6 +583,7 @@ class UserDbConn(MinigameDbMixin, StarboardDbMixin, MigrationDbMixin):
                 channel_id     TEXT NOT NULL,
                 message_id     TEXT,
                 thread_id      TEXT,
+                thread_intro_id TEXT,
                 event_id       TEXT NOT NULL,
                 fixture_key    TEXT NOT NULL,
                 sport_key      TEXT NOT NULL,
@@ -607,6 +608,8 @@ class UserDbConn(MinigameDbMixin, StarboardDbMixin, MigrationDbMixin):
         ]
         if 'fixture_key' not in bet_market_cols:
             self.conn.execute('ALTER TABLE bet_market ADD COLUMN fixture_key TEXT')
+        if 'thread_intro_id' not in bet_market_cols:
+            self.conn.execute('ALTER TABLE bet_market ADD COLUMN thread_intro_id TEXT')
         self.conn.execute('''
             CREATE INDEX IF NOT EXISTS idx_bet_market_active
                 ON bet_market (guild_id, channel_id, status)
@@ -2258,6 +2261,14 @@ class UserDbConn(MinigameDbMixin, StarboardDbMixin, MigrationDbMixin):
         ).fetchone()
         return row.balance if row else None
 
+    def bet_wallet_get(self, guild_id, user_id):
+        """Return a wallet row, or None if the user has no wallet yet."""
+        return self.conn.execute(
+            'SELECT guild_id, user_id, balance, last_daily '
+            'FROM bet_wallet WHERE guild_id = ? AND user_id = ?',
+            (str(guild_id), str(user_id))
+        ).fetchone()
+
     def bet_wallet_history(self, guild_id, user_id, limit=15):
         """Return recent wallet audit entries for a user, newest first."""
         limit = max(1, min(int(limit), 50))
@@ -2436,6 +2447,14 @@ class UserDbConn(MinigameDbMixin, StarboardDbMixin, MigrationDbMixin):
         )
         self.conn.commit()
 
+    def bet_market_set_thread_intro(self, market_id, message_id):
+        """Record the first bot message in the betting thread."""
+        self.conn.execute(
+            'UPDATE bet_market SET thread_intro_id = ? WHERE market_id = ?',
+            (str(message_id), market_id)
+        )
+        self.conn.commit()
+
     def bet_market_get_active_by_thread(self, guild_id, thread_id):
         """Return the open market whose betting thread is thread_id, or None."""
         return self.conn.execute(
@@ -2564,6 +2583,19 @@ class UserDbConn(MinigameDbMixin, StarboardDbMixin, MigrationDbMixin):
             'SELECT market_id, user_id, pick, stake, placed_at '
             'FROM bet_wager WHERE market_id = ? ORDER BY placed_at ASC',
             (market_id,)
+        ).fetchall()
+
+    def bet_active_wagers_for_user(self, guild_id, user_id, limit=10):
+        """Return this user's wagers on open markets, kickoff-soonest first."""
+        limit = max(1, min(int(limit), 25))
+        return self.conn.execute(
+            'SELECT m.market_id, m.channel_id, m.thread_id, m.home_team, '
+            '       m.away_team, m.commence_time, m.odds_home, m.odds_draw, '
+            '       m.odds_away, m.bets_closed, w.pick, w.stake, w.placed_at '
+            'FROM bet_wager w JOIN bet_market m ON m.market_id = w.market_id '
+            "WHERE m.guild_id = ? AND w.user_id = ? AND m.status = 'open' "
+            'ORDER BY m.commence_time ASC, m.market_id ASC LIMIT ?',
+            (str(guild_id), str(user_id), limit)
         ).fetchall()
 
     def bet_pool(self, market_id):
