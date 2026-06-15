@@ -58,6 +58,11 @@ AKARI_RANKING_MAX_INACTIVE_DAYS = 30
 # auto-settlement. Without it the cog loads but those paths are disabled
 # (mods can still settle markets manually).
 ODDS_API_KEY = os.environ.get('ODDS_API_KEY')
+# Results come from football-data.org when this is set (free, rate-limited, no
+# per-call credit cost) so settlement can poll often and cheaply. Falls back to
+# The Odds API scores endpoint when unset. Get a free token at
+# football-data.org/client/register.
+FOOTBALL_DATA_API_KEY = os.environ.get('FOOTBALL_DATA_API_KEY')
 # Wallet economy. Everyone starts at BET_START_BALANCE; `;bet daily` grants a
 # flat BET_DAILY_AMOUNT once per UTC day (unconditional). Stakes are uncapped —
 # you can wager up to your whole balance.

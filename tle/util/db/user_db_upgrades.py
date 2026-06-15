@@ -827,13 +827,14 @@ def upgrade_1_32_0(db):
 def upgrade_1_33_0(db):
     """Create the betting tables.
 
-    A *market* is one match a moderator opens betting on, with the 1X2 odds
-    (home / draw / away) snapshotted from The Odds API at open time; everyone
-    bets at those locked odds.  A *wager* is one user's pick + stake on a
-    market; ``payout`` is NULL until the market settles (then it is the
-    credited amount, 0 for a loss).  A *wallet* is a per-guild points balance;
-    stakes are escrowed (deducted at placement) and winnings credited at
-    settlement, so the wallet balance is the source of truth for net worth.
+    A *market* is one match, with the 1X2 odds (home / draw / away) frozen
+    from The Odds API at open time; everyone bets at those locked odds. A
+    *wager* is just one user's pick + stake — odds and payout are NOT stored
+    because they are derivable: a wager's odds = the market's frozen
+    odds_<pick>, and its payout = round(stake × odds) when pick == result, else
+    0. A *wallet* is a per-guild points balance; stakes are escrowed (deducted
+    at placement) and winnings credited at settlement, so the wallet balance is
+    the source of truth for net worth.
     """
     logger.info('1.33.0: Creating betting tables')
     db.execute('''
@@ -861,6 +862,7 @@ def upgrade_1_33_0(db):
             odds_draw      REAL NOT NULL,
             odds_away      REAL NOT NULL,
             status         TEXT NOT NULL DEFAULT 'open',
+            bets_closed    INTEGER NOT NULL DEFAULT 0,
             result         TEXT,
             result_home    INTEGER,
             result_away    INTEGER,
@@ -887,9 +889,7 @@ def upgrade_1_33_0(db):
             user_id     TEXT NOT NULL,
             pick        TEXT NOT NULL,
             stake       INTEGER NOT NULL,
-            odds        REAL NOT NULL,
             placed_at   REAL NOT NULL,
-            payout      INTEGER,
             PRIMARY KEY (market_id, user_id)
         )
     ''')

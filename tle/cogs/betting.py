@@ -33,6 +33,7 @@ from discord.ext import commands
 from tle import constants
 from tle.util import codeforces_common as cf_common
 from tle.util import discord_common
+from tle.util import football_data
 from tle.util import odds_api
 from tle.util import paginator
 from tle.util import tasks
@@ -44,8 +45,11 @@ _LB_PER_PAGE = 15
 _MATCH_LIST_LIMIT = 15
 # Manual `;bet matches` reuses a fetch no older than this.
 _MATCH_CACHE_MAX_AGE = 10 * 60
-# Engine tick cadence (auto-open watcher + auto-settle poller share one task).
-_ENGINE_INTERVAL = 15 * 60
+# Auto-open watcher cadence (paid odds API — kept slow + adaptive).
+_WATCH_INTERVAL = 15 * 60
+# Auto-settle poller cadence. Results come from football-data.org (free), so we
+# can poll often; only hits the network when a market is actually past kickoff.
+_SETTLE_INTERVAL = 5 * 60
 # How stale the cached World Cup schedule may be before a refetch. Odds are
 # frozen at open and never re-read, and kickoff times are stable, so the only
 # reason to refresh is to discover newly-listed fixtures — a slow cadence is
@@ -61,6 +65,7 @@ _PICK_ALIASES = {
 _AMOUNT_WORDS = ('all', 'max', 'allin', 'all-in', 'everything')
 
 _CHANNEL_CONFIG_KEY = 'bet_channel'
+_PAUSED_CONFIG_KEY = 'bet_paused'
 
 
 class BettingCogError(commands.CommandError):
@@ -90,10 +95,70 @@ def is_due(commence_time, now, lead):
 
 
 def normalize_pick(text):
-    """Resolve a pick token (home/draw/away and common aliases) or None."""
+    """Resolve a pick token (home/draw/away and common aliases) or None.
+    Does NOT know team names — see resolve_pick for that."""
     if text is None:
         return None
     return _PICK_ALIASES.get(text.strip().lower())
+
+
+def _norm_team(name):
+    """Fold a team name to a comparison key: strip accents, lowercase, keep
+    only alphanumerics. 'Cape Verde' → 'capeverde', 'Côte d\\'Ivoire' →
+    'cotedivoire'."""
+    import unicodedata
+    if not name:
+        return ''
+    decomposed = unicodedata.normalize('NFKD', name)
+    stripped = ''.join(c for c in decomposed if not unicodedata.combining(c))
+    return ''.join(c for c in stripped.lower() if c.isalnum())
+
+
+def resolve_pick(text, home_team, away_team):
+    """Resolve a pick against a specific match: an outcome alias
+    (home/draw/away/1/x/2/tie…) OR a team name ('Spain', 'cape verde'). Returns
+    'home'/'draw'/'away' or None. Exact normalized name match, falling back to
+    an unambiguous prefix (≥3 chars) so 'cape' resolves to 'Cape Verde'."""
+    if text is None:
+        return None
+    base = _PICK_ALIASES.get(text.strip().lower())
+    if base is not None:
+        return base
+    key = _norm_team(text)
+    if not key:
+        return None
+    home_key, away_key = _norm_team(home_team), _norm_team(away_team)
+    if key == home_key:
+        return 'home'
+    if key == away_key:
+        return 'away'
+    if len(key) >= 3:
+        home_pre = home_key.startswith(key)
+        away_pre = away_key.startswith(key)
+        if home_pre and not away_pre:
+            return 'home'
+        if away_pre and not home_pre:
+            return 'away'
+    return None
+
+
+def extract_bet_tokens(content):
+    """Cheap, market-agnostic split of a possible thread bet into
+    (pick_text, amount_str), or None. Accepts '<pick…> <amount>' or
+    '<amount> <pick…>' where amount is a single number/percent/'all' token and
+    pick is 1–3 words (a team name or an outcome alias). The pick is resolved
+    to an outcome later, against the market, via resolve_pick — keeping this
+    off the DB for ordinary chatter."""
+    if not content:
+        return None
+    tokens = content.strip().split()
+    if not 2 <= len(tokens) <= 4:
+        return None
+    if _looks_like_amount(tokens[-1]):
+        return (' '.join(tokens[:-1]), tokens[-1])
+    if _looks_like_amount(tokens[0]):
+        return (' '.join(tokens[1:]), tokens[0])
+    return None
 
 
 def _looks_like_amount(token):
@@ -136,28 +201,6 @@ def parse_amount(text, balance, min_stake=1):
     except ValueError:
         return None
     return amount if amount >= min_stake else None
-
-
-def parse_bet_message(content):
-    """Parse a free-form thread bet like 'home 100', '100 away', 'x 50%',
-    'draw all' into (pick, amount_str), or None if it isn't clearly a bet.
-
-    Strict: exactly two whitespace-separated tokens — one a pick token, the
-    other a stake token — so ordinary chat in the thread is left alone.
-    """
-    if not content:
-        return None
-    tokens = content.strip().split()
-    if len(tokens) != 2:
-        return None
-    first, second = tokens
-    pick = normalize_pick(first)
-    if pick is not None and _looks_like_amount(second):
-        return (pick, second)
-    pick = normalize_pick(second)
-    if pick is not None and _looks_like_amount(first):
-        return (pick, first)
-    return None
 
 
 def parse_settle_arg(text):
@@ -204,6 +247,10 @@ def _api_key():
     return getattr(constants, 'ODDS_API_KEY', None)
 
 
+def _football_data_key():
+    return getattr(constants, 'FOOTBALL_DATA_API_KEY', None)
+
+
 # ── Cog ────────────────────────────────────────────────────────────────────
 
 class Betting(commands.Cog):
@@ -219,10 +266,12 @@ class Betting(commands.Cog):
     @commands.Cog.listener()
     @discord_common.once
     async def on_ready(self):
-        self._engine_task.start()
+        self._watch_task.start()
+        self._settle_task.start()
 
     async def cog_unload(self):
-        await self._engine_task.stop()
+        await self._watch_task.stop()
+        await self._settle_task.stop()
 
     # ── Odds cache ─────────────────────────────────────────────────────
 
@@ -265,6 +314,18 @@ class Betting(commands.Cog):
             return m
         return cf_common.user_db.bet_market_get_active(ctx.guild.id, ctx.channel.id)
 
+    def _parse_result(self, market, text):
+        """Resolve a result for settle/correct: home/draw/away alias, a
+        scoreline (2-1 → scores + outcome), or a team name. Returns
+        (outcome, home_score, away_score) or None."""
+        parsed = parse_settle_arg(text)
+        if parsed is not None:
+            return parsed
+        pick = resolve_pick(text, market.home_team, market.away_team)
+        if pick is not None:
+            return (pick, None, None)
+        return None
+
     # ── Embeds ─────────────────────────────────────────────────────────
 
     def _market_embed(self, market):
@@ -300,14 +361,15 @@ class Betting(commands.Cog):
     def _thread_intro_embed(self, market):
         kickoff = int(market.commence_time)
         desc = (
-            'Reply in this thread to bet:\n'
-            '• `home 100` — back the home win\n'
-            '• `draw 50` — back a draw\n'
-            '• `away all` — back the away win (also `25%`)\n\n'
+            'Reply in this thread to bet — use the **country name** or '
+            'home/draw/away:\n'
+            f'• `{market.home_team} 100` — back {market.home_team}\n'
+            '• `draw 50` (or `tie`) — back a draw\n'
+            f'• `{market.away_team} all` — back {market.away_team} (also `25%`)\n\n'
             f'Odds (frozen): **1** {market.odds_home:.2f} · '
             f'**X** {market.odds_draw:.2f} · **2** {market.odds_away:.2f}\n'
             f'Returns = stake × odds. Re-bet before kickoff to change it.\n'
-            f'Betting closes at kickoff (<t:{kickoff}:R>).')
+            f'⏱️ **Betting closes <t:{kickoff}:R>**')
         return discord.Embed(title='🎟️ Place your bets', description=desc,
                              color=0x2ecc71)
 
@@ -326,9 +388,10 @@ class Betting(commands.Cog):
             f'**X** · Draw — **{o["draw"]:.2f}**',
             f'**2** · {event["away_team"]} win — **{o["away"]:.2f}**',
             '',
-            f'Kickoff: <t:{kickoff}:F> (<t:{kickoff}:R>)',
-            '\n👇 **Place your bets in the thread below** — '
-            'betting closes at kickoff.',
+            f'Kickoff: <t:{kickoff}:F>',
+            # <t:..:R> renders as a live countdown on the client ("in 53 minutes").
+            f'⏱️ **Betting closes <t:{kickoff}:R>**',
+            '\n👇 **Place your bets in the thread below.**',
         ]
         return discord.Embed(
             title=f'⚽ {event["home_team"]} vs {event["away_team"]}',
@@ -490,7 +553,7 @@ class Betting(commands.Cog):
           'insufficient' — not enough balance (data={'balance': N})
           'ok'           — placed (data has stake/odds/label/potential/balance)
         """
-        if time.time() >= market.commence_time:
+        if time.time() >= market.commence_time or market.bets_closed:
             return ('closed', None)
         balance = cf_common.user_db.bet_ensure_wallet(
             guild_id, user.id, constants.BET_START_BALANCE)
@@ -501,7 +564,7 @@ class Betting(commands.Cog):
             return ('insufficient', {'balance': balance})
         odds = self._pick_odds(market, pick)
         ok, reason, new_balance = cf_common.user_db.bet_place(
-            guild_id, market.market_id, user.id, pick, stake, odds,
+            guild_id, market.market_id, user.id, pick, stake,
             time.time(), constants.BET_START_BALANCE)
         if not ok:
             return ('insufficient', {'balance': balance})
@@ -558,10 +621,11 @@ class Betting(commands.Cog):
                 "You haven't bet on this match yet."))
             return
         label = self._pick_label(market, wager.pick)
-        potential = payout_amount(wager.stake, wager.odds)
+        odds = self._pick_odds(market, wager.pick)  # frozen on the market
+        potential = payout_amount(wager.stake, odds)
         await ctx.send(embed=discord_common.embed_neutral(
             f'Your bet: **{wager.stake}** {_COIN} on **{label}** @ '
-            f'**{wager.odds:.2f}** → returns **{potential}** {_COIN}.'))
+            f'**{odds:.2f}** → returns **{potential}** {_COIN}.'))
 
     # ── Thread bet listener ────────────────────────────────────────────
 
@@ -580,8 +644,8 @@ class Betting(commands.Cog):
         content = message.content or ''
         if content.startswith(discord_common._BOT_PREFIX):
             return  # a command — let the command system handle it
-        parsed = parse_bet_message(content)
-        if parsed is None:
+        tokens = extract_bet_tokens(content)
+        if tokens is None:
             return
         if cf_common.user_db is None:
             return  # startup window — DB not initialized yet
@@ -589,7 +653,10 @@ class Betting(commands.Cog):
             message.guild.id, message.channel.id)
         if market is None:
             return  # not a betting thread — ignored on purpose
-        pick, amount_str = parsed
+        pick_text, amount_str = tokens
+        pick = resolve_pick(pick_text, market.home_team, market.away_team)
+        if pick is None:
+            return  # not a recognizable team/outcome — ignore (avoid chat noise)
         try:
             status, data = await self._execute_bet(
                 message.guild.id, market, message.author, pick, amount_str)
@@ -686,11 +753,11 @@ class Betting(commands.Cog):
         market = self._find_market(ctx)
         if market is None:
             raise BettingCogError('No open market here to settle.')
-        parsed = parse_settle_arg(result)
+        parsed = self._parse_result(market, result)
         if parsed is None:
             raise BettingCogError(
-                'Give the result as `home`, `draw`, `away`, or a scoreline '
-                'like `2-1`.')
+                'Give the result as `home`, `draw`, `away`, a scoreline like '
+                '`2-1`, or the winning team name.')
         outcome, home_score, away_score = parsed
         await self._do_settle(market, outcome, home_score, away_score,
                              source='manual')
@@ -742,6 +809,167 @@ class Betting(commands.Cog):
             color=0xf1c40f)
         await ctx.send(embed=embed,
                        allowed_mentions=discord.AllowedMentions.none())
+
+    @bet.command(name='correct', aliases=['fix', 'resettle'],
+                 brief='Fix a wrongly-settled result (mod)',
+                 usage='<home|draw|away|2-1|team>')
+    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    async def correct(self, ctx, *, result: str):
+        """Re-settle the most recently settled market here with the corrected
+        result, reversing the wrong payouts and applying the right ones."""
+        market = (cf_common.user_db.bet_market_get_latest_settled_by_thread(
+                      ctx.guild.id, ctx.channel.id)
+                  or cf_common.user_db.bet_market_get_latest_settled_by_channel(
+                      ctx.guild.id, ctx.channel.id))
+        if market is None:
+            raise BettingCogError(
+                'No settled market here to correct. Run this in the match\'s '
+                'thread or channel.')
+        parsed = self._parse_result(market, result)
+        if parsed is None:
+            raise BettingCogError(
+                'Give the corrected result as `home`/`draw`/`away`, a scoreline '
+                'like `2-1`, or the winning team name.')
+        outcome, home_score, away_score = parsed
+        rows = cf_common.user_db.bet_resettle(
+            market.guild_id, market.market_id, outcome, home_score, away_score,
+            time.time())
+        if rows is None:
+            raise BettingCogError('That market is no longer in a settled state.')
+        label = self._pick_label(market, outcome)
+        adjusted = [r for r in rows if r[5] != 0]
+        head = (f'{market.home_team} {home_score}–{away_score} {market.away_team}'
+                if home_score is not None else f'winner: **{label}**')
+        lines = [f'Corrected result: {head}']
+        if adjusted:
+            lines.append('')
+            for user_id, pick, stake, odds, new_pay, delta in adjusted:
+                sign = '+' if delta > 0 else ''
+                lines.append(f'<@{user_id}> **{sign}{delta}** {_COIN}')
+        else:
+            lines.append('\nNo payouts changed.')
+        embed = discord.Embed(
+            title=f'🔧 Correction — {market.home_team} vs {market.away_team}',
+            description='\n'.join(lines), color=0xe67e22)
+        await ctx.send(embed=embed,
+                       allowed_mentions=discord.AllowedMentions.none())
+        logger.info('Corrected market %s → %s by %s',
+                    market.market_id, outcome, ctx.author.id)
+
+    @bet.command(name='grant', brief='Give a user coins (mod)',
+                 usage='@user <amount>')
+    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    async def grant(self, ctx, member: discord.Member, amount: int):
+        if amount <= 0:
+            raise BettingCogError('Amount must be a positive whole number.')
+        new = cf_common.user_db.bet_adjust_balance(
+            ctx.guild.id, member.id, amount, constants.BET_START_BALANCE)
+        name = discord.utils.escape_markdown(member.display_name)
+        await ctx.send(embed=discord_common.embed_success(
+            f'Gave **{amount}** {_COIN} to `{name}`. New balance: **{new}** {_COIN}.'))
+
+    @bet.command(name='take', brief='Remove coins from a user (mod)',
+                 usage='@user <amount>')
+    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    async def take(self, ctx, member: discord.Member, amount: int):
+        if amount <= 0:
+            raise BettingCogError('Amount must be a positive whole number.')
+        new = cf_common.user_db.bet_adjust_balance(
+            ctx.guild.id, member.id, -amount, constants.BET_START_BALANCE)
+        name = discord.utils.escape_markdown(member.display_name)
+        await ctx.send(embed=discord_common.embed_success(
+            f'Took **{amount}** {_COIN} from `{name}`. New balance: **{new}** {_COIN}.'))
+
+    @bet.command(name='setbalance', aliases=['setbal'],
+                 brief='Set a user\'s balance (mod)', usage='@user <amount>')
+    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    async def setbalance(self, ctx, member: discord.Member, amount: int):
+        if amount < 0:
+            raise BettingCogError('Balance cannot be negative.')
+        new = cf_common.user_db.bet_set_balance(
+            ctx.guild.id, member.id, amount, constants.BET_START_BALANCE)
+        name = discord.utils.escape_markdown(member.display_name)
+        await ctx.send(embed=discord_common.embed_success(
+            f'Set `{name}`\'s balance to **{new}** {_COIN}.'))
+
+    @bet.command(name='pause', brief='Stop auto-opening new markets (mod)')
+    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    async def pause(self, ctx):
+        cf_common.user_db.set_guild_config(ctx.guild.id, _PAUSED_CONFIG_KEY, '1')
+        await ctx.send(embed=discord_common.embed_success(
+            'Auto-open **paused** — no new markets will open. Existing markets '
+            'still settle. `;bet resume` to re-enable.'))
+
+    @bet.command(name='resume', aliases=['unpause'],
+                 brief='Resume auto-opening markets (mod)')
+    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    async def resume(self, ctx):
+        cf_common.user_db.set_guild_config(ctx.guild.id, _PAUSED_CONFIG_KEY, '0')
+        await ctx.send(embed=discord_common.embed_success(
+            'Auto-open **resumed** — markets will open ~2h before kickoff again.'))
+
+    @bet.command(name='book', brief='Show all bets on the active market (mod)')
+    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    async def book(self, ctx):
+        market = self._find_market(ctx)
+        if market is None:
+            raise BettingCogError('No open market here.')
+        wagers = cf_common.user_db.bet_get_wagers(market.market_id)
+        if not wagers:
+            await ctx.send(embed=discord_common.embed_neutral('No bets placed yet.'))
+            return
+        by_pick = {'home': [], 'draw': [], 'away': []}
+        for w in wagers:
+            by_pick.setdefault(w.pick, []).append(w)
+        lines = []
+        for pick in ('home', 'draw', 'away'):
+            ws = by_pick.get(pick) or []
+            if not ws:
+                continue
+            odds = self._pick_odds(market, pick)
+            total = sum(w.stake for w in ws)
+            lines.append(f'__{self._pick_label(market, pick)} @ {odds:.2f}__ — '
+                         f'{len(ws)} bet(s), {total} {_COIN} staked')
+            for w in sorted(ws, key=lambda x: x.stake, reverse=True)[:15]:
+                lines.append(f'• <@{w.user_id}> {w.stake} → '
+                             f'{payout_amount(w.stake, odds)} {_COIN}')
+        embed = discord.Embed(
+            title=f'📒 Book — {market.home_team} vs {market.away_team}',
+            description='\n'.join(lines), color=0x3498db)
+        await ctx.send(embed=embed,
+                       allowed_mentions=discord.AllowedMentions.none())
+
+    @bet.command(name='odds', brief='Re-line a market before any bets (mod)',
+                 usage='<home> <draw> <away>')
+    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    async def setodds(self, ctx, home: float, draw: float, away: float):
+        market = self._find_market(ctx)
+        if market is None:
+            raise BettingCogError('No open market here.')
+        if cf_common.user_db.bet_market_count_wagers(market.market_id) > 0:
+            raise BettingCogError(
+                'Bets are already placed — re-lining would be unfair to them. '
+                '`;bet cancel` to refund and reopen instead.')
+        if not (home > 1 and draw > 1 and away > 1):
+            raise BettingCogError('Odds must be decimal and greater than 1.0.')
+        cf_common.user_db.bet_market_set_odds(market.market_id, home, draw, away)
+        await ctx.send(embed=discord_common.embed_success(
+            f'Odds re-lined: **1** {home:.2f} · **X** {draw:.2f} · '
+            f'**2** {away:.2f}.'))
+
+    @bet.command(name='close', brief='Close betting early on the active market (mod)')
+    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    async def close(self, ctx):
+        market = self._find_market(ctx)
+        if market is None:
+            raise BettingCogError('No open market here.')
+        if cf_common.user_db.bet_market_close_betting(market.market_id):
+            await ctx.send(embed=discord_common.embed_success(
+                'Betting **closed early** — no more bets. The market still '
+                'settles at full time.'))
+        else:
+            await ctx.send(embed=discord_common.embed_alert(
+                'Betting was already closed on this market.'))
 
     async def _do_settle(self, market, outcome, home_score, away_score, *, source):
         outcome_rows = cf_common.user_db.bet_settle(
@@ -823,11 +1051,11 @@ class Betting(commands.Cog):
         embed.set_footer(text=tag)
         return embed
 
-    # ── Engine: auto-open watcher + auto-settle poller ─────────────────
+    # ── Engine: auto-open watcher (slow) + auto-settle poller (fast) ───
 
-    @tasks.task_spec(name='BetEngine',
-                     waiter=tasks.Waiter.fixed_delay(_ENGINE_INTERVAL))
-    async def _engine_task(self, _):
+    @tasks.task_spec(name='BetWatch',
+                     waiter=tasks.Waiter.fixed_delay(_WATCH_INTERVAL))
+    async def _watch_task(self, _):
         # The first tick fires immediately on start, which can race the bot's
         # on_ready that initializes cf_common.user_db. Skip until it's ready.
         if cf_common.user_db is None:
@@ -836,17 +1064,27 @@ class Betting(commands.Cog):
             await self._watch_pending()
         except Exception:
             logger.warning('bet auto-open pass failed', exc_info=True)
+
+    @tasks.task_spec(name='BetSettle',
+                     waiter=tasks.Waiter.fixed_delay(_SETTLE_INTERVAL))
+    async def _settle_task(self, _):
+        if cf_common.user_db is None:
+            return
         try:
             await self._settle_pending()
         except Exception:
             logger.warning('bet auto-settle pass failed', exc_info=True)
 
     def _configured_guilds(self):
-        """{guild_id: channel_id} for guilds that ran `;prediction here`."""
+        """{guild_id: channel_id} for guilds that ran `;prediction here` and are
+        not paused. (Pause stops auto-OPENING; settlement still runs.)"""
         out = {}
         if not self.bot:
             return out
         for guild in self.bot.guilds:
+            if cf_common.user_db.get_guild_config(
+                    guild.id, _PAUSED_CONFIG_KEY) == '1':
+                continue
             channel_id = cf_common.user_db.get_guild_config(
                 guild.id, _CHANNEL_CONFIG_KEY)
             if channel_id:
@@ -947,6 +1185,36 @@ class Betting(commands.Cog):
         await self._create_thread(market.market_id, msg, market)
 
     async def _settle_pending(self):
+        """Settle finished markets. Primary source is football-data.org (free,
+        so we settle promptly at full time, any time after kickoff). The Odds
+        API scores endpoint (credits) is a fallback for markets still unsettled
+        after the buffer — e.g. if football-data isn't configured or can't
+        match the fixture."""
+        await self._settle_via_football_data()
+        await self._settle_via_odds_api()
+
+    async def _settle_via_football_data(self):
+        token = _football_data_key()
+        if not token:
+            return
+        # Any market past kickoff is eligible — football-data tells us whether
+        # the game has actually FINISHED, so no fixed buffer is needed.
+        markets = cf_common.user_db.bet_markets_pending_settlement(time.time())
+        if not markets:
+            return
+        try:
+            fd_matches = await football_data.fetch_wc_matches(token)
+        except football_data.FootballDataError as e:
+            logger.warning('football-data fetch failed: %s', e)
+            return
+        for m in markets:
+            score = football_data.find_result(
+                m.home_team, m.away_team, m.commence_time, fd_matches)
+            if score is None:
+                continue
+            await self._settle_market_with_score(m, score[0], score[1])
+
+    async def _settle_via_odds_api(self):
         api_key = _api_key()
         if not api_key:
             return
@@ -970,17 +1238,21 @@ class Betting(commands.Cog):
                 s = score_by_id.get(m.event_id)
                 if not s or not s['completed'] or s['home_score'] is None:
                     continue
-                # Re-read in case a mod settled it manually since the work-list.
-                fresh = cf_common.user_db.bet_market_get(m.market_id)
-                if fresh is None or fresh.status != 'open':
-                    continue
-                outcome = outcome_from_score(s['home_score'], s['away_score'])
-                try:
-                    await self._do_settle(m, outcome, s['home_score'],
-                                          s['away_score'], source='auto')
-                except Exception:
-                    logger.warning('failed to settle market %s', m.market_id,
-                                   exc_info=True)
+                await self._settle_market_with_score(
+                    m, s['home_score'], s['away_score'])
+
+    async def _settle_market_with_score(self, market, home_score, away_score):
+        # Re-read in case a mod (or the other source) settled it already.
+        fresh = cf_common.user_db.bet_market_get(market.market_id)
+        if fresh is None or fresh.status != 'open':
+            return
+        outcome = outcome_from_score(home_score, away_score)
+        try:
+            await self._do_settle(market, outcome, home_score, away_score,
+                                  source='auto')
+        except Exception:
+            logger.warning('failed to settle market %s', market.market_id,
+                           exc_info=True)
 
     @discord_common.send_error_if(BettingCogError)
     async def cog_command_error(self, ctx, error):

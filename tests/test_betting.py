@@ -8,9 +8,10 @@ import pytest
 from tle.util.db.user_db_conn import UserDbConn, namedtuple_factory
 from tle.util.db.user_db_upgrades import upgrade_1_33_0
 from tle.util import odds_api
+from tle.util import football_data
 from tle.cogs.betting import (
     outcome_from_score, payout_amount, normalize_pick, parse_amount,
-    parse_bet_message, parse_settle_arg, rank_line, is_due,
+    extract_bet_tokens, resolve_pick, parse_settle_arg, rank_line, is_due,
 )
 
 
@@ -87,25 +88,61 @@ class TestParseAmount:
         assert parse_amount(None, 500) is None
 
 
-class TestParseBetMessage:
+class TestExtractBetTokens:
+    """Cheap, market-agnostic split — pick text is resolved later."""
+
     def test_pick_then_amount(self):
-        assert parse_bet_message('home 100') == ('home', '100')
+        assert extract_bet_tokens('home 100') == ('home', '100')
 
     def test_amount_then_pick(self):
-        assert parse_bet_message('100 away') == ('away', '100')
+        assert extract_bet_tokens('100 away') == ('away', '100')
 
-    def test_aliases_and_percent(self):
-        assert parse_bet_message('x 50%') == ('draw', '50%')
-        assert parse_bet_message('away all') == ('away', 'all')
-        assert parse_bet_message('1 250') == ('home', '250')
+    def test_percent_and_all(self):
+        assert extract_bet_tokens('x 50%') == ('x', '50%')
+        assert extract_bet_tokens('away all') == ('away', 'all')
+        assert extract_bet_tokens('1 250') == ('1', '250')
+
+    def test_multiword_team_name(self):
+        # Country names can be multiple words — must still parse.
+        assert extract_bet_tokens('Cape Verde 100') == ('Cape Verde', '100')
+        assert extract_bet_tokens('250 Saudi Arabia') == ('Saudi Arabia', '250')
 
     def test_ignores_ordinary_chat(self):
-        assert parse_bet_message('lets go spain') is None
-        assert parse_bet_message('home') is None
-        assert parse_bet_message('home 100 now') is None
-        assert parse_bet_message('home home') is None
-        assert parse_bet_message('') is None
-        assert parse_bet_message(None) is None
+        assert extract_bet_tokens('lets go spain') is None  # no amount token
+        assert extract_bet_tokens('home') is None            # 1 token
+        assert extract_bet_tokens('a really long sentence 5') is None  # >4 tokens
+        assert extract_bet_tokens('') is None
+        assert extract_bet_tokens(None) is None
+
+
+class TestResolvePick:
+    """Market-aware: outcome aliases OR the team name."""
+
+    def test_outcome_aliases(self):
+        assert resolve_pick('home', 'Spain', 'Cape Verde') == 'home'
+        assert resolve_pick('x', 'Spain', 'Cape Verde') == 'draw'
+        assert resolve_pick('tie', 'Spain', 'Cape Verde') == 'draw'
+        assert resolve_pick('2', 'Spain', 'Cape Verde') == 'away'
+
+    def test_team_name_exact(self):
+        assert resolve_pick('Spain', 'Spain', 'Cape Verde') == 'home'
+        assert resolve_pick('spain', 'Spain', 'Cape Verde') == 'home'
+        assert resolve_pick('Cape Verde', 'Spain', 'Cape Verde') == 'away'
+        assert resolve_pick('cape verde', 'Spain', 'Cape Verde') == 'away'
+
+    def test_team_name_accents_and_spacing(self):
+        assert resolve_pick('cote divoire', "Côte d'Ivoire", 'Brazil') == 'home'
+
+    def test_unambiguous_prefix(self):
+        assert resolve_pick('cape', 'Spain', 'Cape Verde') == 'away'
+
+    def test_ambiguous_prefix_is_none(self):
+        # Iran vs Iraq share 'ira' → refuse to guess.
+        assert resolve_pick('ira', 'Iran', 'Iraq') is None
+
+    def test_unknown_is_none(self):
+        assert resolve_pick('bananas', 'Spain', 'Cape Verde') is None
+        assert resolve_pick(None, 'Spain', 'Cape Verde') is None
 
 
 class TestParseSettleArg:
@@ -299,6 +336,94 @@ class TestParseScore:
         assert p['home_score'] is None
 
 
+# ── football-data.org (results) ──────────────────────────────────────────────
+
+class TestFootballDataParse:
+    def test_finished_with_scores(self):
+        raw = {'status': 'FINISHED', 'utcDate': '2026-06-15T16:01:00Z',
+               'homeTeam': {'name': 'Spain'}, 'awayTeam': {'name': 'Cape Verde'},
+               'score': {'fullTime': {'home': 3, 'away': 1}}}
+        p = football_data.parse_match(raw)
+        assert p['finished'] is True
+        assert p['home'] == 'Spain' and p['away'] == 'Cape Verde'
+        assert p['home_score'] == 3 and p['away_score'] == 1
+
+    def test_in_play_not_finished(self):
+        raw = {'status': 'IN_PLAY', 'utcDate': '2026-06-15T16:01:00Z',
+               'homeTeam': {'name': 'A'}, 'awayTeam': {'name': 'B'},
+               'score': {'fullTime': {'home': None, 'away': None}}}
+        assert football_data.parse_match(raw)['finished'] is False
+
+    def test_finished_without_scores_not_final(self):
+        raw = {'status': 'FINISHED', 'utcDate': '2026-06-15T16:01:00Z',
+               'homeTeam': {'name': 'A'}, 'awayTeam': {'name': 'B'},
+               'score': {'fullTime': {}}}
+        assert football_data.parse_match(raw)['finished'] is False
+
+
+class TestFootballDataMatching:
+    def _m(self, home, away, score, commence=1000.0, finished=True):
+        return {'home': home, 'away': away, 'home_score': score[0],
+                'away_score': score[1], 'commence_time': commence,
+                'finished': finished}
+
+    def test_exact_match(self):
+        fd = [self._m('Spain', 'Cape Verde', (3, 1))]
+        assert football_data.find_result('Spain', 'Cape Verde', 1000.0, fd) == (3, 1)
+
+    def test_flipped_home_away_swaps_scores(self):
+        # Provider lists Cape Verde as home; map scores back to our orientation.
+        fd = [self._m('Cape Verde', 'Spain', (1, 3))]
+        assert football_data.find_result('Spain', 'Cape Verde', 1000.0, fd) == (3, 1)
+
+    def test_alias_match(self):
+        fd = [self._m('Korea Republic', 'Brazil', (0, 2))]
+        assert football_data.find_result('South Korea', 'Brazil', 1000.0, fd) == (0, 2)
+
+    def test_rejects_far_date(self):
+        fd = [self._m('Spain', 'Cape Verde', (3, 1), commence=1000.0)]
+        assert football_data.find_result(
+            'Spain', 'Cape Verde', 1000.0 + 5 * 86400, fd) is None
+
+    def test_ignores_unfinished(self):
+        fd = [self._m('Spain', 'Cape Verde', (None, None), finished=False)]
+        assert football_data.find_result('Spain', 'Cape Verde', 1000.0, fd) is None
+
+    def test_no_match(self):
+        fd = [self._m('France', 'Brazil', (1, 1))]
+        assert football_data.find_result('Spain', 'Cape Verde', 1000.0, fd) is None
+
+
+class TestFootballDataFetch:
+    def _run(self, coro):
+        import asyncio
+        return asyncio.run(coro)
+
+    def test_fetch_parses_and_sends_token(self):
+        class _Resp:
+            status = 200
+            async def __aenter__(self_): return self_
+            async def __aexit__(self_, *a): return False
+            async def json(self_):
+                return {'matches': [
+                    {'status': 'FINISHED', 'utcDate': '2026-06-15T16:01:00Z',
+                     'homeTeam': {'name': 'Spain'}, 'awayTeam': {'name': 'Brazil'},
+                     'score': {'fullTime': {'home': 1, 'away': 0}}}]}
+            async def text(self_): return ''
+
+        class _Sess:
+            def __init__(self_): self_.headers = None
+            def get(self_, url, headers=None):
+                self_.headers = headers
+                self_.url = url
+                return _Resp()
+        sess = _Sess()
+        out = self._run(football_data.fetch_wc_matches('tok', session=sess))
+        assert len(out) == 1 and out[0]['home'] == 'Spain'
+        assert sess.headers == {'X-Auth-Token': 'tok'}
+        assert sess.url.endswith('/competitions/WC/matches')
+
+
 # ── DB layer ───────────────────────────────────────────────────────────────
 
 GUILD = '111'
@@ -387,13 +512,13 @@ class TestMarket:
 class TestPlaceBet:
     def test_escrow_deducts(self, db):
         mid = _make_market(db)
-        ok, reason, bal = db.bet_place(GUILD, mid, USER_A, 'home', 300, 2.0, 1.0, 1000)
+        ok, reason, bal = db.bet_place(GUILD, mid, USER_A, 'home', 300, 1.0, 1000)
         assert ok and reason == 'ok' and bal == 700
         assert db.bet_get_balance(GUILD, USER_A) == 700
 
     def test_insufficient_balance(self, db):
         mid = _make_market(db)
-        ok, reason, bal = db.bet_place(GUILD, mid, USER_A, 'home', 5000, 2.0, 1.0, 1000)
+        ok, reason, bal = db.bet_place(GUILD, mid, USER_A, 'home', 5000, 1.0, 1000)
         assert ok is False and reason == 'insufficient' and bal == 1000
         # no wager recorded, balance untouched
         assert db.bet_get_wager(mid, USER_A) is None
@@ -401,24 +526,24 @@ class TestPlaceBet:
 
     def test_rebet_refunds_previous_then_charges(self, db):
         mid = _make_market(db)
-        db.bet_place(GUILD, mid, USER_A, 'home', 300, 2.0, 1.0, 1000)  # bal 700
-        ok, _, bal = db.bet_place(GUILD, mid, USER_A, 'away', 200, 4.0, 2.0, 1000)
+        db.bet_place(GUILD, mid, USER_A, 'home', 300, 1.0, 1000)  # bal 700
+        ok, _, bal = db.bet_place(GUILD, mid, USER_A, 'away', 200, 2.0, 1000)
         assert ok and bal == 800  # 700 + 300 refund - 200
         w = db.bet_get_wager(mid, USER_A)
-        assert w.pick == 'away' and w.stake == 200 and w.odds == 4.0
+        assert w.pick == 'away' and w.stake == 200  # odds derived from market
 
     def test_rebet_to_larger_stake_within_refunded_budget(self, db):
         mid = _make_market(db)
-        db.bet_place(GUILD, mid, USER_A, 'home', 1000, 2.0, 1.0, 1000)  # all-in, bal 0
-        ok, _, bal = db.bet_place(GUILD, mid, USER_A, 'home', 1000, 2.0, 2.0, 1000)
+        db.bet_place(GUILD, mid, USER_A, 'home', 1000, 1.0, 1000)  # all-in, bal 0
+        ok, _, bal = db.bet_place(GUILD, mid, USER_A, 'home', 1000, 2.0, 1000)
         assert ok and bal == 0  # refund 1000 then stake 1000 again
 
 
 class TestPool:
     def test_pool_groups_by_pick(self, db):
         mid = _make_market(db)
-        db.bet_place(GUILD, mid, USER_A, 'home', 100, 2.0, 1.0, 1000)
-        db.bet_place(GUILD, mid, USER_B, 'home', 200, 2.0, 1.0, 1000)
+        db.bet_place(GUILD, mid, USER_A, 'home', 100, 1.0, 1000)
+        db.bet_place(GUILD, mid, USER_B, 'home', 200, 1.0, 1000)
         pool = {p.pick: (p.cnt, p.total) for p in db.bet_pool(mid)}
         assert pool['home'] == (2, 300)
 
@@ -426,8 +551,8 @@ class TestPool:
 class TestSettle:
     def test_winner_credited_loser_zero(self, db):
         mid = _make_market(db)
-        db.bet_place(GUILD, mid, USER_A, 'home', 100, 2.0, 1.0, 1000)  # bal 900
-        db.bet_place(GUILD, mid, USER_B, 'away', 100, 4.0, 1.0, 1000)  # bal 900
+        db.bet_place(GUILD, mid, USER_A, 'home', 100, 1.0, 1000)  # bal 900
+        db.bet_place(GUILD, mid, USER_B, 'away', 100, 1.0, 1000)  # bal 900
         rows = db.bet_settle(GUILD, mid, 'home', 2, 1, 5.0)
         by_user = {r[0]: r for r in rows}
         assert by_user[USER_A][4] == 200  # payout 100*2.0
@@ -439,14 +564,14 @@ class TestSettle:
 
     def test_draw_outcome(self, db):
         mid = _make_market(db)
-        db.bet_place(GUILD, mid, USER_A, 'draw', 100, 3.0, 1.0, 1000)
+        db.bet_place(GUILD, mid, USER_A, 'draw', 100, 1.0, 1000)
         db.bet_settle(GUILD, mid, 'draw', 1, 1, 5.0)
         assert db.bet_get_balance(GUILD, USER_A) == 1200  # 900 + 300
 
     def test_profit_leaderboard(self, db):
         mid = _make_market(db)
-        db.bet_place(GUILD, mid, USER_A, 'home', 100, 2.0, 1.0, 1000)
-        db.bet_place(GUILD, mid, USER_B, 'away', 100, 4.0, 1.0, 1000)
+        db.bet_place(GUILD, mid, USER_A, 'home', 100, 1.0, 1000)
+        db.bet_place(GUILD, mid, USER_B, 'away', 100, 1.0, 1000)
         db.bet_settle(GUILD, mid, 'home', 2, 1, 5.0)
         prof = {r.user_id: (r.profit, r.bets, r.wins)
                 for r in db.bet_profit_leaderboard(GUILD)}
@@ -456,7 +581,7 @@ class TestSettle:
     def test_double_settle_is_noop(self, db):
         """The status='open' guard must make a second settle pay nobody."""
         mid = _make_market(db)
-        db.bet_place(GUILD, mid, USER_A, 'home', 100, 2.0, 1.0, 1000)  # bal 900
+        db.bet_place(GUILD, mid, USER_A, 'home', 100, 1.0, 1000)  # bal 900
         first = db.bet_settle(GUILD, mid, 'home', 2, 1, 5.0)
         assert first is not None
         assert db.bet_get_balance(GUILD, USER_A) == 1100  # 900 + 200
@@ -466,7 +591,7 @@ class TestSettle:
 
     def test_settle_after_void_is_noop(self, db):
         mid = _make_market(db)
-        db.bet_place(GUILD, mid, USER_A, 'home', 100, 2.0, 1.0, 1000)  # bal 900
+        db.bet_place(GUILD, mid, USER_A, 'home', 100, 1.0, 1000)  # bal 900
         db.bet_void(GUILD, mid, 4.0)  # refunded → 1000
         assert db.bet_settle(GUILD, mid, 'home', 2, 1, 5.0) is None
         assert db.bet_get_balance(GUILD, USER_A) == 1000  # not paid on top
@@ -475,7 +600,7 @@ class TestSettle:
 class TestVoid:
     def test_refunds_and_cancels(self, db):
         mid = _make_market(db)
-        db.bet_place(GUILD, mid, USER_A, 'home', 300, 2.0, 1.0, 1000)  # bal 700
+        db.bet_place(GUILD, mid, USER_A, 'home', 300, 1.0, 1000)  # bal 700
         refunds = db.bet_void(GUILD, mid, 9.0)
         assert dict(refunds) == {USER_A: 300}
         assert db.bet_get_balance(GUILD, USER_A) == 1000  # fully restored
@@ -483,14 +608,14 @@ class TestVoid:
 
     def test_voided_excluded_from_profit(self, db):
         mid = _make_market(db)
-        db.bet_place(GUILD, mid, USER_A, 'home', 300, 2.0, 1.0, 1000)
+        db.bet_place(GUILD, mid, USER_A, 'home', 300, 1.0, 1000)
         db.bet_void(GUILD, mid, 9.0)
         assert db.bet_profit_leaderboard(GUILD) == []
 
     def test_void_after_settle_is_noop(self, db):
         """A void must not refund on top of a payout already credited."""
         mid = _make_market(db)
-        db.bet_place(GUILD, mid, USER_A, 'home', 100, 2.0, 1.0, 1000)  # bal 900
+        db.bet_place(GUILD, mid, USER_A, 'home', 100, 1.0, 1000)  # bal 900
         db.bet_settle(GUILD, mid, 'home', 2, 1, 5.0)  # paid 200 → 1100
         assert db.bet_void(GUILD, mid, 9.0) is None
         assert db.bet_get_balance(GUILD, USER_A) == 1100  # unchanged
@@ -510,6 +635,83 @@ class TestMarketsOpen:
     def test_guild_isolation(self, db):
         _make_market(db)
         assert db.bet_markets_open('999') == []
+
+
+class TestModTools:
+    def test_resettle_reverses_and_reapplies(self, db):
+        mid = _make_market(db)  # odds home 2.0, away 4.0
+        db.bet_place(GUILD, mid, USER_A, 'home', 100, 1.0, 1000)  # bal 900
+        db.bet_place(GUILD, mid, USER_B, 'away', 100, 1.0, 1000)  # bal 900
+        db.bet_settle(GUILD, mid, 'home', 2, 1, 5.0)
+        assert db.bet_get_balance(GUILD, USER_A) == 1100  # +200
+        assert db.bet_get_balance(GUILD, USER_B) == 900
+        # Correct: it was actually an away win 1-2.
+        rows = db.bet_resettle(GUILD, mid, 'away', 1, 2, 6.0)
+        assert rows is not None
+        assert db.bet_get_balance(GUILD, USER_A) == 900   # 1100 - 200 (reversed)
+        assert db.bet_get_balance(GUILD, USER_B) == 1300  # 900 + 400 (now wins)
+        m = db.bet_market_get(mid)
+        assert m.result == 'away' and m.result_home == 1 and m.result_away == 2
+
+    def test_resettle_only_on_settled(self, db):
+        mid = _make_market(db)
+        assert db.bet_resettle(GUILD, mid, 'home', 1, 0, 5.0) is None  # still open
+
+    def test_adjust_balance_grant_and_floor(self, db):
+        assert db.bet_adjust_balance(GUILD, USER_A, 250, 1000) == 1250
+        assert db.bet_adjust_balance(GUILD, USER_A, -5000, 1000) == 0  # floored
+
+    def test_set_balance(self, db):
+        assert db.bet_set_balance(GUILD, USER_A, 500, 1000) == 500
+        assert db.bet_set_balance(GUILD, USER_A, -10, 1000) == 0
+
+    def test_close_betting(self, db):
+        mid = _make_market(db)
+        assert db.bet_market_close_betting(mid) is True
+        assert db.bet_market_get(mid).bets_closed == 1
+        assert db.bet_market_close_betting(mid) is False  # already closed
+
+    def test_set_odds_and_count_wagers(self, db):
+        mid = _make_market(db)
+        assert db.bet_market_count_wagers(mid) == 0
+        assert db.bet_market_set_odds(mid, 1.5, 3.8, 6.0) is True
+        m = db.bet_market_get(mid)
+        assert (m.odds_home, m.odds_draw, m.odds_away) == (1.5, 3.8, 6.0)
+        db.bet_place(GUILD, mid, USER_A, 'home', 10, 1.0, 1000)
+        assert db.bet_market_count_wagers(mid) == 1
+
+    def test_latest_settled_lookup(self, db):
+        mid = _make_market(db)
+        db.bet_market_set_thread(mid, THREAD)
+        db.bet_settle(GUILD, mid, 'home', 1, 0, 5.0)
+        assert db.bet_market_get_latest_settled_by_thread(
+            GUILD, THREAD).market_id == mid
+        assert db.bet_market_get_latest_settled_by_channel(
+            GUILD, CH).market_id == mid
+        assert db.bet_market_get_latest_settled_by_thread(GUILD, 'nope') is None
+
+
+class TestBetsClosedExecution:
+    """A market with bets_closed=1 rejects bets even before kickoff."""
+
+    def _run(self, coro):
+        import asyncio
+        return asyncio.run(coro)
+
+    def test_closed_flag_blocks_betting(self, db, monkeypatch):
+        from tle.util import codeforces_common as cf_common
+        from tle import constants
+        from tle.cogs.betting import Betting
+        monkeypatch.setattr(cf_common, 'user_db', db)
+        monkeypatch.setattr(constants, 'BET_START_BALANCE', 1000, raising=False)
+        monkeypatch.setattr(constants, 'BET_MIN_STAKE', 1, raising=False)
+        cog = Betting(bot=None)
+        mid = _make_market(db, commence=1e12)  # far future → not kickoff-closed
+        db.bet_market_close_betting(mid)
+        market = db.bet_market_get(mid)
+        user = type('U', (), {'id': USER_A})()
+        status, _ = self._run(cog._execute_bet(GUILD, market, user, 'home', '50'))
+        assert status == 'closed'
 
 
 class TestBalanceLeaderboard:
@@ -539,13 +741,16 @@ class TestMigration:
             'odds_away, created_by, created_at) '
             'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
             ('1', '2', 'e', 'soccer_epl', 'A', 'B', 0.0, 2.0, 3.0, 4.0, '9', 0.0))
-        # thread_id column exists
-        conn.execute('UPDATE bet_market SET thread_id = ? WHERE event_id = ?',
-                     ('77', 'e'))
+        # thread_id + bets_closed columns exist
+        conn.execute('UPDATE bet_market SET thread_id = ?, bets_closed = 1 '
+                     'WHERE event_id = ?', ('77', 'e'))
+        # bet_wager has no odds/payout columns (derived from the frozen market)
         conn.execute(
-            'INSERT INTO bet_wager (market_id, user_id, pick, stake, odds, placed_at) '
-            'VALUES (?, ?, ?, ?, ?, ?)', (1, '10', 'home', 100, 2.0, 0.0))
+            'INSERT INTO bet_wager (market_id, user_id, pick, stake, placed_at) '
+            'VALUES (?, ?, ?, ?, ?)', (1, '10', 'home', 100, 0.0))
         assert conn.execute('SELECT COUNT(*) FROM bet_wager').fetchone()[0] == 1
+        cols = [r[1] for r in conn.execute('PRAGMA table_info(bet_wager)')]
+        assert 'odds' not in cols and 'payout' not in cols
         conn.close()
 
 
@@ -825,6 +1030,62 @@ class TestAutoOpen:
         assert db.bet_markets_open(GUILD) == []
 
 
+class TestAutoSettleFootballData:
+    """The settle poller reads results from football-data.org (free) and
+    settles any market past kickoff whose game has finished."""
+
+    def _run(self, coro):
+        import asyncio
+        return asyncio.run(coro)
+
+    def test_settles_from_football_data(self, db, monkeypatch):
+        import time as _t
+        from tle.util import codeforces_common as cf_common
+        from tle.util import football_data as fd
+        from tle import constants
+        from tle.cogs.betting import Betting
+        monkeypatch.setattr(cf_common, 'user_db', db)
+        monkeypatch.setattr(constants, 'BET_START_BALANCE', 1000, raising=False)
+        monkeypatch.setattr(constants, 'FOOTBALL_DATA_API_KEY', 'fdkey',
+                            raising=False)
+        mid = db.bet_market_create(
+            GUILD, '222', 'evtWC', 'soccer_fifa_world_cup', 'Spain',
+            'Cape Verde', _t.time() - 100, 1.25, 5.5, 12.0, USER_A, 0.0)
+        db.bet_place(GUILD, mid, USER_A, 'home', 100, 1.0, 1000)  # bal 900
+
+        channel = _FakeChannel(222)
+        bot = _FakeBot([_FakeGuild(int(GUILD), channel)], {222: channel})
+        cog = Betting(bot)
+
+        async def _fake_fetch(token, **kw):
+            return [{'home': 'Spain', 'away': 'Cape Verde',
+                     'commence_time': _t.time() - 100, 'finished': True,
+                     'home_score': 3, 'away_score': 1}]
+        monkeypatch.setattr(fd, 'fetch_wc_matches', _fake_fetch)
+
+        self._run(cog._settle_via_football_data())
+        m = db.bet_market_get(mid)
+        assert m.status == 'settled' and m.result == 'home'
+        assert m.result_home == 3 and m.result_away == 1
+        # payout = round(100 * 1.25) = 125 → 900 + 125
+        assert db.bet_get_balance(GUILD, USER_A) == 1025
+
+    def test_no_key_no_settle(self, db, monkeypatch):
+        import time as _t
+        from tle.util import codeforces_common as cf_common
+        from tle import constants
+        from tle.cogs.betting import Betting
+        monkeypatch.setattr(cf_common, 'user_db', db)
+        monkeypatch.setattr(constants, 'FOOTBALL_DATA_API_KEY', None,
+                            raising=False)
+        mid = db.bet_market_create(
+            GUILD, '222', 'evtWC', 'soccer_fifa_world_cup', 'Spain',
+            'Cape Verde', _t.time() - 100, 1.25, 5.5, 12.0, USER_A, 0.0)
+        cog = Betting(bot=None)
+        self._run(cog._settle_via_football_data())  # no key → no-op
+        assert db.bet_market_get(mid).status == 'open'
+
+
 class TestWatchMaxAge:
     @pytest.fixture
     def cog(self, db, monkeypatch):
@@ -897,7 +1158,7 @@ class TestStartupGuards:
             called['watch'] = True
         monkeypatch.setattr(cog, '_watch_pending', _w)
         # Invoke the task body (conftest wraps it in a fake task-spec).
-        self._run(cog._engine_task._func(cog, None))
+        self._run(cog._watch_task._func(cog, None))
         assert called['watch'] is False  # short-circuited before any DB work
 
     def test_on_message_ignored_when_db_uninitialized(self, monkeypatch):
