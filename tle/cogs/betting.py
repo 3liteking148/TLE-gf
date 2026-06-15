@@ -46,11 +46,12 @@ _MATCH_LIST_LIMIT = 15
 _MATCH_CACHE_MAX_AGE = 10 * 60
 # Engine tick cadence (auto-open watcher + auto-settle poller share one task).
 _ENGINE_INTERVAL = 15 * 60
-# Adaptive odds-fetch freshness: refresh every tick when a game is approaching
-# its open window, else just keep the schedule loosely fresh. Keeps API credits
-# down — most of the day there is no game within the lead window.
-_WC_TTL_ACTIVE = 15 * 60
-_WC_TTL_IDLE = 3 * 3600
+# How stale the cached World Cup schedule may be before a refetch. Odds are
+# frozen at open and never re-read, and kickoff times are stable, so the only
+# reason to refresh is to discover newly-listed fixtures — a slow cadence is
+# plenty. Fresh odds at the moment of opening are guaranteed separately by the
+# force-fresh (max_age 0) path in _watch_max_age.
+_WC_TTL_IDLE = 6 * 3600
 
 _PICK_ALIASES = {
     'home': 'home', 'h': 'home', '1': 'home',
@@ -199,12 +200,6 @@ def _utc_today():
     return datetime.now(timezone.utc).strftime('%Y-%m-%d')
 
 
-def _is_mod(member):
-    roles = getattr(member, 'roles', None) or []
-    return any(r.name in (constants.TLE_ADMIN, constants.TLE_MODERATOR)
-               for r in roles)
-
-
 def _api_key():
     return getattr(constants, 'ODDS_API_KEY', None)
 
@@ -320,6 +315,25 @@ class Betting(commands.Cog):
         name = f'⚽ {market.home_team} vs {market.away_team} — bets'
         return name[:100]
 
+    def _open_announce_embed(self, event):
+        """The 'betting open' announcement, built from a raw odds event so it
+        can be posted BEFORE the market row exists (send-first, so a failed
+        send never orphans a market)."""
+        o = event['odds']
+        kickoff = int(event['commence_time'])
+        lines = [
+            f'**1** · {event["home_team"]} win — **{o["home"]:.2f}**',
+            f'**X** · Draw — **{o["draw"]:.2f}**',
+            f'**2** · {event["away_team"]} win — **{o["away"]:.2f}**',
+            '',
+            f'Kickoff: <t:{kickoff}:F> (<t:{kickoff}:R>)',
+            '\n👇 **Place your bets in the thread below** — '
+            'betting closes at kickoff.',
+        ]
+        return discord.Embed(
+            title=f'⚽ {event["home_team"]} vs {event["away_team"]}',
+            description='\n'.join(lines), color=0x2ecc71)
+
     # ── Group ──────────────────────────────────────────────────────────
 
     @commands.group(name='bet', aliases=['betting', 'prediction', 'pred'],
@@ -426,10 +440,12 @@ class Betting(commands.Cog):
                 ctx.guild.id, event['event_id']):
             raise BettingCogError('There is already an open market on that match.')
 
+        # Send-first: only persist the market once the announcement lands, so a
+        # failed send never leaves an orphan market with no Discord presence.
+        msg = await ctx.send(embed=self._open_announce_embed(event))
         market_id = self._create_market(ctx.guild.id, ctx.channel.id, event)
-        market = cf_common.user_db.bet_market_get(market_id)
-        msg = await ctx.send(embed=self._market_embed(market))
         cf_common.user_db.bet_market_set_message(market_id, msg.id)
+        market = cf_common.user_db.bet_market_get(market_id)
         thread = await self._create_thread(market_id, msg, market)
         if thread is None:
             await ctx.send(embed=discord_common.embed_alert(
@@ -567,6 +583,8 @@ class Betting(commands.Cog):
         parsed = parse_bet_message(content)
         if parsed is None:
             return
+        if cf_common.user_db is None:
+            return  # startup window — DB not initialized yet
         market = cf_common.user_db.bet_market_get_active_by_thread(
             message.guild.id, message.channel.id)
         if market is None:
@@ -810,6 +828,10 @@ class Betting(commands.Cog):
     @tasks.task_spec(name='BetEngine',
                      waiter=tasks.Waiter.fixed_delay(_ENGINE_INTERVAL))
     async def _engine_task(self, _):
+        # The first tick fires immediately on start, which can race the bot's
+        # on_ready that initializes cf_common.user_db. Skip until it's ready.
+        if cf_common.user_db is None:
+            return
         try:
             await self._watch_pending()
         except Exception:
@@ -834,9 +856,12 @@ class Betting(commands.Cog):
     def _watch_max_age(self, now, configured):
         """How stale the cached odds may be before the watcher refetches.
 
-        Forces a fresh fetch (0) when a configured guild has a game inside the
-        open window with no market yet — we need current odds to freeze. Else
-        refreshes often only while a game is approaching, and rarely otherwise.
+        Forces a fresh fetch (0) only when a configured guild has a game inside
+        the open window with no market yet — that is the one moment we need
+        current odds to freeze. Once the market is open its odds are frozen and
+        never re-read, so there is nothing fast polling would buy; fall back to
+        a slow schedule refresh. (This keeps credit use bounded to ~1 fetch per
+        game instead of one every tick across each game's whole 2h window.)
         """
         if not self._wc_events:
             return 0
@@ -847,10 +872,6 @@ class Betting(commands.Cog):
                     if cf_common.user_db.bet_market_get_open_for_event(
                             guild_id, e['event_id']) is None:
                         return 0
-        upcoming = [e['commence_time'] - now for e in self._wc_events
-                    if e['commence_time'] > now]
-        if upcoming and min(upcoming) <= lead + _ENGINE_INTERVAL:
-            return _WC_TTL_ACTIVE
         return _WC_TTL_IDLE
 
     async def _watch_pending(self):
@@ -877,6 +898,11 @@ class Betting(commands.Cog):
                                    event.get('event_id'), guild_id, exc_info=True)
 
     async def _auto_open_or_thread(self, guild_id, channel_id, event, now):
+        if event['commence_time'] <= now:
+            # Already kicked off — you can't bet, so never open a market or make
+            # a thread for it (belt-and-suspenders; _watch_pending already
+            # filters to is_due, i.e. strictly-future games).
+            return
         market = cf_common.user_db.bet_market_get_open_for_event(
             guild_id, event['event_id'])
         if market is None:
@@ -892,15 +918,18 @@ class Betting(commands.Cog):
             logger.warning('configured bet channel %s missing for guild %s',
                            channel_id, guild_id)
             return
-        market_id = self._create_market(guild_id, channel_id, event)
-        market = cf_common.user_db.bet_market_get(market_id)
+        # Send-first: a failed announcement send must not orphan a market row
+        # (which the watcher would then never recover). Persist only on success;
+        # the next tick re-opens cleanly if this send fails.
         try:
-            msg = await channel.send(embed=self._market_embed(market))
+            msg = await channel.send(embed=self._open_announce_embed(event))
         except discord.HTTPException:
-            logger.warning('failed to post auto market %s', market_id,
-                           exc_info=True)
+            logger.warning('failed to post auto market for %s in guild %s',
+                           event.get('event_id'), guild_id, exc_info=True)
             return
+        market_id = self._create_market(guild_id, channel_id, event)
         cf_common.user_db.bet_market_set_message(market_id, msg.id)
+        market = cf_common.user_db.bet_market_get(market_id)
         await self._create_thread(market_id, msg, market)
         logger.info('Auto-opened market %s (%s vs %s) in guild %s',
                     market_id, event['home_team'], event['away_team'], guild_id)

@@ -754,6 +754,33 @@ class TestAutoOpen:
         self._run(cog._watch_pending())
         assert db.bet_markets_open(GUILD) == []
 
+    def test_does_not_open_already_started_game(self, setup, monkeypatch):
+        """A game that has already kicked off gets NO market and NO thread —
+        you can't bet on it (e.g. Spain vs Cape Verde already in progress)."""
+        import time as _t
+        cog, db, channel = setup
+        ev = _wc_event(commence=_t.time() - 600)  # kicked off 10 min ago
+        self._arm_events(cog, [ev], monkeypatch)
+        self._run(cog._watch_pending())
+        assert db.bet_markets_open(GUILD) == []
+        assert len(channel.sent) == 0  # nothing posted, no thread
+
+    def test_no_thread_for_started_market_missing_one(self, setup, monkeypatch):
+        """A market that exists without a thread but has already kicked off
+        must NOT get a thread attached retroactively."""
+        import time as _t
+        cog, db, channel = setup
+        now = _t.time()
+        # Open market in the DB, started, with no thread/message.
+        db.bet_market_create(GUILD, '222', 'evtWC', 'soccer_fifa_world_cup',
+                             'Spain', 'Cape Verde', now - 600,
+                             1.25, 5.5, 12.0, USER_A, 0.0)
+        ev = _wc_event(commence=now - 600)
+        self._run(cog._auto_open_or_thread(int(GUILD), '222', ev, now))
+        market = db.bet_market_get_open_for_event(GUILD, 'evtWC')
+        assert market.thread_id is None  # no thread attached post-kickoff
+        assert len(channel.sent) == 0
+
     def test_idempotent_no_double_open(self, setup, monkeypatch):
         import time as _t
         cog, db, channel = setup
@@ -763,6 +790,22 @@ class TestAutoOpen:
         self._run(cog._watch_pending())  # second pass
         assert len(db.bet_markets_open(GUILD)) == 1
         assert len(channel.sent) == 1
+
+    def test_failed_send_does_not_orphan_market(self, setup, monkeypatch):
+        """If the announcement send fails, NO market row is persisted, so the
+        next tick can re-open cleanly (send-first ordering)."""
+        import time as _t
+        import discord
+        cog, db, channel = setup
+        ev = _wc_event(commence=_t.time() + 3600)
+        self._arm_events(cog, [ev], monkeypatch)
+
+        async def _boom(*a, **kw):
+            raise discord.HTTPException()
+        monkeypatch.setattr(channel, 'send', _boom)
+
+        self._run(cog._watch_pending())
+        assert db.bet_markets_open(GUILD) == []  # no orphan
 
     def test_skips_when_no_channel_configured(self, db, monkeypatch):
         import time as _t
@@ -805,14 +848,14 @@ class TestWatchMaxAge:
 
     def test_due_but_already_open_not_forced(self, cog, db):
         import time as _t
-        from tle.cogs.betting import _WC_TTL_ACTIVE
+        from tle.cogs.betting import _WC_TTL_IDLE
         now = _t.time()
         db.bet_market_create(GUILD, '222', 'evtWC', 'soccer_fifa_world_cup',
                              'Spain', 'Cape Verde', now + 3600,
                              1.25, 5.5, 12.0, USER_A, 0.0)
         cog._wc_events = [_wc_event(commence=now + 3600)]
-        # not forced (0); a game is approaching → ACTIVE refresh
-        assert cog._watch_max_age(now, {GUILD: '222'}) == _WC_TTL_ACTIVE
+        # Market already open → odds frozen → no fast polling, fall back to idle.
+        assert cog._watch_max_age(now, {GUILD: '222'}) == _WC_TTL_IDLE
 
     def test_far_game_idle(self, cog):
         import time as _t
@@ -820,6 +863,52 @@ class TestWatchMaxAge:
         now = _t.time()
         cog._wc_events = [_wc_event(commence=now + 10 * 3600)]  # far away
         assert cog._watch_max_age(now, {GUILD: '222'}) == _WC_TTL_IDLE
+
+
+class _FakeBetMessage:
+    def __init__(self, content, channel_id=333):
+        self.content = content
+        self.author = type('A', (), {'bot': False, 'id': 1})()
+        self.guild = type('G', (), {'id': int(GUILD)})()
+        self.channel = type('C', (), {'id': channel_id})()
+        self.reactions = []
+
+    async def add_reaction(self, emoji):
+        self.reactions.append(emoji)
+
+
+class TestStartupGuards:
+    """The engine's first tick fires immediately and can race the bot's
+    on_ready that sets cf_common.user_db — neither the engine nor the message
+    listener may crash on a None user_db."""
+
+    def _run(self, coro):
+        import asyncio
+        return asyncio.run(coro)
+
+    def test_engine_skips_when_db_uninitialized(self, monkeypatch):
+        from tle.util import codeforces_common as cf_common
+        from tle.cogs.betting import Betting
+        monkeypatch.setattr(cf_common, 'user_db', None)
+        cog = Betting(bot=None)
+        called = {'watch': False}
+
+        async def _w():
+            called['watch'] = True
+        monkeypatch.setattr(cog, '_watch_pending', _w)
+        # Invoke the task body (conftest wraps it in a fake task-spec).
+        self._run(cog._engine_task._func(cog, None))
+        assert called['watch'] is False  # short-circuited before any DB work
+
+    def test_on_message_ignored_when_db_uninitialized(self, monkeypatch):
+        from tle.util import codeforces_common as cf_common
+        from tle.util import discord_common
+        from tle.cogs.betting import Betting
+        monkeypatch.setattr(cf_common, 'user_db', None)
+        monkeypatch.setattr(discord_common, '_BOT_PREFIX', ';', raising=False)
+        cog = Betting(bot=None)
+        # A valid-looking bet message must not raise despite user_db=None.
+        self._run(cog.on_message(_FakeBetMessage('home 100')))
 
 
 class TestConfiguredGuilds:
