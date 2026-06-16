@@ -2,6 +2,16 @@
 
 TLE-gf is a fork of [TLE](https://github.com/cheran-senthil/TLE), a Discord bot for competitive programming communities. It integrates with Codeforces for problem recommendations, rating tracking, duels, and training. The bot uses discord.py v2, SQLite for persistence, and is structured around cogs (modular command groups).
 
+## File size limit
+
+**Hard rule: every file must be under 500 lines.** This is non-negotiable and applies to ALL files — source, tests, helpers, and scripts. When a file approaches 500 lines, split it before adding more. How to split, by layer:
+
+- **Cogs**: extract cohesive command groups into mixin cogs (the cog class inherits from several `*Mixin` classes) and move pure/module-level helpers into `_`-prefixed sibling modules (e.g. `_minigame_akari.py`, `_starboard_render.py`).
+- **DB layer**: extract method groups into `*DbMixin` classes in their own file. `UserDbConn` already composes `MinigameDbMixin`, `StarboardDbMixin`, `MigrationDbMixin` — follow that pattern.
+- **Tests**: split by feature area into separate `test_*.py` files; pytest auto-collects them. Shared fixtures/fakes go in an imported helper module (not `conftest.py` unless they're true fixtures).
+
+Splits MUST preserve public behavior: keep cog class names, `setup()`, and command/alias names stable, and re-export any moved symbol that something else imports. Run the test suite after every split.
+
 ## What was built
 
 ### DB Migration System (`tle/util/db/upgrades.py`, `tle/util/db/user_db_upgrades.py`)
