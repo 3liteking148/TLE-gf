@@ -19,7 +19,6 @@ Commands (group `;bet`, alias `;prediction`):
   ;bet balance [@user]      show a wallet balance
   ;bet daily                claim the daily allowance
   ;bet transfer @from @to <amt> move coins between users                 (admin)
-  ;beg @user [amount]       ask someone to give you betting coins
   ;bet notify               toggle the configured notification role
   ;bet notifyrole @role     set role pinged when markets open             (admin)
   ;bet leaderboard [profit] richest wallets / net profit
@@ -72,7 +71,6 @@ _SCHEDULE_TTL = 6 * 3600
 _DUPLICATE_MATCH_WINDOW = 6 * 3600
 # Coalesce rapid thread bets into one first-message edit.
 _POOL_REFRESH_DELAY = 5
-_BEG_TIMEOUT = 60
 
 _PICK_ALIASES = {
     'home': 'home', 'h': 'home', '1': 'home',
@@ -417,16 +415,6 @@ def _role_mentions():
         return None
     try:
         return allowed(everyone=False, users=False, roles=True, replied_user=False)
-    except TypeError:
-        return None
-
-
-def _user_mentions():
-    allowed = getattr(discord, 'AllowedMentions', None)
-    if allowed is None:
-        return None
-    try:
-        return allowed(everyone=False, users=True, roles=False, replied_user=False)
     except TypeError:
         return None
 
@@ -1448,100 +1436,6 @@ class Betting(commands.Cog):
             await ctx.send(embed=discord_common.embed_alert(
                 f'Already claimed today. Balance: **{balance}** {_COIN}. '
                 'Resets at 00:00 UTC.'))
-
-    @commands.command(name='beg', brief='Ask someone for betting coins',
-                      usage='@user [amount]')
-    async def beg(self, ctx, donor: discord.Member, *, suggested: str = None):
-        if donor.id == ctx.author.id:
-            raise BettingCogError('You cannot beg yourself.')
-        if getattr(donor, 'bot', False):
-            raise BettingCogError('You cannot beg bots for coins.')
-        if self.bot is None:
-            raise BettingCogError('Begging is not available right now.')
-
-        donor_balance = cf_common.user_db.bet_ensure_wallet(
-            ctx.guild.id, donor.id, constants.BET_START_BALANCE)
-        suggestion = ''
-        if suggested:
-            suggested_amount = parse_amount(suggested, donor_balance, 1)
-            if suggested_amount is None:
-                raise BettingCogError(
-                    'Invalid suggested amount. Use a positive whole number, '
-                    'a percentage like `50%`, or `all`.')
-            suggestion = (
-                f'\nSuggested amount: **{suggested_amount}** {_COIN}. '
-                'You can still choose a different amount.')
-
-        requester = discord.utils.escape_markdown(ctx.author.display_name)
-        donor_name = discord.utils.escape_markdown(donor.display_name)
-        await ctx.send(
-            content=donor.mention,
-            embed=discord_common.embed_neutral(
-                f'`{requester}` is begging `{donor_name}` for betting coins.'
-                f'{suggestion}\n'
-                f'{donor.mention}, reply in this channel with an amount to give '
-                f'(`100`, `50%`, or `all`), or `no` to decline. '
-                f'This expires in {_BEG_TIMEOUT}s.'),
-            allowed_mentions=_user_mentions())
-
-        end_time = asyncio.get_running_loop().time() + _BEG_TIMEOUT
-
-        def check(message):
-            return (
-                getattr(message, 'guild', None) is not None
-                and str(message.guild.id) == str(ctx.guild.id)
-                and str(message.channel.id) == str(ctx.channel.id)
-                and str(message.author.id) == str(donor.id)
-                and not getattr(message.author, 'bot', False)
-            )
-
-        while True:
-            timeout = end_time - asyncio.get_running_loop().time()
-            if timeout <= 0:
-                await ctx.send(embed=discord_common.embed_neutral(
-                    f'Beg request expired. `{donor_name}` did not respond.'))
-                return
-            try:
-                message = await self.bot.wait_for(
-                    'message', timeout=timeout, check=check)
-            except asyncio.TimeoutError:
-                await ctx.send(embed=discord_common.embed_neutral(
-                    f'Beg request expired. `{donor_name}` did not respond.'))
-                return
-
-            text = (message.content or '').strip()
-            if text.startswith(_bot_prefix()):
-                continue
-            lowered = text.lower()
-            if lowered in {'no', 'n', 'decline', 'deny', 'cancel', '0'}:
-                await ctx.send(embed=discord_common.embed_neutral(
-                    f'`{donor_name}` declined the beg request.'))
-                return
-
-            donor_balance = cf_common.user_db.bet_ensure_wallet(
-                ctx.guild.id, donor.id, constants.BET_START_BALANCE)
-            amount = parse_amount(text, donor_balance, 1)
-            if amount is None:
-                await ctx.send(embed=discord_common.embed_alert(
-                    f'Invalid amount. `{donor_name}`, reply with a positive whole '
-                    'number, a percentage like `50%`, `all`, or `no`.'))
-                continue
-            ok, reason, donor_balance, requester_balance = cf_common.user_db.bet_transfer(
-                ctx.guild.id, donor.id, ctx.author.id, amount,
-                constants.BET_START_BALANCE, actor_id=donor.id)
-            if not ok:
-                if reason == 'insufficient':
-                    await ctx.send(embed=discord_common.embed_alert(
-                        f'Insufficient balance. `{donor_name}` has '
-                        f'**{donor_balance}** {_COIN}.'))
-                    continue
-                raise BettingCogError('Beg transfer failed.')
-
-            await ctx.send(embed=discord_common.embed_success(
-                f'`{donor_name}` gave `{requester}` **{amount}** {_COIN}.\n'
-                f'`{donor_name}`: **{donor_balance}** {_COIN}. '
-                f'`{requester}`: **{requester_balance}** {_COIN}.'))
-            return
 
     @bet.command(name='transfer', aliases=['send', 'pay'],
                  brief='Move coins from one user to another (admin)',
