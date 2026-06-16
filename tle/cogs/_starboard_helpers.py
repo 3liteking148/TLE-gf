@@ -3,6 +3,22 @@ import re
 
 _JUMP_URL_PATTERN = re.compile(r'discord(?:app)?\.com/channels/(\d+)/(\d+)/(\d+)')
 
+# Matches custom Discord emojis: <:name:id> or <a:name:id>
+_CUSTOM_EMOJI_RE = re.compile(r'<a?:\w+:\d+>$')
+
+
+def _looks_like_emoji(s):
+    """Return True if *s* looks like a Discord emoji rather than a username.
+
+    Covers two cases:
+    - Custom server emojis: ``<:name:123>`` / ``<a:name:123>``
+    - Unicode emojis: any short string containing non-ASCII characters
+      (Discord usernames are ASCII-only since the 2023 migration).
+    """
+    if _CUSTOM_EMOJI_RE.match(s):
+        return True
+    return any(ord(c) > 127 for c in s)
+
 
 def _emoji_str(emoji):
     """Normalize a discord emoji to its string representation."""
