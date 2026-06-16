@@ -2356,10 +2356,20 @@ class UserDbConn(MinigameDbMixin, StarboardDbMixin, MigrationDbMixin):
             return (True, 'ok', new_sender, new_receiver)
 
     def bet_balance_leaderboard(self, guild_id):
-        """Return [(user_id, balance)] for the guild, richest first."""
+        """Return [(user_id, balance)] for the guild, richest first.
+
+        Only users who have actually placed at least one wager in the guild
+        are included; wallets created via daily claims or balance checks
+        without any bets are excluded.
+        """
         return self.conn.execute(
-            'SELECT user_id, balance FROM bet_wallet WHERE guild_id = ? '
-            'ORDER BY balance DESC, user_id ASC',
+            'SELECT wal.user_id, wal.balance FROM bet_wallet wal '
+            'WHERE wal.guild_id = ? AND EXISTS ('
+            '    SELECT 1 FROM bet_wager w '
+            '    JOIN bet_market m ON m.market_id = w.market_id '
+            '    WHERE m.guild_id = wal.guild_id AND w.user_id = wal.user_id'
+            ') '
+            'ORDER BY wal.balance DESC, wal.user_id ASC',
             (str(guild_id),)
         ).fetchall()
 

@@ -968,13 +968,22 @@ class TestBetsClosedExecution:
 
 class TestBalanceLeaderboard:
     def test_orders_by_balance_desc(self, db):
-        db.bet_ensure_wallet(GUILD, USER_A, 1000)
-        db.bet_ensure_wallet(GUILD, USER_B, 1000)
+        mid = _make_market(db)
+        db.bet_place(GUILD, mid, USER_A, 'home', 50, 0.0, 1000)
+        db.bet_place(GUILD, mid, USER_B, 'away', 50, 0.0, 1000)
         db.conn.execute('UPDATE bet_wallet SET balance = 1500 WHERE user_id = ?',
                         (USER_B,))
         db.conn.commit()
         rows = db.bet_balance_leaderboard(GUILD)
         assert [r.user_id for r in rows] == [USER_B, USER_A]
+
+    def test_excludes_wallets_without_bets(self, db):
+        # USER_A has only ever claimed a wallet; USER_B has placed a bet.
+        db.bet_ensure_wallet(GUILD, USER_A, 1000)
+        mid = _make_market(db)
+        db.bet_place(GUILD, mid, USER_B, 'home', 50, 0.0, 1000)
+        rows = db.bet_balance_leaderboard(GUILD)
+        assert [r.user_id for r in rows] == [USER_B]
 
 
 # ── Migration ──────────────────────────────────────────────────────────────
