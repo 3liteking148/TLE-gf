@@ -38,7 +38,6 @@ itself: the ``bet`` group and all ``@bet.command`` callbacks in one class body
 """
 import asyncio
 import logging
-import random
 
 import discord
 from discord.ext import commands
@@ -101,7 +100,6 @@ class Betting(BetWalletCmdImplMixin, BetCommandImplMixin, BetFormatMixin,
         self._close_timers = {}
         # market_id -> asyncio.Task: coalesced thread intro pool refresh.
         self._pool_refresh_timers = {}
-        self._steal_confirmations = {}  # (guild, user) -> pending steal target
 
     @commands.Cog.listener()
     @discord_common.once
@@ -135,7 +133,6 @@ class Betting(BetWalletCmdImplMixin, BetCommandImplMixin, BetFormatMixin,
             if not task.done():
                 task.cancel()
         self._pool_refresh_timers.clear()
-        self._steal_confirmations.clear()
 
     # ── Group ──────────────────────────────────────────────────────────
 
@@ -302,18 +299,6 @@ class Betting(BetWalletCmdImplMixin, BetCommandImplMixin, BetFormatMixin,
     @bet.command(name='daily', aliases=['claim'], brief='Claim the daily allowance')
     async def daily(self, ctx):
         await self._cmd_daily(ctx)
-
-    # Provenance: the gated `;bet steal` / `;bet rob` command was originally
-    # authored by robert9524 <robertkocharyan9524@gmail.com> in commit d4307ec
-    # ("Add gated betting steal command", 2026-06-17) and ported onto the split
-    # betting cog here. Credit where due. :)
-    @bet.group(name='steal', aliases=['rob'], invoke_without_command=True, brief='Stage a capped once/day steal attempt', usage='@user')
-    async def steal(self, ctx, member: discord.Member = None):
-        await self._cmd_steal(ctx, member)
-
-    @steal.command(name='confirm', aliases=['yes'])
-    async def steal_confirm(self, ctx):
-        await self._cmd_steal_confirm(ctx, random.random() < 0.5)
 
     @bet.command(name='transfer', aliases=['send', 'pay'],
                  brief='Move coins from one user to another (admin)',
