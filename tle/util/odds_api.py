@@ -112,9 +112,40 @@ def parse_score_event(raw):
             'home_score': home_score, 'away_score': away_score}
 
 
-async def _get_json(session, url, params):
+def parse_quota_headers(headers):
+    """Pull The Odds API rate-limit headers into ints.
+
+    The API returns ``x-requests-remaining`` / ``x-requests-used`` /
+    ``x-requests-last`` on every response — including the quota-free
+    ``/sports`` endpoint — so the live monthly balance can be read at no cost.
+
+    Returns ``{'remaining': int|None, 'used': int|None, 'last': int|None}``;
+    a field is ``None`` when its header is absent or non-numeric. Lookup is
+    case-insensitive so it works on both a plain ``dict`` and aiohttp's
+    ``CIMultiDict``.
+    """
+    lowered = {str(k).lower(): v for k, v in dict(headers or {}).items()}
+
+    def _as_int(name):
+        try:
+            return int(float(lowered.get(name)))
+        except (TypeError, ValueError):
+            return None
+
+    return {
+        'remaining': _as_int('x-requests-remaining'),
+        'used': _as_int('x-requests-used'),
+        'last': _as_int('x-requests-last'),
+    }
+
+
+async def _get_json(session, url, params, *, headers_out=None):
     try:
         async with session.get(url, params=params) as resp:
+            # Capture headers before the status check so quota is still
+            # readable on an error response (e.g. HTTP 429 → remaining 0).
+            if headers_out is not None:
+                headers_out.update(getattr(resp, 'headers', None) or {})
             if resp.status != 200:
                 body = await resp.text()
                 raise OddsApiError(f'HTTP {resp.status}: {body[:200]}')
@@ -123,15 +154,26 @@ async def _get_json(session, url, params):
         raise OddsApiError(f'request failed: {e}') from e
 
 
-async def fetch_sports(api_key, *, session=None, base_url=BASE_URL):
+async def fetch_sports(api_key, *, session=None, base_url=BASE_URL,
+                       with_quota=False):
     """Fetch in-season sports. The Odds API documents this endpoint as
-    quota-free, so it is suitable for key checks."""
+    quota-free, so it is suitable for key checks.
+
+    With ``with_quota=True`` returns ``(sports, quota)`` where ``quota`` is the
+    parsed rate-limit headers (see :func:`parse_quota_headers`) — the ``/sports``
+    response carries the live monthly balance even though the call is free.
+    """
     own = session is None
     if own:
         session = aiohttp.ClientSession()
     try:
         url = f'{base_url}/sports'
-        return await _get_json(session, url, {'apiKey': api_key})
+        headers = {}
+        data = await _get_json(session, url, {'apiKey': api_key},
+                               headers_out=headers)
+        if with_quota:
+            return data, parse_quota_headers(headers)
+        return data
     finally:
         if own:
             await session.close()

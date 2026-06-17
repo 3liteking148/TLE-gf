@@ -35,10 +35,11 @@ def _raw_event(**over):
 
 
 class _FakeResp:
-    def __init__(self, data, status=200, text=''):
+    def __init__(self, data, status=200, text='', headers=None):
         self._data = data
         self.status = status
         self._text = text
+        self.headers = headers or {}
 
     async def __aenter__(self):
         return self
@@ -54,13 +55,14 @@ class _FakeResp:
 
 
 class _FakeSession:
-    def __init__(self, data):
+    def __init__(self, data, headers=None):
         self._data = data
         self.calls = []
+        self._headers = headers or {}
 
     def get(self, url, params=None):
         self.calls.append((url, params))
-        return _FakeResp(self._data)
+        return _FakeResp(self._data, headers=self._headers)
 
 
 GUILD = '111'

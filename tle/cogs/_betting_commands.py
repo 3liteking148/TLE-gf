@@ -98,7 +98,8 @@ class BetCommandImplMixin:
             lines.append('❌ `ODDS_API_KEY` is not set.')
         else:
             try:
-                sports = await odds_api.fetch_sports(api_key)
+                sports, quota = await odds_api.fetch_sports(
+                    api_key, with_quota=True)
             except odds_api.OddsApiError as e:
                 lines.append(f'❌ `ODDS_API_KEY` failed: `{_short_error(e)}`')
             else:
@@ -111,6 +112,13 @@ class BetCommandImplMixin:
                 else:
                     title = wc.get('title') or odds_api.WORLD_CUP_SPORT_KEY
                     lines.append(f'✅ `ODDS_API_KEY` works; `{title}` is active.')
+                remaining = quota.get('remaining')
+                if remaining is not None:
+                    used = quota.get('used')
+                    usage = f' ({used} used)' if used is not None else ''
+                    lines.append(
+                        f'📊 Odds API: **{remaining}** request(s) remaining '
+                        f'this month{usage}.')
 
         fd_key = _football_data_key()
         if not fd_key:
@@ -127,7 +135,8 @@ class BetCommandImplMixin:
                     f'{len(matches)} World Cup match(es) returned.')
 
         lines.append('\nOdds check uses The Odds API `/sports` endpoint '
-                     '(documented quota-free).')
+                     '(quota-free); the remaining count is read from its '
+                     'response headers at no cost.')
         await ctx.send(embed=discord_common.embed_neutral('\n'.join(lines)))
 
     # ── Matches / manual open ──────────────────────────────────────────

@@ -23,10 +23,13 @@ class TestCheckCommand:
         monkeypatch.setattr(constants, 'FOOTBALL_DATA_API_KEY', 'fd-secret',
                             raising=False)
 
-        async def _sports(api_key):
+        async def _sports(api_key, *, with_quota=False):
             assert api_key == 'odds-secret'
-            return [{'key': odds_api.WORLD_CUP_SPORT_KEY,
-                     'title': 'FIFA World Cup 2026'}]
+            sports = [{'key': odds_api.WORLD_CUP_SPORT_KEY,
+                       'title': 'FIFA World Cup 2026'}]
+            if with_quota:
+                return sports, {'remaining': 412, 'used': 88, 'last': 1}
+            return sports
 
         async def _matches(token):
             assert token == 'fd-secret'
@@ -52,6 +55,8 @@ class TestCheckCommand:
         assert '`FOOTBALL_DATA_API_KEY` works' in text
         assert '2 World Cup match' in text
         assert 'quota-free' in text
+        assert '412' in text and 'request(s) remaining this month' in text
+        assert '88 used' in text
         assert 'odds-secret' not in text
         assert 'fd-secret' not in text
 
