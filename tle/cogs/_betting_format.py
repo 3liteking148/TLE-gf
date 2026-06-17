@@ -298,6 +298,8 @@ class BetFormatMixin:
             'mod_setbalance': 'mod set balance',
             'transfer_out': 'transfer sent',
             'transfer_in': 'transfer received',
+            # The steal command was removed, but these labels stay so existing
+            # ledger rows from before the removal still render cleanly.
             'steal_success': 'steal success',
             'steal_victim': 'stolen from',
             'steal_caught': 'caught stealing',
