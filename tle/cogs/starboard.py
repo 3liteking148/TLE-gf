@@ -9,6 +9,7 @@ from tle import constants
 from tle.util import codeforces_common as cf_common
 from tle.util import discord_common
 from tle.util import paginator
+from tle.util import ranking
 from tle.cogs._starboard_helpers import _emoji_str, _looks_like_emoji, _CUSTOM_EMOJI_RE
 from tle.cogs._starboard_backfill import BackfillMixin, _BACKFILL_UNKNOWN
 from tle.util.discord_common import requires_guild_feature
@@ -373,13 +374,15 @@ class Starboard(CoreMixin, ImplMixin, BackfillMixin, commands.Cog):
             title = f'{emoji} Top Starred Messages — {target_member.display_name}'
         else:
             title = f'{emoji} Top Starred Messages'
+        # Standard competition ranking so messages tied on star count share a
+        # rank (and ties number correctly across page boundaries).
+        ranked = ranking.rank_items(rows, lambda r: r.star_count)
         per_page = 10
-        chunks = paginator.chunkify(rows, per_page)
+        chunks = paginator.chunkify(ranked, per_page)
         pages = []
-        for page_idx, chunk in enumerate(chunks):
+        for chunk in chunks:
             lines = []
-            for i, row in enumerate(chunk):
-                rank = page_idx * per_page + i + 1
+            for rank, row in chunk:
                 jump_url = f'https://discord.com/channels/{ctx.guild.id}/{row.channel_id}/{row.original_msg_id}'
                 member = ctx.guild.get_member(int(row.author_id))
                 name = member.mention if member else f'<@{row.author_id}>'

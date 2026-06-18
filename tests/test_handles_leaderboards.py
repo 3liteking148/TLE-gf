@@ -94,6 +94,72 @@ def test_gudgitters_uses_paginated_embeds_with_personal_rank(monkeypatch):
     assert captured['kwargs']['set_pagenum_footers'] is True
 
 
+def test_gudgitters_ties_share_rank_standard_competition(monkeypatch):
+    """Three users tied on score are all #1; the next distinct score is #4,
+    not #2 — standard competition ('1224') ranking."""
+    User = namedtuple('User', 'rating')
+    members = [_FakeMember(i, f'user{i}') for i in range(1, 6)]
+    guild = _FakeGuild(1, members)
+    ctx = SimpleNamespace(author=members[0], guild=guild, channel=object())
+    # scores: 50, 50, 50, 20, 10  ->  ranks 1, 1, 1, 4, 5
+    scores = {1: 50, 2: 50, 3: 50, 4: 20, 5: 10}
+    user_db = _FakeUserDb(
+        gudgitters=[(str(i), scores[i]) for i in range(1, 6)],
+        handles={str(i): f'h{i}' for i in range(1, 6)},
+        users={f'h{i}': User(1800 + i) for i in range(1, 6)},
+    )
+
+    original_user_db = cf_common.user_db
+    cf_common.user_db = user_db
+    captured = {}
+
+    monkeypatch.setattr(handles_module.paginator, 'paginate',
+                        lambda bot, channel, pages, **kw: captured.update(pages=pages))
+    try:
+        asyncio.run(Handles.gudgitters(_make_handles_cog(), ctx))
+    finally:
+        cf_common.user_db = original_user_db
+
+    desc = captured['pages'][0][1].description
+    ranks = [line.split(' ', 1)[0] for line in desc.splitlines()
+             if line.startswith('**#')]
+    assert ranks == ['**#1**', '**#1**', '**#1**', '**#4**', '**#5**']
+
+
+def test_ggimg_ties_share_rank(monkeypatch):
+    """The image leaderboard must apply the same competition ranking. The
+    renderer displays pos+1, so a tie for first yields image positions 0,0,0."""
+    User = namedtuple('User', 'rating')
+    members = [_FakeMember(i, f'user{i}') for i in range(1, 5)]
+    guild = _FakeGuild(1, members)
+    sent = {}
+
+    async def fake_send(*, file=None):
+        sent['file'] = file
+
+    ctx = SimpleNamespace(author=members[0], guild=guild, channel=object(),
+                          send=fake_send)
+    scores = {1: 50, 2: 50, 3: 50, 4: 20}
+    user_db = _FakeUserDb(
+        gudgitters=[(str(i), scores[i]) for i in range(1, 5)],
+        handles={str(i): f'h{i}' for i in range(1, 5)},
+        users={f'h{i}': User(1800 + i) for i in range(1, 5)},
+    )
+
+    original_user_db = cf_common.user_db
+    cf_common.user_db = user_db
+    captured = {}
+    monkeypatch.setattr(handles_module, 'get_gudgitters_image',
+                        lambda rankings: captured.update(rankings=rankings) or 'img')
+    try:
+        asyncio.run(Handles.ggimg(_make_handles_cog(), ctx))
+    finally:
+        cf_common.user_db = original_user_db
+
+    # pos field (first tuple element) is rank-1; renderer shows pos+1.
+    assert [r[0] for r in captured['rankings']] == [0, 0, 0, 3]
+
+
 def test_monthlygudgitters_uses_paginator_and_month_start_rating(monkeypatch):
     User = namedtuple('User', 'rating')
     RatingChange = namedtuple('RatingChange', 'ratingUpdateTimeSeconds newRating')

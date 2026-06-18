@@ -134,6 +134,33 @@ class TestPersonalRankLine:
         assert _personal_rank_line(rows, 100)[0] != '\n'
         assert _personal_rank_line([], 100)[0] != '\n'
 
+    def test_tie_for_first_all_rank_one(self):
+        """Three users tied for first are all #1 — not split by the query's
+        secondary user_id sort."""
+        from tle.cogs.greatday import _personal_rank_line
+        rows = [self._row(100, 7), self._row(200, 7), self._row(300, 7),
+                self._row(400, 3)]
+        assert '#1' in _personal_rank_line(rows, 100)
+        assert '#1' in _personal_rank_line(rows, 200)
+        assert '#1' in _personal_rank_line(rows, 300)
+
+    def test_rank_skips_after_tie(self):
+        """The user after a three-way tie for first is #4, not #2."""
+        from tle.cogs.greatday import _personal_rank_line
+        rows = [self._row(100, 7), self._row(200, 7), self._row(300, 7),
+                self._row(400, 3)]
+        line = _personal_rank_line(rows, 400)
+        assert '#4' in line
+        assert '#2' not in line
+
+    def test_tie_in_middle(self):
+        from tle.cogs.greatday import _personal_rank_line
+        rows = [self._row(100, 10), self._row(200, 5), self._row(300, 5),
+                self._row(400, 1)]
+        assert '#2' in _personal_rank_line(rows, 200)
+        assert '#2' in _personal_rank_line(rows, 300)
+        assert '#4' in _personal_rank_line(rows, 400)
+
 
 class TestBackfillStopHeuristic:
     """The backfill scans newest-first and stops early once we've walked

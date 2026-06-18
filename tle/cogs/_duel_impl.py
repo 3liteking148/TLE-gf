@@ -9,6 +9,7 @@ from tle.util import codeforces_api as cf
 from tle.util import codeforces_common as cf_common
 from tle.util import paginator
 from tle.util import discord_common
+from tle.util import ranking
 from tle.util import table
 
 from tle.cogs._duel_helpers import (
@@ -409,19 +410,18 @@ class DuelImplMixin:
 
         _PER_PAGE = 10
 
-        def make_page(chunk, page_num):
+        def make_page(chunk):
             style = table.Style('{:>}  {:<}  {:<}  {:<}')
             t = table.Table(style)
             t += table.Header('#', 'Name', 'Handle', 'Rating')
             t += table.Line()
-            for index, (member, handle, rating) in enumerate(chunk):
+            for rank, (member, handle, rating) in chunk:
                 rating_str = f'{rating} ({rating2rank(rating).title_abbr})'
 
                 handlestr = 'Unknown'
                 if (handle is not None):
                     handlestr = handle
-                t += table.Data(_PER_PAGE * page_num + index + 1,
-                                f'{member.display_name}', handlestr, rating_str)
+                t += table.Data(rank, f'{member.display_name}', handlestr, rating_str)
 
             table_str = f'```\n{t}\n```'
             embed = discord_common.cf_color_embed(description=table_str)
@@ -430,7 +430,9 @@ class DuelImplMixin:
         if not users:
             raise DuelCogError('There are no active duelists.')
 
-        pages = [make_page(chunk, k) for k, chunk in enumerate(
-            paginator.chunkify(users, _PER_PAGE))]
+        # Standard competition ranking so duelists tied on rating share a rank.
+        ranked = ranking.rank_items(users, lambda u: u[2])
+        pages = [make_page(chunk) for chunk in
+                 paginator.chunkify(ranked, _PER_PAGE)]
         paginator.paginate(self.bot, ctx.channel, pages,
                            wait_time=5 * 60, set_pagenum_footers=True, author_id=ctx.author.id)

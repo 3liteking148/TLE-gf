@@ -6,6 +6,7 @@ from discord.ext import commands
 from tle.util import codeforces_common as cf_common
 from tle.util import discord_common
 from tle.util import paginator
+from tle.util import ranking
 from tle.cogs import codeforces as cfc
 
 from tle.cogs._handles_helpers import (
@@ -51,21 +52,25 @@ class GudgittersMixin:
                     if self.dlo <= change.ratingUpdateTimeSeconds < self.dhi]
         return rating_changes
 
-    def _get_gudgitter_personal_rank_line(self, ctx, rows):
+    def _get_gudgitter_personal_rank_line(self, ctx, ranked):
+        """`ranked` is the output of `ranking.rank_items` — `(rank, row)` pairs
+        in display order, so tied scores share a rank."""
         user_id_str = str(ctx.author.id)
-        for i, row in enumerate(rows):
+        for rank, row in ranked:
             if row.user_id == user_id_str:
-                return f'\nYour rank: **#{i + 1}** with **{row.score}** points'
+                return f'\nYour rank: **#{rank}** with **{row.score}** points'
         return '\nYou are not on this leaderboard yet.'
 
     def _make_gudgitter_pages(self, ctx, rows, title):
-        personal = self._get_gudgitter_personal_rank_line(ctx, rows)
-        chunks = paginator.chunkify(rows, _LEADERBOARD_PER_PAGE)
+        # Standard competition ranking so users tied on score share a rank
+        # instead of being split by the secondary sort.
+        ranked = ranking.rank_items(rows, lambda r: r.score)
+        personal = self._get_gudgitter_personal_rank_line(ctx, ranked)
+        chunks = paginator.chunkify(ranked, _LEADERBOARD_PER_PAGE)
         pages = []
-        for page_idx, chunk in enumerate(chunks):
+        for chunk in chunks:
             lines = []
-            for i, row in enumerate(chunk):
-                rank = page_idx * _LEADERBOARD_PER_PAGE + i + 1
+            for rank, row in chunk:
                 member = ctx.guild.get_member(int(row.user_id))
                 name = member.mention if member is not None else f'`{row.handle}`'
                 rating_str = row.rating if row.rating is not None else 'N/A'
@@ -82,11 +87,14 @@ class GudgittersMixin:
         return pages
 
     def _make_gudgitter_image_rankings(self, ctx, rows, *, limit=20):
+        # Standard competition ranking keyed on score so tied users share a
+        # rank. The image renderer displays `pos + 1`, so pass `rank - 1`.
+        ranked = ranking.rank_items(rows[:limit], lambda r: r.score)
         rankings = []
-        for i, row in enumerate(rows[:limit]):
+        for rank, row in ranked:
             member = ctx.guild.get_member(int(row.user_id))
             display_name = member.display_name if member is not None else ''
-            rankings.append((i, display_name, row.handle, row.rating, row.score))
+            rankings.append((rank - 1, display_name, row.handle, row.rating, row.score))
         return rankings
 
     def _build_gudgitter_rows(self, ctx, entries, *, division=None, showall=False, start_time=None):

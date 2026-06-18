@@ -10,6 +10,7 @@ import discord
 
 from tle import constants
 from tle.util import discord_common
+from tle.util import ranking
 from tle.util.db.user_db_conn import bet_fixture_key
 
 _COIN = '🪙'
@@ -323,12 +324,14 @@ def parse_settle_arg(text):
 
 def rank_line(rows, user_id, value_attr, label, unit=_COIN):
     """Build the 'Your rank: #N — V unit' line shown above a leaderboard.
-    `rows` is the leaderboard order; matches user_id as TEXT or int."""
+    `rows` is the leaderboard order; matches user_id as TEXT or int. Uses
+    standard competition ranking so users tied on `value_attr` share a rank."""
     uid = str(user_id)
-    for i, row in enumerate(rows):
+    ranks = ranking.competition_ranks([getattr(row, value_attr) for row in rows])
+    for rank, row in zip(ranks, rows):
         if str(row.user_id) == uid:
             value = getattr(row, value_attr)
-            return f'Your rank: **#{i + 1}** — {value} {unit}'
+            return f'Your rank: **#{rank}** — {value} {unit}'
     return f"You're not on the {label} board yet."
 
 

@@ -13,6 +13,7 @@ from tle import constants
 from tle.util import codeforces_common as cf_common
 from tle.util import discord_common
 from tle.util import paginator
+from tle.util import ranking
 from tle.cogs._betting_engine import BettingCogError
 from tle.cogs._betting_helpers import (
     extract_bet_tokens, parse_amount, payout_amount, rank_line,
@@ -161,12 +162,14 @@ class BetWalletCmdImplMixin:
 
         personal = rank_line(rows, ctx.author.id, value_attr,
                              'profit' if profit else 'wallet')
-        chunks = paginator.chunkify(rows, _LB_PER_PAGE)
+        # Standard competition ranking so users tied on the leaderboard value
+        # share a rank instead of being split by the secondary sort.
+        ranked = ranking.rank_items(rows, lambda r: getattr(r, value_attr))
+        chunks = paginator.chunkify(ranked, _LB_PER_PAGE)
         pages = []
-        for page_idx, chunk in enumerate(chunks):
+        for chunk in chunks:
             lines = []
-            for i, row in enumerate(chunk):
-                rank = page_idx * _LB_PER_PAGE + i + 1
+            for rank, row in chunk:
                 member = ctx.guild.get_member(int(row.user_id))
                 name = member.mention if member is not None else f'`{row.user_id}`'
                 lines.append(f'**#{rank}** {name} — {fmt(row)}')

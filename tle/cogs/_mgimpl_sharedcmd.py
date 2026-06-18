@@ -7,6 +7,7 @@ import discord
 from tle.util import codeforces_common as cf_common
 from tle.util import discord_common
 from tle.util import paginator
+from tle.util import ranking
 
 from tle.cogs._minigame_common import (
     compute_vs, compute_vs_matchups, compute_streak, compute_longest_streak,
@@ -325,12 +326,14 @@ class ImplSharedCmdMixin:
         if weekday_label:
             suffix_parts.append(weekday_label)
         title_suffix = f' ({", ".join(suffix_parts)})' if suffix_parts else ''
+        # Standard competition ranking so users tied on win count share a rank
+        # instead of being split by the secondary (user_id) sort.
+        ranked = ranking.rank_items(winners, lambda item: item[1])
         pages = []
         per_page = 10
-        for page_idx, chunk in enumerate(paginator.chunkify(winners, per_page)):
+        for chunk in paginator.chunkify(ranked, per_page):
             lines = []
-            for i, (user_id, wins) in enumerate(chunk):
-                rank = page_idx * per_page + i + 1
+            for rank, (user_id, wins) in chunk:
                 name = self._minigame_public_user_name(ctx.guild, game, user_id)
                 lines.append(f'**#{rank}** `{name}` — **{wins}** wins')
             embed = discord.Embed(

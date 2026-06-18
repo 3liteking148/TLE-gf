@@ -12,6 +12,7 @@ from tle import constants
 from tle.util import codeforces_common as cf_common
 from tle.util import discord_common
 from tle.util import paginator
+from tle.util import ranking
 from tle.util import tasks
 
 logger = logging.getLogger(__name__)
@@ -35,12 +36,13 @@ _BACKFILL_STOP_GAP_SECONDS = 5 * 24 * 3600
 def _personal_rank_line(rows, user_id):
     """Render the 'Your rank: #N — great-day'd K times' line for the
     stats command. `rows` is sorted desc-by-count (the natural output
-    of greatday_get_stats). Returned as plain text — the caller puts it
-    above the embed as message content, not inside the embed."""
+    of greatday_get_stats). Uses standard competition ranking so users tied
+    on count share a rank. Returned as plain text — the caller puts it above
+    the embed as message content, not inside the embed."""
     user_id_str = str(user_id)
-    for i, row in enumerate(rows):
+    for rank, row in ranking.rank_items(rows, lambda r: r.cnt):
         if str(row.user_id) == user_id_str:
-            return (f"Your rank: **#{i + 1}** — great-day'd "
+            return (f"Your rank: **#{rank}** — great-day'd "
                     f'**{row.cnt}** time(s).')
     return "You haven't been great-day'd yet."
 
@@ -367,12 +369,15 @@ class GreatDay(commands.Cog):
                 'to seed history from the channel.')
 
         personal = _personal_rank_line(rows, ctx.author.id)
-        chunks = paginator.chunkify(rows, _STATS_PER_PAGE)
+        # Rank the whole list once with standard competition ranking so tied
+        # counts share a rank (and the tie still numbers correctly across page
+        # boundaries), then paginate the (rank, row) pairs.
+        ranked = ranking.rank_items(rows, lambda r: r.cnt)
+        chunks = paginator.chunkify(ranked, _STATS_PER_PAGE)
         pages = []
-        for page_idx, chunk in enumerate(chunks):
+        for chunk in chunks:
             lines = []
-            for i, row in enumerate(chunk):
-                rank = page_idx * _STATS_PER_PAGE + i + 1
+            for rank, row in chunk:
                 m = ctx.guild.get_member(int(row.user_id))
                 name = m.mention if m is not None else f'`{row.user_id}`'
                 lines.append(f'**#{rank}** {name} — **{row.cnt}**')

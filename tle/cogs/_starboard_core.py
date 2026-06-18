@@ -15,6 +15,7 @@ from tle import constants
 from tle.util import codeforces_common as cf_common
 from tle.util import discord_common
 from tle.util import paginator
+from tle.util import ranking
 from tle.cogs._starboard_helpers import _emoji_str
 from tle.cogs._starboard_render import (
     _starboard_content,
@@ -374,26 +375,30 @@ class CoreMixin:
                 return val
         return 0
 
-    def _get_personal_rank_line(self, ctx, rows, unit):
-        """Get the invoking user's rank as a string for embedding."""
+    def _get_personal_rank_line(self, ctx, ranked, unit):
+        """Get the invoking user's rank as a string for embedding. `ranked`
+        is the output of `ranking.rank_items` — `(rank, row)` pairs in display
+        order, so tied users share a rank."""
         user_id_str = str(ctx.author.id)
-        for i, row in enumerate(rows):
+        for rank, row in ranked:
             if self._get_user_id(row) == user_id_str:
-                rank = i + 1
                 count = self._get_count(row)
                 return f'\nYour rank: **#{rank}** with **{count}** {unit}'
         return '\nYou are not on this leaderboard yet.'
 
     def _make_leaderboard_pages(self, ctx, rows, emoji, title, unit):
         """Build paginated embed pages from leaderboard rows."""
-        personal = self._get_personal_rank_line(ctx, rows, unit)
+        # Rank the whole list once with standard competition ranking so tied
+        # counts share a rank rather than being split by the query's secondary
+        # sort; ties also number correctly across page boundaries.
+        ranked = ranking.rank_items(rows, self._get_count)
+        personal = self._get_personal_rank_line(ctx, ranked, unit)
         per_page = 10
-        chunks = paginator.chunkify(rows, per_page)
+        chunks = paginator.chunkify(ranked, per_page)
         pages = []
-        for page_idx, chunk in enumerate(chunks):
+        for chunk in chunks:
             lines = []
-            for i, row in enumerate(chunk):
-                rank = page_idx * per_page + i + 1
+            for rank, row in chunk:
                 user_id = self._get_user_id(row)
                 count = self._get_count(row)
                 member = ctx.guild.get_member(int(user_id))
