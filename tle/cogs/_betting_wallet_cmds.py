@@ -30,7 +30,7 @@ class BetWalletCmdImplMixin:
     # ── Placing / withdrawing bets ─────────────────────────────────────
 
     async def _place(self, ctx, pick, amount_str):
-        market = self._find_market(ctx, require_unambiguous=True)
+        market = self._find_market(ctx, require_unambiguous=True, bettable_only=True)
         if market is None:
             raise BettingCogError(
                 'No open market here. Bets are placed in the match thread the '
@@ -73,7 +73,7 @@ class BetWalletCmdImplMixin:
             f'if it hits.\nBalance: **{data["balance"]}** {_COIN}.'))
 
     async def _cmd_bet_not(self, ctx, text):
-        market = self._find_market(ctx, require_unambiguous=True)
+        market = self._find_market(ctx, require_unambiguous=True, bettable_only=True)
         if market is None:
             raise BettingCogError('No open market here.')
         tokens = extract_bet_tokens(text)
@@ -114,7 +114,7 @@ class BetWalletCmdImplMixin:
             + f'\n\nTotal staked: **{total_stake}** {_COIN}.'))
 
     async def _withdraw_match(self, ctx):
-        market = self._find_market(ctx, require_unambiguous=True)
+        market = self._find_market(ctx, require_unambiguous=True, bettable_only=True)
         if market is None:
             raise BettingCogError('No open market here.')
         if time.time() >= market.commence_time or market.bets_closed:

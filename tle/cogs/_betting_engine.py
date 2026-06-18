@@ -98,15 +98,29 @@ class BetEngineMixin:
             if str(market.channel_id) == str(channel_id)
         ]
 
-    def _find_market(self, ctx, *, require_unambiguous=False):
+    def _market_accepts_bets(self, market):
+        """True if the market can still take a wager — open, not locked early,
+        and pre-kickoff. Mirrors the closed-check in ``_execute_bet``."""
+        return not market.bets_closed and time.time() < market.commence_time
+
+    def _find_market(self, ctx, *, require_unambiguous=False, bettable_only=False):
         """The open market relevant to where the command was run: the betting
-        thread if we're in one, else the channel's market."""
+        thread if we're in one, else the channel's market.
+
+        ``bettable_only`` narrows an ambiguous channel to markets still taking
+        bets — a locked or kicked-off market isn't a real target for a wager,
+        so if exactly one market can still take bets it's unambiguous.
+        """
         m = cf_common.user_db.bet_market_get_active_by_thread(
             ctx.guild.id, ctx.channel.id)
         if m is not None:
             return m
         if require_unambiguous:
             candidates = self._open_markets_for_channel(ctx.guild.id, ctx.channel.id)
+            if len(candidates) > 1 and bettable_only:
+                live = [m for m in candidates if self._market_accepts_bets(m)]
+                if len(live) == 1:
+                    return live[0]
             if len(candidates) > 1:
                 raise BettingCogError(
                     'Multiple betting markets are open here. Run this command in '
@@ -234,7 +248,7 @@ class BetEngineMixin:
           'removed'      — removed one pick (data has stake/label/balance)
           'unchanged'    — same pick already had the requested stake
         """
-        if time.time() >= market.commence_time or market.bets_closed:
+        if not self._market_accepts_bets(market):
             return ('closed', None)
         if not self._pick_allowed(market, pick):
             return ('invalid_pick', None)

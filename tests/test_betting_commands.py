@@ -48,6 +48,44 @@ class TestFindMarket:
 
         assert market.market_id == mid
 
+    def test_bettable_only_picks_the_one_market_still_open_for_bets(self, db, cog):
+        # Two markets open in the channel, but the first is locked early — a
+        # bet can only land on the second, so the target is unambiguous.
+        locked = _make_market(db, commence=1e12)
+        db.bet_market_close_betting(locked)
+        live = db.bet_market_create(
+            GUILD, CH, 'evt2', 'soccer_epl', 'Brazil', 'Japan', 1e12 + 1000,
+            2.0, 3.0, 4.0, USER_A, 1.0)
+
+        market = cog._find_market(
+            self._ctx(CH), require_unambiguous=True, bettable_only=True)
+
+        assert market.market_id == live
+
+    def test_bettable_only_still_ambiguous_when_both_take_bets(self, db, cog):
+        from tle.cogs.betting import BettingCogError
+        _make_market(db, commence=1e12)
+        db.bet_market_create(
+            GUILD, CH, 'evt2', 'soccer_epl', 'Brazil', 'Japan', 1e12 + 1000,
+            2.0, 3.0, 4.0, USER_A, 1.0)
+
+        with pytest.raises(BettingCogError):
+            cog._find_market(
+                self._ctx(CH), require_unambiguous=True, bettable_only=True)
+
+    def test_settle_path_stays_ambiguous_with_a_locked_market(self, db, cog):
+        # Admin commands don't pass bettable_only — a locked market is still a
+        # valid target to settle, so two open markets remain ambiguous.
+        from tle.cogs.betting import BettingCogError
+        locked = _make_market(db, commence=1e12)
+        db.bet_market_close_betting(locked)
+        db.bet_market_create(
+            GUILD, CH, 'evt2', 'soccer_epl', 'Brazil', 'Japan', 1e12 + 1000,
+            2.0, 3.0, 4.0, USER_A, 1.0)
+
+        with pytest.raises(BettingCogError):
+            cog._find_market(self._ctx(CH), require_unambiguous=True)
+
 
 class TestWithdrawCommand:
     @pytest.fixture
