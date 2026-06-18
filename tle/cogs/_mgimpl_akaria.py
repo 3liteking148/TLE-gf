@@ -173,18 +173,27 @@ class ImplAkariAMixin:
                 **table_kwargs)
             await ctx.send(file=discord_file)
         if weekly:
-            if not standings:
-                await ctx.send(embed=discord_common.embed_neutral(
-                    'No Daily Akari scores have been posted this week yet.'))
-                return
-            start = standings[0].week_start
-            end = standings[0].week_end
-            score_title = (
-                f'Daily Akari Weekly Scores · {start:%b %d}–{end:%b %d} '
-                f'(in progress)')
-            score_file = _mg()._get_akari_weekly_table_image_file(
-                ctx.guild, standings, title=score_title)
-            await ctx.send(file=score_file)
+            await self._send_akari_weekly_scores(ctx, standings)
+
+    @staticmethod
+    async def _send_akari_weekly_scores(ctx, standings):
+        """Send the provisional current-week scores table (or an empty notice).
+
+        Shared by the public and ``debug`` ratings commands so both render the
+        in-progress week identically.
+        """
+        if not standings:
+            await ctx.send(embed=discord_common.embed_neutral(
+                'No Daily Akari scores have been posted this week yet.'))
+            return
+        start = standings[0].week_start
+        end = standings[0].week_end
+        score_title = (
+            f'Daily Akari Weekly Scores · {start:%b %d}–{end:%b %d} '
+            f'(in progress)')
+        score_file = _mg()._get_akari_weekly_table_image_file(
+            ctx.guild, standings, title=score_title)
+        await ctx.send(file=score_file)
 
     async def _akari_weekly_preview(self, guild_id, *, excluded_ids=None,
                                     included_ids=None):

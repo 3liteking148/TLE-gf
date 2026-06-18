@@ -288,17 +288,8 @@ class ImplAkariBMixin:
                 title=title, mark_registered=True,
                 **table_kwargs)
             await ctx.send(file=discord_file)
-        if weekly and standings:
-            start = standings[0].week_start
-            end = standings[0].week_end
-            score_file = _mg()._get_akari_weekly_table_image_file(
-                ctx.guild, standings,
-                title=(f'Daily Akari Weekly Scores · {start:%b %d}–'
-                       f'{end:%b %d} (in progress)'))
-            await ctx.send(file=score_file)
-        elif weekly:
-            await ctx.send(embed=discord_common.embed_neutral(
-                'No Daily Akari scores have been posted this week yet.'))
+        if weekly:
+            await self._send_akari_weekly_scores(ctx, standings)
 
     async def _cmd_akari_history(self, ctx, member, *, require_registered=True,
                                  excluded_ids=None, included_ids=None,
