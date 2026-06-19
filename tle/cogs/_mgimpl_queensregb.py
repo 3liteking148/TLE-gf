@@ -1,6 +1,7 @@
 """Queens unregister and legacy/materialized result migration. (Minigames cog impl mixin; see minigames.py)."""
 
 import logging
+import time
 
 
 from tle.util import codeforces_common as cf_common
@@ -13,7 +14,7 @@ from tle.cogs._minigame_queens import (
     QUEENS_GAME, normalize_queens_name, parse_queens_leaderboard,
 )
 from tle.cogs._minigame_helpers import (
-    MinigameCogError, _safe_member_name,
+    MinigameCogError,
 )
 from tle.cogs._minigame_queens_cog import (
     _queens_puzzle_number_for_date,
@@ -28,6 +29,12 @@ class ImplQueensRegBMixin:
     async def _cmd_queens_unregister(self, ctx, member):
         self._require_enabled(ctx.guild.id, QUEENS_GAME)
         target = self._resolve_queens_registrar_target(ctx, member)
+        target_label = self._queens_public_user_name(ctx.guild, target.id)
+        # Sticky opt-out: hide them from every ranking until they personally
+        # re-register.  Set it first so the sync below never re-materializes
+        # their results, and so imports/other members cannot re-add them.
+        newly_hidden = cf_common.user_db.optout_minigame_user(
+            ctx.guild.id, QUEENS_GAME.name, target.id, time.time())
         link = cf_common.user_db.get_minigame_player_link(
             ctx.guild.id, QUEENS_GAME.name, target.id)
         self._migrate_legacy_queens_results_to_external(ctx.guild.id)
@@ -36,16 +43,20 @@ class ImplQueensRegBMixin:
                 ctx.guild.id, link)
         removed = cf_common.user_db.delete_minigame_player_link(
             ctx.guild.id, QUEENS_GAME.name, target.id)
-        if not removed:
+        if not removed and not newly_hidden:
             raise MinigameCogError(
-                f'`{_safe_member_name(target)}` is not registered for '
-                f'{QUEENS_GAME.display_name}.')
+                f'`{target_label}` is already unregistered and hidden from '
+                f'{QUEENS_GAME.display_name} rankings.')
         self._sync_queens_materialized_results(
             ctx.guild.id, migrate_legacy=False)
         self._recompute_minigame_ratings(ctx.guild.id, QUEENS_GAME)
-        await ctx.send(embed=discord_common.embed_success(
-            f'Removed {QUEENS_GAME.display_name} link for '
-            f'`{self._queens_public_user_name(ctx.guild, target.id, {str(target.id): link})}`.'))
+        await ctx.send(embed=discord_common.embed_success('\n'.join([
+            f'Removed {QUEENS_GAME.display_name} link for `{target_label}`.',
+            f'`{target_label}` is now hidden from every '
+            f'{QUEENS_GAME.display_name} ranking — stored results are kept. '
+            'Imports and other members cannot re-add them; only they can '
+            'rejoin, by running `;queens register` themselves.',
+        ])))
 
     @staticmethod
     def _save_queens_external_result(guild_id, channel_id, entry, puzzle_date,
@@ -241,6 +252,9 @@ class ImplQueensRegBMixin:
             if link is None:
                 continue
             if cf_common.user_db.is_minigame_banned(
+                    guild_id, QUEENS_GAME.name, link.user_id):
+                continue
+            if cf_common.user_db.is_minigame_opted_out(
                     guild_id, QUEENS_GAME.name, link.user_id):
                 continue
             puzzle_date = normalize_puzzle_date(row.puzzle_date)

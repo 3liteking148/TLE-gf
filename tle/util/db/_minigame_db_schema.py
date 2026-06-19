@@ -133,6 +133,19 @@ class MinigameSchemaDbMixin:
             CREATE INDEX IF NOT EXISTS idx_minigame_ban_guild
                 ON minigame_ban (guild_id, game, banned_at DESC)
         ''')
+        # Sticky self opt-out: a user who runs ``unregister`` is hidden from all
+        # rankings until they themselves run ``register`` again.  Unlike a ban
+        # (mod-controlled), only the user can lift their own opt-out, so imports
+        # and other people cannot re-surface them.
+        self.conn.execute('''
+            CREATE TABLE IF NOT EXISTS minigame_optout (
+                guild_id     TEXT NOT NULL,
+                game         TEXT NOT NULL,
+                user_id      TEXT NOT NULL,
+                opted_out_at REAL NOT NULL,
+                PRIMARY KEY (guild_id, game, user_id)
+            )
+        ''')
         self.conn.execute('''
             CREATE TABLE IF NOT EXISTS minigame_rating (
                 guild_id    TEXT NOT NULL,

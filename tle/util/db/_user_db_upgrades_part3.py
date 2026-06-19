@@ -414,3 +414,25 @@ def upgrade_1_38_0(db):
         )
     ''')
     db.commit()
+
+
+@registry.register('1.39.0', 'Sticky minigame self opt-out')
+def upgrade_1_39_0(db):
+    """Create a game-keyed sticky opt-out table.
+
+    A user who runs ``unregister`` is hidden from every ranking until they
+    themselves run ``register`` again.  Unlike a ban, only the user can lift
+    their own opt-out, so imports and other members cannot re-surface them.
+    """
+    logger.info('1.39.0: Creating generic minigame opt-out table')
+    db.execute('''
+        CREATE TABLE IF NOT EXISTS minigame_optout (
+            guild_id     TEXT NOT NULL,
+            game         TEXT NOT NULL,
+            user_id      TEXT NOT NULL,
+            opted_out_at REAL NOT NULL,
+            PRIMARY KEY (guild_id, game, user_id)
+        )
+    ''')
+    db.commit()
+    logger.info('1.39.0: Upgrade complete')

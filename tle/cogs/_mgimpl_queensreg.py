@@ -115,6 +115,9 @@ class ImplQueensRegMixin:
     async def _cmd_queens_set(self, ctx, member, linkedin_text,
                               anonymous=False):
         self._require_enabled(ctx.guild.id, QUEENS_GAME)
+        self._ensure_queens_registration_allowed(
+            ctx.guild.id, ctx.author.id, member.id,
+            self._queens_public_user_name(ctx.guild, member.id))
         claimed = self._cmd_queens_register_link(
             ctx, member, linkedin_text, anonymous=anonymous,
             ignore_pending=True)
@@ -132,6 +135,9 @@ class ImplQueensRegMixin:
     async def _cmd_queens_register(self, ctx, member, linkedin_text,
                                    anonymous=False):
         self._require_enabled(ctx.guild.id, QUEENS_GAME)
+        self._ensure_queens_registration_allowed(
+            ctx.guild.id, ctx.author.id, member.id,
+            self._queens_public_user_name(ctx.guild, member.id))
         pending = self._queue_queens_registration(
             ctx, member, linkedin_text, anonymous=anonymous)
         display_name = self._queens_public_user_name(

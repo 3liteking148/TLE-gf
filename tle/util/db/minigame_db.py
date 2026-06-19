@@ -137,6 +137,64 @@ class MinigameDbMixin(MinigameResultsDbMixin, MinigameLinksDbMixin,
             (str(guild_id), game)
         ).fetchall()
 
+    # ── Generic minigame self opt-out ─────────────────────────────────
+    #
+    # Sticky: an ``unregister`` writes a row here and the user stays hidden
+    # from every ranking until they personally run ``register`` again (which
+    # deletes the row).  Imports, backfills, and mods registering on someone's
+    # behalf must NOT clear it — only the user themselves can rejoin.
+
+    def optout_minigame_user(self, guild_id, game, user_id, opted_out_at):
+        """Opt a user out of all rankings for ``game``.
+
+        Returns 1 if a new opt-out row was added, 0 if they were already
+        opted out (the original ``opted_out_at`` is preserved).
+        """
+        rc = self.conn.execute(
+            '''
+            INSERT OR IGNORE INTO minigame_optout
+                (guild_id, game, user_id, opted_out_at)
+            VALUES (?, ?, ?, ?)
+            ''',
+            (str(guild_id), game, str(user_id), float(opted_out_at))
+        ).rowcount
+        self.conn.commit()
+        return rc
+
+    def clear_minigame_optout(self, guild_id, game, user_id):
+        """Lift a user's opt-out. Returns the number of rows removed (1 or 0)."""
+        rc = self.conn.execute(
+            '''
+            DELETE FROM minigame_optout
+            WHERE guild_id = ? AND game = ? AND user_id = ?
+            ''',
+            (str(guild_id), game, str(user_id))
+        ).rowcount
+        self.conn.commit()
+        return rc
+
+    def is_minigame_opted_out(self, guild_id, game, user_id):
+        row = self.conn.execute(
+            '''
+            SELECT user_id
+            FROM minigame_optout
+            WHERE guild_id = ? AND game = ? AND user_id = ?
+            ''',
+            (str(guild_id), game, str(user_id))
+        ).fetchone()
+        return row is not None
+
+    def get_minigame_optouts(self, guild_id, game):
+        return self.conn.execute(
+            '''
+            SELECT user_id, opted_out_at
+            FROM minigame_optout
+            WHERE guild_id = ? AND game = ?
+            ORDER BY opted_out_at DESC, user_id ASC
+            ''',
+            (str(guild_id), game)
+        ).fetchall()
+
     # ── Akari rating: registration ───────────────────────────────────
     #
     # Default opt-in: everyone with any Akari result is registered (visible in

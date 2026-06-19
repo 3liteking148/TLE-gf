@@ -220,6 +220,26 @@ class TestUpgrade138:
         upgrade_1_38_0(db)
 
 
+class TestUpgrade139:
+    def test_creates_minigame_optout_table(self, db):
+        from tle.util.db.user_db_upgrades import upgrade_1_39_0
+        upgrade_1_39_0(db)
+        db.execute(
+            'INSERT INTO minigame_optout '
+            '(guild_id, game, user_id, opted_out_at) '
+            "VALUES ('1', 'queens', '300', 123.0)")
+        row = db.execute(
+            'SELECT guild_id, game, user_id, opted_out_at '
+            'FROM minigame_optout').fetchone()
+        assert (row.guild_id, row.game, row.user_id) == ('1', 'queens', '300')
+
+    def test_idempotent(self, db):
+        from tle.util.db.user_db_upgrades import upgrade_1_39_0
+        upgrade_1_39_0(db)
+        upgrade_1_39_0(db)
+        db.execute('SELECT * FROM minigame_optout').fetchall()
+
+
 class TestUpgrade132:
     def test_creates_unresolved_minigame_result_table(self, db):
         from tle.util.db.user_db_upgrades import upgrade_1_32_0
@@ -377,6 +397,8 @@ class TestFreshDbSchema:
                               'FROM minigame_unresolved_result').fetchall()
             conn.conn.execute('SELECT guild_id, game, user_id, banned_at, '
                               'banned_by, reason FROM minigame_ban').fetchall()
+            conn.conn.execute('SELECT guild_id, game, user_id, opted_out_at '
+                              'FROM minigame_optout').fetchall()
             conn.conn.execute('SELECT puzzle_number, difficulty, fetched_at '
                               'FROM akari_puzzle_difficulty').fetchall()
             # And the legacy table must NOT be created by the fresh path.

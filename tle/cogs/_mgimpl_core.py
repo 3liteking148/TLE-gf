@@ -302,15 +302,50 @@ class ImplCoreMixin:
             for row in cf_common.user_db.get_minigame_bans(guild_id, game.name)
         }
 
+    @staticmethod
+    def _minigame_opted_out_user_ids(guild_id, game):
+        return {
+            str(row.user_id)
+            for row in cf_common.user_db.get_minigame_optouts(
+                guild_id, game.name)
+        }
+
+    def _minigame_hidden_user_ids(self, guild_id, game):
+        """Users who must never appear in rankings: banned ∪ self-opted-out."""
+        return (self._minigame_banned_user_ids(guild_id, game)
+                | self._minigame_opted_out_user_ids(guild_id, game))
+
     def _filter_minigame_banned_rows(self, guild_id, game, rows):
-        # Akari has its own ban/opt-out/rating tables; generic bans are for
-        # manual minigames such as Queens and must not affect legacy Akari data.
+        # Akari has its own ban/opt-out/rating tables; generic bans/opt-outs are
+        # for manual minigames such as Queens and must not affect legacy Akari
+        # data.
         if game.name == AKARI_GAME.name:
             return rows
-        banned = self._minigame_banned_user_ids(guild_id, game)
-        if not banned:
+        hidden = self._minigame_hidden_user_ids(guild_id, game)
+        if not hidden:
             return rows
-        return [row for row in rows if str(row.user_id) not in banned]
+        return [row for row in rows if str(row.user_id) not in hidden]
+
+    def _ensure_queens_registration_allowed(self, guild_id, actor_id,
+                                            target_id, target_label):
+        """Gate Queens (re-)registration against a sticky self opt-out.
+
+        A user who ran ``;queens unregister`` is hidden until *they themselves*
+        register again.  When the actor is the target, registering expresses
+        that intent, so we lift the opt-out and proceed.  When anyone else
+        (a mod, ``+username``, an import) tries to register an opted-out user,
+        we refuse so they cannot be re-surfaced against their will.
+        """
+        if str(actor_id) == str(target_id):
+            cf_common.user_db.clear_minigame_optout(
+                guild_id, QUEENS_GAME.name, target_id)
+            return
+        if cf_common.user_db.is_minigame_opted_out(
+                guild_id, QUEENS_GAME.name, target_id):
+            raise MinigameCogError(
+                f'`{target_label}` opted out of {QUEENS_GAME.display_name} '
+                'rankings. Only they can rejoin by running '
+                '`;queens register` themselves.')
 
     def _sync_minigame_results_for_read(self, guild_id, game):
         if game.name == QUEENS_GAME.name:

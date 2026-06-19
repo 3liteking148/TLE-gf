@@ -189,6 +189,15 @@ class FakeMinigameDb(MinigameDbMixin):
             )
         ''')
         self.conn.execute('''
+            CREATE TABLE IF NOT EXISTS minigame_optout (
+                guild_id     TEXT NOT NULL,
+                game         TEXT NOT NULL,
+                user_id      TEXT NOT NULL,
+                opted_out_at REAL NOT NULL,
+                PRIMARY KEY (guild_id, game, user_id)
+            )
+        ''')
+        self.conn.execute('''
             CREATE TABLE IF NOT EXISTS akari_registrant (
                 guild_id      TEXT NOT NULL,
                 user_id       TEXT NOT NULL,
