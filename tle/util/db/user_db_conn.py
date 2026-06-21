@@ -26,6 +26,7 @@ from tle.util.db.misc_db import MiscDbMixin
 from tle.util.db.betting_wallet_db import BettingWalletDbMixin
 from tle.util.db.betting_market_db import BettingMarketDbMixin
 from tle.util.db.betting_wager_db import BettingWagerDbMixin
+from tle.util.db.command_gate_db import CommandGateDbMixin
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +144,7 @@ class UserDbConn(HandleDbMixin, ChallengeDbMixin, DuelDbMixin, TrainingDbMixin,
                  VcDbMixin, LockoutDbMixin, RpollDbMixin, ComplaintDbMixin,
                  GreatdayDbMixin, KvsDbMixin, MiscDbMixin,
                  BettingWalletDbMixin, BettingMarketDbMixin, BettingWagerDbMixin,
+                 CommandGateDbMixin,
                  MinigameDbMixin, StarboardDbMixin, MigrationDbMixin):
     def __init__(self, dbfile):
         logger.info(f'Opening user database: {dbfile}')
@@ -194,6 +196,7 @@ class UserDbConn(HandleDbMixin, ChallengeDbMixin, DuelDbMixin, TrainingDbMixin,
         self._create_lockout_tables()
         self._create_kvs_tables()
         self._create_rpoll_tables()
+        self._create_command_gate_tables()
         self._create_migration_tables()
 
     # Helper functions.

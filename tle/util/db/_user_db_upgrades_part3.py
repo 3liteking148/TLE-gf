@@ -436,3 +436,18 @@ def upgrade_1_39_0(db):
     ''')
     db.commit()
     logger.info('1.39.0: Upgrade complete')
+
+
+@registry.register('1.40.0', 'Per-channel command gate (;disallow / ;allow)')
+def upgrade_1_40_0(db):
+    logger.info('1.40.0: Creating command_gate table')
+    db.execute('''
+        CREATE TABLE IF NOT EXISTS command_gate (
+            guild_id   TEXT NOT NULL,
+            channel_id TEXT NOT NULL,
+            thread_id  TEXT,
+            PRIMARY KEY (guild_id, channel_id)
+        )
+    ''')
+    db.commit()
+    logger.info('1.40.0: command_gate table created')
