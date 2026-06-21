@@ -51,7 +51,7 @@ class CodeforcesGitgudMixin:
                          + cf_common.user_db.bet_get_start_bonus(guild.id))
         cf_common.user_db.bet_adjust_balance(
             guild.id, user_id, coins, start_balance,
-            actor_id=user_id, action='gitgud', note=str(score))
+            actor_id=user_id, action='gitgud', note=f'score={score}')
         return coins
 
     async def _validate_gitgud_status(self, ctx):

@@ -194,3 +194,19 @@ class TestGateCheck:
         with pytest.raises(discord_common.FeatureDisabledSilent):
             asyncio.run(cog._gate_check(ctx))
         assert '<#t9>' in ctx.sent[0][0]
+
+    def test_disallow_thread_rejects_non_text_channel(self, cog):
+        # A forum/voice/category channel is not a TextChannel: reject cleanly
+        # instead of letting create_thread raise an uncaught TypeError.
+        from tle.cogs._channel_gate_helpers import ChannelGateError
+        forum = SimpleNamespace(id='f1')
+        ctx = self._ctx(command_name='disallow', channel=forum)
+        with pytest.raises(ChannelGateError):
+            asyncio.run(cog.disallow(ctx, 'thread'))
+
+    def test_disallow_thread_rejected_inside_a_thread(self, cog):
+        from tle.cogs._channel_gate_helpers import ChannelGateError
+        ctx = self._ctx(command_name='disallow',
+                        channel=self._thread(parent_id='c1', thread_id='t1'))
+        with pytest.raises(ChannelGateError):
+            asyncio.run(cog.disallow(ctx, 'thread'))

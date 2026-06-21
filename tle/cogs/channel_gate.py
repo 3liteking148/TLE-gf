@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 _THREAD_NAME = 'bot-commands'
 _THREAD_AUTO_ARCHIVE = 1440  # minutes (1 day)
-_NOTICE_DELETE_AFTER = 15    # seconds — keep the channel uncluttered
+_NOTICE_DELETE_AFTER = 15    # seconds — the notice auto-deletes so it doesn't pile up
 _EXEMPT_COMMANDS = frozenset({'disallow', 'allow'})
 
 
@@ -102,15 +102,15 @@ class ChannelGate(commands.Cog):
         make_thread = mode is not None and mode.lower() == 'thread'
         if mode is not None and not make_thread:
             raise ChannelGateError('Usage: `;disallow` or `;disallow thread`.')
+        if make_thread and not isinstance(ctx.channel, discord.TextChannel):
+            # A thread can only be spun off a normal text channel — not a forum,
+            # voice, or category channel, nor from inside another thread (those
+            # would otherwise raise an uncaught error from create_thread).
+            raise ChannelGateError(
+                '`;disallow thread` only works in a regular text channel.')
 
         channel = self._gate_channel(ctx)
-        thread = None
-        if make_thread:
-            if isinstance(ctx.channel, discord.Thread):
-                raise ChannelGateError(
-                    'Run `;disallow thread` in a regular text channel, not '
-                    'inside a thread.')
-            thread = await self._create_thread(channel)
+        thread = await self._create_thread(channel) if make_thread else None
 
         cf_common.user_db.set_command_gate(
             ctx.guild.id, channel.id, thread.id if thread else None)
