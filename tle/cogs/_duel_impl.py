@@ -54,12 +54,12 @@ class DuelImplMixin:
         data = cf_common.user_db.get_ongoing_duels(guild.id)
         channel_id = cf_common.user_db.get_duel_channel(guild.id)
         if channel_id == None:
-            logger.warn(f'_check_ongoing_duels_for_guild: duel channel is not set.')
+            #logger.warn(f'_check_ongoing_duels_for_guild: duel channel is not set.')
             return
 
         channel = self.bot.get_channel(channel_id)
         if channel is None:
-            logger.warn(f'_check_ongoing_duels_for_guild: duel channel is not found on the server.')
+            #logger.warn(f'_check_ongoing_duels_for_guild: duel channel is not found on the server.')
             return
 
         for entry in data:

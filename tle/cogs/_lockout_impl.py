@@ -36,12 +36,12 @@ class RoundImplMixin:
     async def _check_ongoing_rounds_for_guild(self, guild):
         channel_id = cf_common.user_db.get_round_channel(guild.id)
         if channel_id == None:
-            logger.warn(f'_check_ongoing_rounds_for_guild: lockout round channel is not set.')
+            #logger.warn(f'_check_ongoing_rounds_for_guild: lockout round channel is not set.')
             return
 
         channel = self.bot.get_channel(channel_id)
         if channel is None:
-            logger.warn(f'_check_ongoing_rounds_for_guild: lockout round channel is not found on the server.')
+            #logger.warn(f'_check_ongoing_rounds_for_guild: lockout round channel is not found on the server.')
             return
 
         await self._update_all_ongoing_rounds(guild, channel, True)
