@@ -112,12 +112,12 @@ class Handles(GudgittersMixin, RankUpMixin, commands.Cog):
         if rc != 1:
             raise HandleCogError('DB update for user {user.handle} failed.')
 
-        roles = [role for role in ctx.guild.roles if role.name == user.rank.title]
-        if not roles:
-            raise HandleCogError(f'Role for rank `{user.rank.title}` not present in the server')
-        role_to_assign = roles[0]
-        await self.update_member_rank_role(member, role_to_assign,
-                                           reason='New handle set for user')
+        #roles = [role for role in ctx.guild.roles if role.name == user.rank.title]
+        #if not roles:
+        #    raise HandleCogError(f'Role for rank `{user.rank.title}` not present in the server')
+        #role_to_assign = roles[0]
+        #await self.update_member_rank_role(member, role_to_assign,
+        #                                   reason='New handle set for user')
 
     @handle.command(brief='Identify yourself', usage='[handle]')
     @cf_common.user_guard(group='handle',
