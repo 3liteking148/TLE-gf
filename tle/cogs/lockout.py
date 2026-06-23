@@ -49,7 +49,7 @@ class Round(RoundImplMixin, commands.Cog):
         await ctx.send(embed=self.make_round_embed(ctx))
 
     @round.command(brief='Set the lockout channel to the current channel (Admin/Mod only)')
-    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)  # OK
+    @commands.has_any_role(*constants.TLE_ADMIN, *constants.TLE_MODERATOR)  # OK
     async def set_channel(self, ctx):
         """ Sets the lockout round channel to the current channel.
         """
@@ -116,7 +116,7 @@ class Round(RoundImplMixin, commands.Cog):
         await ctx.send(embed=self._round_problems_embed(round_info))
 
     @round.command(brief="Invalidate a round (Admin/Mod only)", usage="@user")
-    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)  # OK
+    @commands.has_any_role(*constants.TLE_ADMIN, *constants.TLE_MODERATOR)  # OK
     async def _invalidate(self, ctx, member: discord.Member):
         if not cf_common.user_db.check_if_user_in_ongoing_round(ctx.guild.id, member.id):
             raise RoundCogError(f'{member.mention} is not in a round')

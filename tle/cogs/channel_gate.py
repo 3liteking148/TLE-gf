@@ -92,7 +92,7 @@ class ChannelGate(commands.Cog):
         return channel
 
     @commands.command(brief='Disallow bot commands in this channel')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(*constants.TLE_ADMIN)
     async def disallow(self, ctx, mode: str = None):
         """Disallow bot commands in this channel.
 
@@ -143,7 +143,7 @@ class ChannelGate(commands.Cog):
         return thread
 
     @commands.command(brief='Re-allow bot commands in this channel')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(*constants.TLE_ADMIN)
     async def allow(self, ctx):
         """Re-enable bot commands in this channel (reverts `;disallow`)."""
         channel = self._gate_channel(ctx)

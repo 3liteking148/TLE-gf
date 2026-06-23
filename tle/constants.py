@@ -25,8 +25,13 @@ LOG_FILE_PATH = os.path.join(LOGS_DIR, 'tle.log')
 ALL_DIRS = (attrib_value for attrib_name, attrib_value in list(globals().items())
             if attrib_name.endswith('DIR'))
 
-TLE_ADMIN = os.environ.get('TLE_ADMIN', 'Admin')
-TLE_MODERATOR = os.environ.get('TLE_MODERATOR', 'Moderator')
+def _parse_roles(env_val, default):
+    raw = os.environ.get(env_val, default)
+    return tuple(r.strip() for r in raw.split(','))
+
+TLE_ADMIN = _parse_roles('TLE_ADMIN', 'Admin')
+TLE_MODERATOR = _parse_roles('TLE_MODERATOR', 'Moderator')
+TLE_ALL_MOD_ROLES = TLE_ADMIN + TLE_MODERATOR
 
 _DEFAULT_STAR_COLOR = 0xffaa10
 _DEFAULT_STAR = '\N{WHITE MEDIUM STAR}'

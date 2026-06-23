@@ -85,14 +85,14 @@ class Migrate(MigratePhasesMixin, MigrateExportMixin, MigrateCompleteMixin,
     # ------------------------------------------------------------------
 
     @commands.group(name='migrate', invoke_without_command=True)
-    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    @commands.has_any_role(*constants.TLE_ADMIN, *constants.TLE_MODERATOR)
     @requires_guild_feature('migration_ops')
     async def migrate(self, ctx):
         """Starboard migration commands."""
         await ctx.send_help(ctx.command)
 
     @migrate.command(name='start')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(*constants.TLE_ADMIN)
     async def start(self, ctx, old_channel: discord.TextChannel,
                     new_channel: discord.TextChannel, *emojis: str):
         """Start migrating from an old bot's starboard channel.
@@ -106,13 +106,13 @@ class Migrate(MigratePhasesMixin, MigrateExportMixin, MigrateCompleteMixin,
         await self._impl_start(ctx, old_channel, new_channel, emojis)
 
     @migrate.command(name='status')
-    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    @commands.has_any_role(*constants.TLE_ADMIN, *constants.TLE_MODERATOR)
     async def status(self, ctx):
         """Check the progress of the current migration."""
         await self._impl_status(ctx)
 
     @migrate.command(name='export')
-    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    @commands.has_any_role(*constants.TLE_ADMIN, *constants.TLE_MODERATOR)
     async def export_pillboard(self, ctx, old_channel: discord.TextChannel,
                                *args: str):
         """Export old pillboard posts and linked original messages to JSON.
@@ -126,7 +126,7 @@ class Migrate(MigratePhasesMixin, MigrateExportMixin, MigrateCompleteMixin,
         await self._cmd_pillboard_export(ctx, old_channel, *args)
 
     @commands.command(name='pillboard-export')
-    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    @commands.has_any_role(*constants.TLE_ADMIN, *constants.TLE_MODERATOR)
     async def pillboard_export(self, ctx, pillboard_channel: discord.TextChannel,
                                *args: str):
         """Export pillboard posts and linked original messages to JSON.
@@ -139,7 +139,7 @@ class Migrate(MigratePhasesMixin, MigrateExportMixin, MigrateCompleteMixin,
         await self._cmd_pillboard_export(ctx, pillboard_channel, *args)
 
     @migrate.command(name='complete')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(*constants.TLE_ADMIN)
     async def complete(self, ctx, new_channel: discord.TextChannel):
         """Finalize migration: create emoji configs and activate live tracking.
 
@@ -148,7 +148,7 @@ class Migrate(MigratePhasesMixin, MigrateExportMixin, MigrateCompleteMixin,
         await self._impl_complete(ctx, new_channel)
 
     @migrate.command(name='resume')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(*constants.TLE_ADMIN)
     async def resume(self, ctx):
         """Resume a failed migration. Retries any post_failed entries.
 
@@ -157,7 +157,7 @@ class Migrate(MigratePhasesMixin, MigrateExportMixin, MigrateCompleteMixin,
         await self._impl_resume(ctx)
 
     @migrate.command(name='show-deleted')
-    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    @commands.has_any_role(*constants.TLE_ADMIN, *constants.TLE_MODERATOR)
     async def show_deleted(self, ctx):
         """List deleted/inaccessible messages found during migration.
 
@@ -169,7 +169,7 @@ class Migrate(MigratePhasesMixin, MigrateExportMixin, MigrateCompleteMixin,
         await self._impl_show_deleted(ctx)
 
     @migrate.command(name='retry-failed')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(*constants.TLE_ADMIN)
     async def retry_failed(self, ctx):
         """Retry messages that failed after all retry attempts.
 
@@ -180,7 +180,7 @@ class Migrate(MigratePhasesMixin, MigrateExportMixin, MigrateCompleteMixin,
         await self._impl_retry_failed(ctx)
 
     @migrate.command(name='view-failed')
-    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    @commands.has_any_role(*constants.TLE_ADMIN, *constants.TLE_MODERATOR)
     async def view_failed(self, ctx):
         """List messages that failed after all retry attempts.
 
@@ -191,7 +191,7 @@ class Migrate(MigratePhasesMixin, MigrateExportMixin, MigrateCompleteMixin,
         await self._impl_view_failed(ctx)
 
     @migrate.command(name='restart-post')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(*constants.TLE_ADMIN)
     async def restart_post(self, ctx):
         """Delete all posted messages from the new channel and re-post everything.
 
@@ -202,7 +202,7 @@ class Migrate(MigratePhasesMixin, MigrateExportMixin, MigrateCompleteMixin,
         await self._impl_restart_post(ctx)
 
     @migrate.command(name='pause')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(*constants.TLE_ADMIN)
     async def pause(self, ctx):
         """Pause the running migration after the current message finishes.
 
@@ -211,7 +211,7 @@ class Migrate(MigratePhasesMixin, MigrateExportMixin, MigrateCompleteMixin,
         await self._impl_pause(ctx)
 
     @migrate.command(name='unpause')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(*constants.TLE_ADMIN)
     async def unpause(self, ctx):
         """Resume a paused migration.
 
@@ -220,7 +220,7 @@ class Migrate(MigratePhasesMixin, MigrateExportMixin, MigrateCompleteMixin,
         await self._impl_unpause(ctx)
 
     @migrate.command(name='cancel')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(*constants.TLE_ADMIN)
     async def cancel(self, ctx):
         """Cancel the current migration and clean up."""
         await self._impl_cancel(ctx)

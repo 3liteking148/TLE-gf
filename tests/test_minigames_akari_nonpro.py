@@ -213,7 +213,7 @@ class TestAkariNonProModeImport:
             guild=_FakeGuild(1),
             channel=_FakeChannel(10),
             author=_FakeDiscordMember(
-                999, 'mod', roles=[SimpleNamespace(name=constants.TLE_MODERATOR)]),
+                999, 'mod', roles=[SimpleNamespace(name=constants.TLE_MODERATOR[0])]),
             send=send,
         )
         cog = Minigames(bot=_Bot(_FetchChannel(10)))
@@ -268,7 +268,7 @@ class TestAkariNonProModeImport:
             guild=_FakeGuild(1),
             channel=_FakeChannel(10),
             author=_FakeDiscordMember(
-                999, 'mod', roles=[SimpleNamespace(name=constants.TLE_MODERATOR)]),
+                999, 'mod', roles=[SimpleNamespace(name=constants.TLE_MODERATOR[0])]),
             send=send,
         )
         cog = Minigames(bot=_Bot(_FetchChannel(10)))

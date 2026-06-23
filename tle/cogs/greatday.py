@@ -223,7 +223,7 @@ class GreatDay(commands.Cog):
 
     @greatday.command(name='add', brief='Add a user to the list (admin)',
                       usage='@user')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(*constants.TLE_ADMIN)
     async def add_user(self, ctx, member: discord.Member):
         if cf_common.user_db.greatday_is_banned(ctx.guild.id, member.id):
             name = discord.utils.escape_mentions(member.display_name)
@@ -240,7 +240,7 @@ class GreatDay(commands.Cog):
 
     @greatday.command(name='kick', brief='Remove a user from the list (admin)',
                       usage='@user')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(*constants.TLE_ADMIN)
     async def kick_user(self, ctx, member: discord.Member):
         removed = cf_common.user_db.greatday_remove(ctx.guild.id, member.id)
         name = discord.utils.escape_mentions(member.display_name)
@@ -253,7 +253,7 @@ class GreatDay(commands.Cog):
 
     @greatday.command(name='ban', brief='Ban a user from great day (admin)',
                       usage='@user')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(*constants.TLE_ADMIN)
     async def ban_user(self, ctx, member: discord.Member):
         banned = cf_common.user_db.greatday_ban(ctx.guild.id, member.id)
         name = discord.utils.escape_mentions(member.display_name)
@@ -266,7 +266,7 @@ class GreatDay(commands.Cog):
 
     @greatday.command(name='unban', brief='Unban a user from great day (admin)',
                       usage='@user')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(*constants.TLE_ADMIN)
     async def unban_user(self, ctx, member: discord.Member):
         unbanned = cf_common.user_db.greatday_unban(ctx.guild.id, member.id)
         name = discord.utils.escape_mentions(member.display_name)
@@ -290,7 +290,7 @@ class GreatDay(commands.Cog):
         await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
     @greatday.command(name='here', brief='Set the great day channel')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(*constants.TLE_ADMIN)
     async def here(self, ctx):
         cf_common.user_db.set_guild_config(
             ctx.guild.id, 'greatday_channel', str(ctx.channel.id))
@@ -298,7 +298,7 @@ class GreatDay(commands.Cog):
             f'Great day channel set to {ctx.channel.mention}'))
 
     @greatday.command(name='now', brief='Send a great day message now')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(*constants.TLE_ADMIN)
     async def now(self, ctx):
         channel_id = cf_common.user_db.get_guild_config(
             ctx.guild.id, 'greatday_channel')
@@ -319,7 +319,7 @@ class GreatDay(commands.Cog):
 
     @greatday.command(name='time', brief='Set the daily time (HH:MM US/Eastern)',
                       usage='HH:MM')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(*constants.TLE_ADMIN)
     async def set_time(self, ctx, time_str: str):
         parts = time_str.split(':')
         if len(parts) != 2:
@@ -392,7 +392,7 @@ class GreatDay(commands.Cog):
 
     @greatday.command(name='backfill',
                       brief='Seed pick history from the greatday channel (admin)')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(*constants.TLE_ADMIN)
     async def backfill(self, ctx):
         """Walk the greatday channel's history and insert one pick row per
         matched message and mentioned user. Idempotent — safe to re-run.

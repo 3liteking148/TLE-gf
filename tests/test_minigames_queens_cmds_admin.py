@@ -152,7 +152,7 @@ class TestQueensCommandsAdmin(_QueensCommandsBase):
             lambda desc: SimpleNamespace(description=desc))
         mod = _FakeDiscordMember(
             999, 'mod', 'Mod',
-            roles=[SimpleNamespace(name=constants.TLE_MODERATOR)])
+            roles=[SimpleNamespace(name=constants.TLE_MODERATOR[0])])
         helper = _FakeDiscordMember(300, 'helper', 'Helper')
         guild = _FakeGuild(100, members=[mod, helper])
         ctx = self._make_ctx(guild, mod)
@@ -203,7 +203,7 @@ class TestQueensCommandsAdmin(_QueensCommandsBase):
         db.set_guild_config(100, 'queens', '1')
         mod = _FakeDiscordMember(
             999, 'mod', 'Mod',
-            roles=[SimpleNamespace(name=constants.TLE_MODERATOR)])
+            roles=[SimpleNamespace(name=constants.TLE_MODERATOR[0])])
         alice = _FakeDiscordMember(300, 'alice', 'Alice')
         guild = _FakeGuild(100, members=[mod, alice])
         ctx = self._make_ctx(guild, mod)
@@ -241,7 +241,7 @@ class TestQueensCommandsAdmin(_QueensCommandsBase):
         db.set_guild_config(100, 'queens', '1')
         mod = _FakeDiscordMember(
             999, 'mod', 'Mod',
-            roles=[SimpleNamespace(name=constants.TLE_MODERATOR)])
+            roles=[SimpleNamespace(name=constants.TLE_MODERATOR[0])])
         alice = _FakeDiscordMember(300, 'alice', 'Alice')
         bob = _FakeDiscordMember(301, 'bob', 'Bob')
         cara = _FakeDiscordMember(302, 'cara', 'Cara')

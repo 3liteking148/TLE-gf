@@ -114,7 +114,7 @@ class QueensCmdsMixin:
     @queens.command(
         name='install',
         brief='(Mod) Install Playwright + Chromium for the scraper')
-    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    @commands.has_any_role(*constants.TLE_ADMIN, *constants.TLE_MODERATOR)
     async def queens_install(self, ctx):
         await self._cmd_queens_install(ctx)
 
@@ -122,7 +122,7 @@ class QueensCmdsMixin:
         name='login',
         brief='(Mod) Upload a fresh LinkedIn session file',
         usage='[LinkedIn Name] (attach extra/.queens_state.json to the message)')
-    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    @commands.has_any_role(*constants.TLE_ADMIN, *constants.TLE_MODERATOR)
     async def queens_login(self, ctx, *, linkedin_name: str = None):
         await self._cmd_queens_login(ctx, linkedin_name)
 
@@ -160,7 +160,7 @@ class QueensCmdsMixin:
         name='state-path', aliases=['statepath'],
         brief='(Mod) Override where the scraper looks for state.json',
         usage='/abs/path/to/state.json | clear')
-    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    @commands.has_any_role(*constants.TLE_ADMIN, *constants.TLE_MODERATOR)
     async def queens_state_path(self, ctx, *, path: str = None):
         self._require_enabled(ctx.guild.id, QUEENS_GAME)
         if path is None:

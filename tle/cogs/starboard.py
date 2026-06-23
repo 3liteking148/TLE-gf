@@ -68,46 +68,46 @@ class Starboard(CoreMixin, ImplMixin, BackfillMixin, commands.Cog):
         await ctx.send_help(ctx.command)
 
     @starboard.command(brief='Add an emoji to the starboard')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(*constants.TLE_ADMIN)
     async def add(self, ctx, emoji: str = constants._DEFAULT_STAR, threshold: int = 3, color: str = None):
         """Add an emoji to the starboard with optional threshold and color.
         Example: ;starboard add ⭐ 3 #ffaa10"""
         await self._impl_add(ctx, emoji, threshold, color)
 
     @starboard.command(brief='Delete an emoji from starboard')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(*constants.TLE_ADMIN)
     async def delete(self, ctx, emoji: str = constants._DEFAULT_STAR):
         """Remove an emoji and all its tracked messages from the starboard."""
         await self._impl_delete(ctx, emoji)
 
     @starboard.command(brief='Edit threshold for an emoji')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(*constants.TLE_ADMIN)
     async def edit_threshold(self, ctx, threshold: int, emoji: str = constants._DEFAULT_STAR):
         """Update the reaction threshold for an emoji."""
         await self._impl_edit_threshold(ctx, threshold, emoji)
 
     @starboard.command(brief='Edit color for an emoji')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(*constants.TLE_ADMIN)
     async def edit_color(self, ctx, color: str, emoji: str = constants._DEFAULT_STAR):
         """Update the embed color for an emoji. Use hex format like #ffaa10."""
         await self._impl_edit_color(ctx, color, emoji)
 
     @starboard.command(brief='Set starboard channel for an emoji')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(*constants.TLE_ADMIN)
     async def here(self, ctx, emoji: str = constants._DEFAULT_STAR):
         """Set the current channel as the starboard channel for a specific emoji.
         Example: ;starboard here ⭐"""
         await self._impl_here(ctx, emoji)
 
     @starboard.command(brief='Clear starboard channel for an emoji')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(*constants.TLE_ADMIN)
     async def clear(self, ctx, emoji: str = constants._DEFAULT_STAR):
         """Clear the starboard channel for a specific emoji.
         Example: ;starboard clear ⭐"""
         await self._impl_clear(ctx, emoji)
 
     @starboard.command(brief='Remove a message from starboard')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(*constants.TLE_ADMIN)
     async def remove(self, ctx, original_message_id: int, emoji: str = constants._DEFAULT_STAR):
         """Remove a particular message from the starboard database for the given emoji."""
         await self._impl_remove(ctx, original_message_id, emoji)
@@ -125,7 +125,7 @@ class Starboard(CoreMixin, ImplMixin, BackfillMixin, commands.Cog):
         await ctx.send_help(ctx.command)
 
     @alias.command(name='add', brief='Add an alias for a main emoji')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(*constants.TLE_ADMIN)
     async def alias_add(self, ctx, alias_emoji: str, main_emoji: str = constants._DEFAULT_STAR):
         """Add an alias emoji that counts toward a main emoji's starboard.
         Example: ;starboard alias add 👍 ⭐"""
@@ -150,7 +150,7 @@ class Starboard(CoreMixin, ImplMixin, BackfillMixin, commands.Cog):
         ))
 
     @alias.command(name='remove', brief='Remove an emoji alias')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(*constants.TLE_ADMIN)
     async def alias_remove(self, ctx, alias_emoji: str):
         """Remove an alias emoji.
         Example: ;starboard alias remove 👍"""
@@ -398,7 +398,7 @@ class Starboard(CoreMixin, ImplMixin, BackfillMixin, commands.Cog):
     # --- Fix / resync commands ---
 
     @starboard.command(brief='Resync star count for a message from Discord')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(*constants.TLE_ADMIN)
     @requires_guild_feature('migration_ops')
     async def fix(self, ctx, message_ref: str, emoji: str = None):
         """Resync reactors for a starboarded message from Discord.

@@ -111,7 +111,7 @@ class TestQueensOptOut(_QueensCommandsBase):
         alice = _FakeDiscordMember(300, 'alice', 'Alice')
         mod = _FakeDiscordMember(
             999, 'mod', 'Mod',
-            roles=[SimpleNamespace(name=constants.TLE_MODERATOR)])
+            roles=[SimpleNamespace(name=constants.TLE_MODERATOR[0])])
         guild = _FakeGuild(100, members=[alice, mod])
         cog = Minigames(bot=None)
         db.optout_minigame_user(100, 'queens', alice.id, 1.0)

@@ -47,7 +47,7 @@ class ImplQueensTextMixin:
     async def _cmd_queens_admins_add(self, ctx, member):
         if not self._has_server_mod_role(ctx.author):
             raise MinigameCogError(
-                f'Only `{constants.TLE_ADMIN}` / `{constants.TLE_MODERATOR}` '
+                f'Only `{"` / `".join(constants.TLE_ALL_MOD_ROLES)}` '
                 'can change the LinkedIn Queens admin list.')
         admin_ids = self._queens_admin_ids(ctx.guild.id)
         before = len(admin_ids)
@@ -66,7 +66,7 @@ class ImplQueensTextMixin:
     async def _cmd_queens_admins_remove(self, ctx, member):
         if not self._has_server_mod_role(ctx.author):
             raise MinigameCogError(
-                f'Only `{constants.TLE_ADMIN}` / `{constants.TLE_MODERATOR}` '
+                f'Only `{"` / `".join(constants.TLE_ALL_MOD_ROLES)}` '
                 'can change the LinkedIn Queens admin list.')
         admin_ids = self._queens_admin_ids(ctx.guild.id)
         removed = str(member.id) in admin_ids

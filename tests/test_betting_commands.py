@@ -280,7 +280,7 @@ class TestBettingStaffPermissions:
         source = Path('tle/cogs/betting.py').read_text()
         block = source[source.index("@bet.command(name='transfer'"):
                        source.index("@bet.command(name='history'")]
-        assert '@commands.has_role(constants.TLE_ADMIN)' in block
+        assert '@commands.has_any_role(*constants.TLE_ADMIN)' in block
 
 
 class TestBettingSurfaceUX:

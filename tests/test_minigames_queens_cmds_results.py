@@ -200,7 +200,7 @@ class TestQueensCommandsResults(_QueensCommandsBase):
         bob = _FakeDiscordMember(301, 'bob', 'Bob')
         mod = _FakeDiscordMember(
             999, 'mod', 'Mod',
-            roles=[SimpleNamespace(name=constants.TLE_MODERATOR)])
+            roles=[SimpleNamespace(name=constants.TLE_MODERATOR[0])])
         guild = _FakeGuild(100, members=[alice, bob, mod])
         ctx = self._make_ctx(guild, mod)
         cog = Minigames(bot=None)

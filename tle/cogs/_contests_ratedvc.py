@@ -182,7 +182,7 @@ class RatedVcMixin:
             await self._watch_rated_vc(rated_vc_id)
 
     @commands.command(brief='Unregister this user from an ongoing ratedvc', usage='@user')
-    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    @commands.has_any_role(*constants.TLE_ADMIN, *constants.TLE_MODERATOR)
     async def _unregistervc(self, ctx, user: discord.Member):
         """ Unregister this user from an ongoing ratedvc.
         """
@@ -193,7 +193,7 @@ class RatedVcMixin:
         await ctx.send(embed=discord_common.embed_success(f'Successfully unregistered {user.mention} from the ongoing vc.'))
 
     @commands.command(brief='Set the rated vc channel to the current channel')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(*constants.TLE_ADMIN)
     async def set_ratedvc_channel(self, ctx):
         """ Sets the rated vc channel to the current channel.
         """

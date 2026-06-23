@@ -175,7 +175,7 @@ class Contests(RatedVcMixin, ProblemRatingsMixin, commands.Cog):
         await ctx.send_help(ctx.command)
 
     @remind.command(brief='Set reminder settings')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(*constants.TLE_ADMIN)
     async def here(self, ctx, role: discord.Role, *before: int):
         """Sets reminder channel to current channel, role to the given role, and reminder
         times to the given values in minutes."""
@@ -189,7 +189,7 @@ class Contests(RatedVcMixin, ProblemRatingsMixin, commands.Cog):
         self._reschedule_tasks(ctx.guild.id)
 
     @remind.command(brief='Clear all reminder settings')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(*constants.TLE_ADMIN)
     async def clear(self, ctx):
         cf_common.user_db.clear_reminder_settings(ctx.guild.id)
         await ctx.send(embed=discord_common.embed_success('Reminder settings cleared'))

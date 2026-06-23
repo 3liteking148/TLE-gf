@@ -132,4 +132,4 @@ class TestForceBetIsAdminOnly:
         source = Path('tle/cogs/betting.py').read_text()
         block = source[source.index("@bet.command(name='for'"):
                        source.index('async def bet_for')]
-        assert '@commands.has_role(constants.TLE_ADMIN)' in block
+        assert '@commands.has_any_role(*constants.TLE_ADMIN)' in block

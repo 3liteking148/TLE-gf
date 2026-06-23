@@ -30,12 +30,12 @@ class GuessGameCmdsMixin:
         await ctx.send_help(ctx.command)
 
     @guessgame.command(name='here', brief='Set the GuessGame channel')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(*constants.TLE_ADMIN)
     async def gg_here(self, ctx):
         await self._cmd_here(ctx, GUESSGAME_GAME)
 
     @guessgame.command(name='clear', brief='Clear the GuessGame channel')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(*constants.TLE_ADMIN)
     async def gg_clear(self, ctx):
         await self._cmd_clear(ctx, GUESSGAME_GAME)
 
@@ -70,37 +70,37 @@ class GuessGameCmdsMixin:
 
     @guessgame.command(name='remove', brief='Remove a user result for a puzzle',
                        usage='@user puzzle_id')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(*constants.TLE_ADMIN)
     async def gg_remove(self, ctx, member: CaseInsensitiveMember, puzzle_id: int):
         await self._cmd_remove(ctx, GUESSGAME_GAME, member, puzzle_id)
 
     @guessgame.group(name='import', brief='Manage imported history',
                      invoke_without_command=True)
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(*constants.TLE_ADMIN)
     async def gg_import(self, ctx):
         await ctx.send_help(ctx.command)
 
     @gg_import.command(name='start', brief='Rebuild imported history')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(*constants.TLE_ADMIN)
     async def gg_import_start(self, ctx, channel: ChannelOrThread = None):
         await self._cmd_import_start(ctx, GUESSGAME_GAME, channel)
 
     @gg_import.command(name='status', brief='Show import status')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(*constants.TLE_ADMIN)
     async def gg_import_status(self, ctx):
         await self._cmd_import_status(ctx, GUESSGAME_GAME)
 
     @gg_import.command(name='cancel', brief='Cancel a running import')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(*constants.TLE_ADMIN)
     async def gg_import_cancel(self, ctx):
         await self._cmd_import_cancel(ctx, GUESSGAME_GAME)
 
     @gg_import.command(name='clear', brief='Delete imported history')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(*constants.TLE_ADMIN)
     async def gg_import_clear(self, ctx):
         await self._cmd_import_clear(ctx, GUESSGAME_GAME)
 
     @guessgame.command(name='reparse', brief='Reparse all stored raw messages')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(*constants.TLE_ADMIN)
     async def gg_reparse(self, ctx):
         await self._cmd_reparse(ctx, GUESSGAME_GAME)

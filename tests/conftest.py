@@ -58,8 +58,9 @@ for pkg_name in _tle_stubs:
 constants_mod = sys.modules['tle.constants']
 constants_mod._DEFAULT_STAR_COLOR = 0xffaa10
 constants_mod._DEFAULT_STAR = '\N{WHITE MEDIUM STAR}'
-constants_mod.TLE_ADMIN = 'Admin'
-constants_mod.TLE_MODERATOR = 'Moderator'
+constants_mod.TLE_ADMIN = ('Admin',)
+constants_mod.TLE_MODERATOR = ('Moderator',)
+constants_mod.TLE_ALL_MOD_ROLES = ('Admin', 'Moderator')
 constants_mod.NOTO_SANS_CJK_BOLD_FONT_PATH = '/tmp/fake-font.ttf'
 constants_mod.NOTO_COLOR_EMOJI_FONT_PATH = '/tmp/fake-color-emoji.ttf'
 constants_mod.AKARI_START_RATING = 1200

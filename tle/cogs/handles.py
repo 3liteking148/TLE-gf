@@ -61,7 +61,7 @@ class Handles(GudgittersMixin, RankUpMixin, commands.Cog):
         cf_common.user_db.set_inactive([(member.guild.id, member.id)])
 
     @commands.command(brief='update status, mark guild members as active')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(*constants.TLE_ADMIN)
     async def _updatestatus(self, ctx):
         gid = ctx.guild.id
         active_ids = [m.id for m in ctx.guild.members]
@@ -93,7 +93,7 @@ class Handles(GudgittersMixin, RankUpMixin, commands.Cog):
         await ctx.send_help(ctx.command)
 
     @handle.command(brief='Set Codeforces handle of a user', aliases=["link"])
-    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    @commands.has_any_role(*constants.TLE_ADMIN, *constants.TLE_MODERATOR)
     async def set(self, ctx, member: discord.Member, handle: str):
         """Set Codeforces handle of a user."""
         # CF API returns correct handle ignoring case, update to it
@@ -177,7 +177,7 @@ class Handles(GudgittersMixin, RankUpMixin, commands.Cog):
         await ctx.send(embed=embed)
 
     @handle.command(brief='Unlink handle', aliases=["unlink"])
-    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    @commands.has_any_role(*constants.TLE_ADMIN, *constants.TLE_MODERATOR)
     async def remove(self, ctx, handle: str):
         """Remove Codeforces handle of a user."""
         handle, = await cf_common.resolve_handles(ctx, self.converter, ['-c' + handle])
@@ -201,7 +201,7 @@ class Handles(GudgittersMixin, RankUpMixin, commands.Cog):
         await self._unmagic_handles(ctx, [handle], {handle: member})
 
     @handle.command(brief='Resolve handles needing redirection')
-    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    @commands.has_any_role(*constants.TLE_ADMIN, *constants.TLE_MODERATOR)
     async def unmagic_all(self, ctx):
         """Updates handles of all users that have changed handles
         (typically new year's magic)"""

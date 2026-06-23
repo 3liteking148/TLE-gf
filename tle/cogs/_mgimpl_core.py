@@ -223,24 +223,23 @@ class ImplCoreMixin:
         """
         if member is None or member.id == ctx.author.id:
             return ctx.author
-        is_mod = any(r.name in (constants.TLE_ADMIN, constants.TLE_MODERATOR)
+        is_mod = any(r.name in constants.TLE_ALL_MOD_ROLES
                      for r in ctx.author.roles)
         if not is_mod:
             raise MinigameCogError(
-                f'Only `{constants.TLE_ADMIN}` / `{constants.TLE_MODERATOR}` '
+                f'Only `{"` / `".join(constants.TLE_ALL_MOD_ROLES)}` '
                 f'can register or unregister other users.')
         return member
 
     @staticmethod
     def _mod_role_error_message():
+        roles_fmt = '` or `'.join(constants.TLE_ALL_MOD_ROLES)
         return (
-            f'You need the `{constants.TLE_ADMIN}` or '
-            f'`{constants.TLE_MODERATOR}` role or Queens admin access.')
+            f'You need the `{roles_fmt}` role or Queens admin access.')
 
     @staticmethod
     def _has_server_mod_role(member):
-        allowed = {constants.TLE_ADMIN, constants.TLE_MODERATOR}
-        return any(r.name in allowed for r in getattr(member, 'roles', []))
+        return any(r.name in constants.TLE_ALL_MOD_ROLES for r in getattr(member, 'roles', []))
 
     @staticmethod
     def _queens_admin_ids(guild_id):
@@ -291,7 +290,7 @@ class ImplCoreMixin:
             return ctx.author
         if not self._has_queens_mod_access(ctx.guild.id, ctx.author):
             raise MinigameCogError(
-                f'Only `{constants.TLE_ADMIN}` / `{constants.TLE_MODERATOR}` '
+                f'Only `{"` / `".join(constants.TLE_ALL_MOD_ROLES)}` '
                 'or Queens admins can register or unregister other users.')
         return member
 

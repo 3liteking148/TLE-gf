@@ -40,7 +40,7 @@ class Complain(commands.Cog):
         # Rate limit check for non-privileged users
         author = ctx.author
         is_privileged = any(
-            r.name in (constants.TLE_ADMIN, constants.TLE_MODERATOR)
+            r.name in constants.TLE_ALL_MOD_ROLES
             for r in author.roles
         )
         if not is_privileged:
@@ -132,7 +132,7 @@ class Complain(commands.Cog):
         ))
 
     @complain.command(brief='Remove complaint(s)', aliases=['delete'])
-    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    @commands.has_any_role(*constants.TLE_ADMIN, *constants.TLE_MODERATOR)
     async def remove(self, ctx, *, ids: str):
         """Remove one or more complaints by ID. Admin/Moderator only.
 

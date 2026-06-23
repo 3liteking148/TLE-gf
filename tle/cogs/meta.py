@@ -110,7 +110,7 @@ class Meta(commands.Cog):
             cf_common.user_db.kvs_delete('restart_message')
 
     @meta.command(brief='Restarts TLE')
-    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    @commands.has_any_role(*constants.TLE_ADMIN, *constants.TLE_MODERATOR)
     async def restart(self, ctx):
         """Restarts the bot."""
         now = datetime.datetime.now().strftime('%H:%M:%S')
@@ -119,7 +119,7 @@ class Meta(commands.Cog):
         os._exit(RESTART)
 
     @meta.command(brief='Kill TLE')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(*constants.TLE_ADMIN)
     async def kill(self, ctx):
         """Restarts the bot."""
         await ctx.send('Dying...')
@@ -163,7 +163,7 @@ class Meta(commands.Cog):
         await self._show_backup_alert_status(ctx)
 
     @backup_alert.command(name='on', brief='Enable backup-staleness alerts')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(*constants.TLE_ADMIN)
     async def backup_alert_on(self, ctx):
         """Re-enable admin pings when no backup has run recently."""
         cf_common.user_db.kvs_delete(_BACKUP_ALERT_DISABLED_KEY)
@@ -176,7 +176,7 @@ class Meta(commands.Cog):
             'Backup-staleness alerts **enabled**.'))
 
     @backup_alert.command(name='off', brief='Disable backup-staleness alerts')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(*constants.TLE_ADMIN)
     async def backup_alert_off(self, ctx):
         """Stop admin pings about stale backups."""
         cf_common.user_db.kvs_set(_BACKUP_ALERT_DISABLED_KEY, '1')
@@ -298,10 +298,10 @@ class Meta(commands.Cog):
             f'Last successful backup: **{when}** ({ago} ago).\n'
             f'The off-site backup service may be down - please investigate.')
         role = discord.utils.get(getattr(channel.guild, 'roles', []),
-                                 name=constants.TLE_ADMIN)
+                                 name=constants.TLE_ADMIN[0])
         if role is None:
             logger.warning('backup watchdog: admin role %r not found; '
-                           'alerting without a ping.', constants.TLE_ADMIN)
+                           'alerting without a ping.', constants.TLE_ADMIN[0])
         try:
             await channel.send(
                 content=role.mention if role else None,
@@ -314,7 +314,7 @@ class Meta(commands.Cog):
         return True
 
     @meta.command(brief='Print bot guilds')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(*constants.TLE_ADMIN)
     async def guilds(self, ctx):
         "Replies with info on the bot's guilds"
         msg = [f'Guild ID: {guild.id} | Name: {guild.name} | Owner: {guild.owner.id} | Icon: {guild.icon}'
@@ -322,7 +322,7 @@ class Meta(commands.Cog):
         await ctx.send('```' + '\n'.join(msg) + '```')
 
     @meta.group(brief='Feature configuration', invoke_without_command=True)
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(*constants.TLE_ADMIN)
     async def config(self, ctx):
         """List every known feature flag and its current state for this guild."""
         configs = cf_common.user_db.get_all_guild_configs(ctx.guild.id)
@@ -342,7 +342,7 @@ class Meta(commands.Cog):
         await ctx.send(embed=discord_common.embed_neutral('\n'.join(lines)))
 
     @config.command(brief='Enable a feature')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(*constants.TLE_ADMIN)
     async def enable(self, ctx, feature: str):
         """Enable a feature for this guild."""
         if feature not in _KNOWN_FEATURES:
@@ -355,7 +355,7 @@ class Meta(commands.Cog):
         await ctx.send(embed=discord_common.embed_success(f'Feature `{feature}` enabled.'))
 
     @config.command(brief='Disable a feature')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(*constants.TLE_ADMIN)
     async def disable(self, ctx, feature: str):
         """Disable a feature for this guild."""
         if feature not in _KNOWN_FEATURES:
@@ -369,7 +369,7 @@ class Meta(commands.Cog):
 
 
     @meta.command(brief='Dump Discord message data')
-    @commands.has_role(constants.TLE_ADMIN)
+    @commands.has_any_role(*constants.TLE_ADMIN)
     async def log(self, ctx, message_ref: str):
         """Fetch a message by jump URL and dump all its metadata.
 

@@ -28,12 +28,12 @@ class AkariCmdsMixin:
         await ctx.send_help(ctx.command)
 
     @akari.command(name='here', brief='Set the Daily Akari channel to the current channel')
-    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    @commands.has_any_role(*constants.TLE_ADMIN, *constants.TLE_MODERATOR)
     async def akari_here(self, ctx):
         await self._cmd_here(ctx, AKARI_GAME)
 
     @akari.command(name='clear', brief='Clear the Daily Akari channel')
-    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    @commands.has_any_role(*constants.TLE_ADMIN, *constants.TLE_MODERATOR)
     async def akari_clear(self, ctx):
         await self._cmd_clear(ctx, AKARI_GAME)
 
@@ -74,7 +74,7 @@ class AkariCmdsMixin:
     @akari.command(name='ban',
                    brief='(Mod) Block a user from Akari ingestion',
                    usage='@user [reason...]')
-    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    @commands.has_any_role(*constants.TLE_ADMIN, *constants.TLE_MODERATOR)
     async def akari_ban(self, ctx, member: CaseInsensitiveMember, *,
                         reason: str = None):
         added = cf_common.user_db.ban_akari_user(
@@ -99,7 +99,7 @@ class AkariCmdsMixin:
     @akari.command(name='unban',
                    brief='(Mod) Lift an Akari ingestion ban',
                    usage='@user')
-    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    @commands.has_any_role(*constants.TLE_ADMIN, *constants.TLE_MODERATOR)
     async def akari_unban(self, ctx, member: CaseInsensitiveMember):
         removed = cf_common.user_db.unban_akari_user(ctx.guild.id, member.id)
         if not removed:
@@ -112,7 +112,7 @@ class AkariCmdsMixin:
 
     @akari.command(name='bans',
                    brief='(Mod) List Akari ingestion bans')
-    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    @commands.has_any_role(*constants.TLE_ADMIN, *constants.TLE_MODERATOR)
     async def akari_bans(self, ctx):
         rows = cf_common.user_db.get_akari_bans(ctx.guild.id)
         if not rows:
@@ -156,7 +156,7 @@ class AkariCmdsMixin:
     @akari_stats.command(name='debug',
                          brief='(Mod) Puzzle results with ratings for ALL players',
                          usage='<puzzle_id|date> [+test] [+exclude=…] [+include=…]')
-    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    @commands.has_any_role(*constants.TLE_ADMIN, *constants.TLE_MODERATOR)
     async def akari_stats_debug(self, ctx, *args):
         (remaining, _include_decay, excluded_ids, included_ids,
          _include_inactive, test_decay) = await self._extract_akari_filters(
@@ -172,63 +172,63 @@ class AkariCmdsMixin:
 
     @akari.command(name='remove', brief='Remove a user result for a puzzle',
                    usage='@user puzzle_id')
-    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    @commands.has_any_role(*constants.TLE_ADMIN, *constants.TLE_MODERATOR)
     async def akari_remove(self, ctx, member: CaseInsensitiveMember, puzzle_id: int):
         await self._cmd_remove(ctx, AKARI_GAME, member, puzzle_id)
 
     @akari.command(name='add', brief='Manually add a result for a user/puzzle',
                    usage='@user puzzle_id <perfect|N%> <time>')
-    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    @commands.has_any_role(*constants.TLE_ADMIN, *constants.TLE_MODERATOR)
     async def akari_add(self, ctx, member: CaseInsensitiveMember,
                         puzzle_id: int, result: str, time: str):
         await self._cmd_akari_add(ctx, member, puzzle_id, result, time)
 
     @akari.group(name='import', brief='Manage imported history',
                  invoke_without_command=True)
-    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    @commands.has_any_role(*constants.TLE_ADMIN, *constants.TLE_MODERATOR)
     async def akari_import(self, ctx):
         await ctx.send_help(ctx.command)
 
     @akari_import.command(name='start', brief='Rebuild imported history')
-    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    @commands.has_any_role(*constants.TLE_ADMIN, *constants.TLE_MODERATOR)
     async def akari_import_start(self, ctx, channel: ChannelOrThread = None):
         await self._cmd_import_start(ctx, AKARI_GAME, channel)
 
     @akari_import.command(name='status', brief='Show import status')
-    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    @commands.has_any_role(*constants.TLE_ADMIN, *constants.TLE_MODERATOR)
     async def akari_import_status(self, ctx):
         await self._cmd_import_status(ctx, AKARI_GAME)
 
     @akari_import.command(name='cancel', brief='Cancel a running import')
-    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    @commands.has_any_role(*constants.TLE_ADMIN, *constants.TLE_MODERATOR)
     async def akari_import_cancel(self, ctx):
         await self._cmd_import_cancel(ctx, AKARI_GAME)
 
     @akari_import.command(name='clear', brief='Delete imported history')
-    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    @commands.has_any_role(*constants.TLE_ADMIN, *constants.TLE_MODERATOR)
     async def akari_import_clear(self, ctx):
         await self._cmd_import_clear(ctx, AKARI_GAME)
 
     @akari_import.command(name='orphans',
                           brief='(Temp, mod) List imported results with no live counterpart')
-    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    @commands.has_any_role(*constants.TLE_ADMIN, *constants.TLE_MODERATOR)
     async def akari_import_orphans(self, ctx):
         await self._cmd_import_orphans(ctx, AKARI_GAME)
 
     @akari.command(name='reparse', brief='Reparse all stored raw messages')
-    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    @commands.has_any_role(*constants.TLE_ADMIN, *constants.TLE_MODERATOR)
     async def akari_reparse(self, ctx):
         await self._cmd_reparse(ctx, AKARI_GAME)
 
     @akari.command(name='export', brief='(Mod) Download a snapshot of the result tables')
-    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    @commands.has_any_role(*constants.TLE_ADMIN, *constants.TLE_MODERATOR)
     async def akari_export(self, ctx):
         await self._cmd_akari_export(ctx, AKARI_GAME)
 
     @akari.command(name='diff',
                    brief='(Mod) Diff an uploaded snapshot against current results',
                    usage='(attach a .db / .zip snapshot)')
-    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    @commands.has_any_role(*constants.TLE_ADMIN, *constants.TLE_MODERATOR)
     async def akari_diff(self, ctx):
         await self._cmd_akari_diff(ctx, AKARI_GAME)
 
@@ -262,7 +262,7 @@ class AkariCmdsMixin:
     @akari_rating.command(name='debug',
                           brief='(Mod) Rating graph for any user (incl. shadow-rated)',
                           usage='@user1 [@user2 ...] [+decay] [+test] [+exclude=…] [+include=…]')
-    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    @commands.has_any_role(*constants.TLE_ADMIN, *constants.TLE_MODERATOR)
     async def akari_rating_debug(self, ctx, *args):
         (members, include_decay, excluded_ids, included_ids,
          _include_inactive, test_decay) = await self._parse_akari_rating_args(
@@ -289,7 +289,7 @@ class AkariCmdsMixin:
     @akari_performance.command(name='debug',
                                brief='(Mod) Performance graph for any user (incl. shadow-rated)',
                                usage='@user1 [@user2 ...] [+test] [+exclude=…] [+include=…]')
-    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    @commands.has_any_role(*constants.TLE_ADMIN, *constants.TLE_MODERATOR)
     async def akari_performance_debug(self, ctx, *args):
         (members, _include_decay, excluded_ids, included_ids,
          _include_inactive, test_decay) = await self._parse_akari_rating_args(
@@ -318,7 +318,7 @@ class AkariCmdsMixin:
     @akari_history.command(name='debug',
                            brief='(Mod) Rating delta log for any user (incl. shadow-rated)',
                            usage='@user [+test] [+exclude=…] [+include=…]')
-    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    @commands.has_any_role(*constants.TLE_ADMIN, *constants.TLE_MODERATOR)
     async def akari_history_debug(self, ctx, *args):
         (members, _include_decay, excluded_ids, included_ids,
          _include_inactive, test_decay) = await self._parse_akari_rating_args(
@@ -332,7 +332,7 @@ class AkariCmdsMixin:
             test_decay=test_decay)
 
     @akari_ratings.command(name='recompute', brief='(Mod) Rebuild the rating snapshot')
-    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    @commands.has_any_role(*constants.TLE_ADMIN, *constants.TLE_MODERATOR)
     async def akari_ratings_recompute(self, ctx):
         self._recompute_akari_ratings(ctx.guild.id)
         await ctx.send(embed=discord_common.embed_success(
@@ -341,7 +341,7 @@ class AkariCmdsMixin:
     @akari_ratings.command(name='debug', aliases=['all'],
                            brief='(Mod) Leaderboard incl. shadow-rated (unopted-in) users',
                            usage='[+weekly] [+test] [+inactive] [+exclude=…] [+include=…]')
-    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    @commands.has_any_role(*constants.TLE_ADMIN, *constants.TLE_MODERATOR)
     async def akari_ratings_debug(self, ctx, *args):
         weekly = '+weekly' in args
         args = tuple(arg for arg in args if arg != '+weekly')

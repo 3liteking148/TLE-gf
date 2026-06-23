@@ -152,7 +152,7 @@ class TestQueensCommandsRegister(_QueensCommandsBase):
         db.set_guild_config(100, 'queens', '1')
         mod = _FakeDiscordMember(
             999, 'mod', 'Mod',
-            roles=[SimpleNamespace(name=constants.TLE_MODERATOR)])
+            roles=[SimpleNamespace(name=constants.TLE_MODERATOR[0])])
         bob = _FakeDiscordMember(301, 'bob', 'Bob')
         guild = _FakeGuild(100, members=[mod, bob])
         ctx = self._make_ctx(guild, mod)
@@ -194,7 +194,7 @@ class TestQueensCommandsRegister(_QueensCommandsBase):
         db.set_guild_config(100, 'queens', '1')
         mod = _FakeDiscordMember(
             999, 'mod', 'Mod',
-            roles=[SimpleNamespace(name=constants.TLE_MODERATOR)])
+            roles=[SimpleNamespace(name=constants.TLE_MODERATOR[0])])
         alice = _FakeDiscordMember(300, 'alice', 'Alice')
         bob = _FakeDiscordMember(301, 'bob', 'Bob')
         guild = _FakeGuild(100, members=[mod, alice, bob])
@@ -223,7 +223,7 @@ class TestQueensCommandsRegister(_QueensCommandsBase):
         db.set_guild_config(100, 'queens', '1')
         mod = _FakeDiscordMember(
             999, 'mod', 'Mod',
-            roles=[SimpleNamespace(name=constants.TLE_MODERATOR)])
+            roles=[SimpleNamespace(name=constants.TLE_MODERATOR[0])])
         bob = _FakeDiscordMember(301, 'bob', 'Bob')
         guild = _FakeGuild(100, members=[mod, bob])
         ctx = self._make_ctx(guild, mod)
@@ -246,7 +246,7 @@ class TestQueensCommandsRegister(_QueensCommandsBase):
         db.set_guild_config(100, 'queens', '1')
         mod = _FakeDiscordMember(
             999, 'mod', 'Mod',
-            roles=[SimpleNamespace(name=constants.TLE_MODERATOR)])
+            roles=[SimpleNamespace(name=constants.TLE_MODERATOR[0])])
         bob = _FakeDiscordMember(301, 'bob', 'Bob')
         guild = _FakeGuild(100, members=[mod, bob])
         ctx = self._make_ctx(guild, mod)
@@ -269,7 +269,7 @@ class TestQueensCommandsRegister(_QueensCommandsBase):
         db.set_guild_config(100, 'queens', '1')
         mod = _FakeDiscordMember(
             999, 'mod', 'Mod',
-            roles=[SimpleNamespace(name=constants.TLE_MODERATOR)])
+            roles=[SimpleNamespace(name=constants.TLE_MODERATOR[0])])
         bob = _FakeDiscordMember(301, 'dontdefense', 'dontdefense')
         guild = _FakeGuild(100, members=[mod, bob])
         ctx = self._make_ctx(guild, mod)

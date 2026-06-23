@@ -31,8 +31,7 @@ class AkariSlashMixin:
         name='akari', description='Daily Akari commands', guild_only=True)
 
     def _has_mod_role(self, interaction):
-        allowed = {constants.TLE_ADMIN, constants.TLE_MODERATOR}
-        return any(r.name in allowed for r in interaction.user.roles)
+        return any(r.name in constants.TLE_ALL_MOD_ROLES for r in interaction.user.roles)
 
     async def _slash_require_queens_mod(self, interaction):
         if self._has_queens_mod_access(interaction.guild.id, interaction.user):
@@ -230,8 +229,7 @@ class AkariSlashMixin:
         if not self._has_mod_role(interaction):
             return await self._slash_send_error(
                 interaction,
-                f'You need the `{constants.TLE_ADMIN}` or '
-                f'`{constants.TLE_MODERATOR}` role.')
+                f'You need the `{"` or `".join(constants.TLE_ALL_MOD_ROLES)}` role.')
         try:
             await self._cmd_here(_SlashCtx(interaction), AKARI_GAME)
         except Exception as _slash_exc:
@@ -243,8 +241,7 @@ class AkariSlashMixin:
         if not self._has_mod_role(interaction):
             return await self._slash_send_error(
                 interaction,
-                f'You need the `{constants.TLE_ADMIN}` or '
-                f'`{constants.TLE_MODERATOR}` role.')
+                f'You need the `{"` or `".join(constants.TLE_ALL_MOD_ROLES)}` role.')
         try:
             await self._cmd_clear(_SlashCtx(interaction), AKARI_GAME)
         except Exception as _slash_exc:
@@ -260,8 +257,7 @@ class AkariSlashMixin:
         if not self._has_mod_role(interaction):
             return await self._slash_send_error(
                 interaction,
-                f'You need the `{constants.TLE_ADMIN}` or '
-                f'`{constants.TLE_MODERATOR}` role.')
+                f'You need the `{"` or `".join(constants.TLE_ALL_MOD_ROLES)}` role.')
         try:
             await self._cmd_remove(
                 _SlashCtx(interaction), AKARI_GAME, member, puzzle_id)
@@ -281,8 +277,7 @@ class AkariSlashMixin:
         if not self._has_mod_role(interaction):
             return await self._slash_send_error(
                 interaction,
-                f'You need the `{constants.TLE_ADMIN}` or '
-                f'`{constants.TLE_MODERATOR}` role.')
+                f'You need the `{"` or `".join(constants.TLE_ALL_MOD_ROLES)}` role.')
         try:
             await self._cmd_akari_add(
                 _SlashCtx(interaction), member, puzzle_id, result, time)
@@ -295,8 +290,7 @@ class AkariSlashMixin:
         if not self._has_mod_role(interaction):
             return await self._slash_send_error(
                 interaction,
-                f'You need the `{constants.TLE_ADMIN}` or '
-                f'`{constants.TLE_MODERATOR}` role.')
+                f'You need the `{"` or `".join(constants.TLE_ALL_MOD_ROLES)}` role.')
         try:
             await self._cmd_reparse(_SlashCtx(interaction), AKARI_GAME)
         except Exception as _slash_exc:
@@ -312,8 +306,7 @@ class AkariSlashMixin:
         if not self._has_mod_role(interaction):
             return await self._slash_send_error(
                 interaction,
-                f'You need the `{constants.TLE_ADMIN}` or '
-                f'`{constants.TLE_MODERATOR}` role.')
+                f'You need the `{"` or `".join(constants.TLE_ALL_MOD_ROLES)}` role.')
         ctx = _SlashCtx(interaction)
         try:
             original = await interaction.original_response()
@@ -328,8 +321,7 @@ class AkariSlashMixin:
         if not self._has_mod_role(interaction):
             return await self._slash_send_error(
                 interaction,
-                f'You need the `{constants.TLE_ADMIN}` or '
-                f'`{constants.TLE_MODERATOR}` role.')
+                f'You need the `{"` or `".join(constants.TLE_ALL_MOD_ROLES)}` role.')
         try:
             await self._cmd_import_status(_SlashCtx(interaction), AKARI_GAME)
         except Exception as _slash_exc:
@@ -341,8 +333,7 @@ class AkariSlashMixin:
         if not self._has_mod_role(interaction):
             return await self._slash_send_error(
                 interaction,
-                f'You need the `{constants.TLE_ADMIN}` or '
-                f'`{constants.TLE_MODERATOR}` role.')
+                f'You need the `{"` or `".join(constants.TLE_ALL_MOD_ROLES)}` role.')
         try:
             await self._cmd_import_cancel(_SlashCtx(interaction), AKARI_GAME)
         except Exception as _slash_exc:
@@ -354,8 +345,7 @@ class AkariSlashMixin:
         if not self._has_mod_role(interaction):
             return await self._slash_send_error(
                 interaction,
-                f'You need the `{constants.TLE_ADMIN}` or '
-                f'`{constants.TLE_MODERATOR}` role.')
+                f'You need the `{"` or `".join(constants.TLE_ALL_MOD_ROLES)}` role.')
         try:
             await self._cmd_import_clear(_SlashCtx(interaction), AKARI_GAME)
         except Exception as _slash_exc:

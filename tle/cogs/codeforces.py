@@ -122,7 +122,7 @@ class Codeforces(CodeforcesGitgudMixin, CodeforcesProblemsMixin, commands.Cog):
 
     @commands.command(brief='Force skip a challenge')
     @cf_common.user_guard(group='gitgud')
-    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    @commands.has_any_role(*constants.TLE_ADMIN, *constants.TLE_MODERATOR)
     async def _nogud(self, ctx, member: discord.Member):
         await self._force_nogud_impl(ctx, member)
 
