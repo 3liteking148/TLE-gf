@@ -67,7 +67,7 @@ class Dueling(DuelImplMixin, commands.Cog):
                 'You must use this command in duel channel.')
 
     @duel.command(brief='Set the duel channel to the current channel')
-    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)  # OK
+    @commands.has_any_role(*constants.TLE_ADMIN, *constants.TLE_MODERATOR)  # OK
     async def set_channel(self, ctx):
         """ Sets the duel channel to the current channel.
         """
@@ -349,7 +349,7 @@ class Dueling(DuelImplMixin, commands.Cog):
         await self.invalidate_duel(ctx, duelid, challenger_id, challengee_id)
 
     @duel.command(brief='Invalidate a duel', usage='[duelist]')
-    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    @commands.has_any_role(*constants.TLE_ADMIN, *constants.TLE_MODERATOR)
     async def _invalidate(self, ctx, member: discord.Member):
         """Declare an ongoing duel invalid."""
         active = cf_common.user_db.check_duel_complete(member.id, ctx.guild.id)
