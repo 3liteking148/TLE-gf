@@ -39,6 +39,7 @@ while true; do
     git pull
     poetry install
     bootstrap_cairo
+    export TLE_ALLOW_COLOR_EMOJI=0
     poetry run python -m tle
 
     echo '==================================================================='
