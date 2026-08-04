@@ -176,7 +176,7 @@ async def presence(bot):
                 name=f'{target.display_name} orz'))
             await asyncio.sleep(10 * 60)
 
-    presence_task.start()
+    #presence_task.start()
 
 class TleHelp(commands.DefaultHelpCommand):
     async def filter_commands(self, cmds, *, sort=False, key=None):
