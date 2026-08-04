@@ -233,14 +233,14 @@ class AkariCmdsMixin:
         await self._cmd_reparse(ctx, AKARI_GAME)
 
     @akari.command(name='export', brief='(Mod) Download a snapshot of the result tables')
-    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    @commands.has_any_role(*constants.TLE_ADMIN, *constants.TLE_MODERATOR)
     async def akari_export(self, ctx):
         await self._cmd_akari_export(ctx, AKARI_GAME)
 
     @akari.command(name='diff',
                    brief='(Mod) Diff an uploaded snapshot against current results',
                    usage='(attach a .db / .zip snapshot)')
-    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    @commands.has_any_role(*constants.TLE_ADMIN, *constants.TLE_MODERATOR)
     async def akari_diff(self, ctx):
         await self._cmd_akari_diff(ctx, AKARI_GAME)
 

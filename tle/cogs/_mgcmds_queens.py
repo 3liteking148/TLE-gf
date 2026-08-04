@@ -261,14 +261,14 @@ class QueensCmdsMixin:
         await self._cmd_import_orphans(ctx, QUEENS_GAME)
 
     @queens.command(name='export', brief='(Mod) Download a snapshot of the result tables')
-    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    @commands.has_any_role(*constants.TLE_ADMIN, *constants.TLE_MODERATOR)
     async def queens_export(self, ctx):
         await self._cmd_akari_export(ctx, QUEENS_GAME)
 
     @queens.command(name='diff',
                     brief='(Mod) Diff an uploaded snapshot against current results',
                     usage='(attach a .db / .zip snapshot)')
-    @commands.has_any_role(constants.TLE_ADMIN, constants.TLE_MODERATOR)
+    @commands.has_any_role(*constants.TLE_ADMIN, *constants.TLE_MODERATOR)
     async def queens_diff(self, ctx):
         await self._cmd_akari_diff(ctx, QUEENS_GAME)
 
