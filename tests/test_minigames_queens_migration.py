@@ -111,7 +111,9 @@ class TestQueensImportMigration:
         assert set(materialized) == {'300', '301'}
         assert materialized['300'].time_seconds == 8
         assert materialized['301'].time_seconds == 5
-        assert saved == 2
+        # Alice's original live Discord row remains the projection; only the
+        # imported Bob source needs a newly materialized row.
+        assert saved == 1
         assert db.conn.execute(
             "SELECT COUNT(*) FROM minigame_import_result "
             "WHERE guild_id = '100' AND game = 'queens'"
@@ -135,7 +137,7 @@ class TestQueensImportMigration:
         ])
         ctx = SimpleNamespace(
             guild=guild,
-            author=_FakeDiscordMember(999, 'bot', 'Bot'),
+            author=guild.get_member(300),
             channel=_FakeChannel(200),
             message=SimpleNamespace(id=555),
         )
@@ -148,13 +150,13 @@ class TestQueensImportMigration:
                 'Unknown Person\n'
                 '\U0001f913\U0001f48e No hints & no mistakes!\n'
                 '0:05\n'
-            ), skip_importer=True)
+            ))
 
         new_resolved, new_unresolved = cog._filter_new_queens_entries(
             100, preview)
         preview = preview._replace(
             resolved=new_resolved, unresolved=new_unresolved)
-        saved = cog._save_queens_import(ctx, preview, skip_wipe=True)
+        saved = cog._save_queens_import(ctx, preview)
 
         assert saved.resolved == 1
         assert saved.unresolved == 1
@@ -319,15 +321,52 @@ class TestQueensImportMigration:
         assert cog._sync_queens_materialized_results(100) == 1
         writes = []
 
-        def record_write(*args, **kwargs):
-            writes.append(args)
+        def record_write(rows):
+            writes.extend(rows)
             raise AssertionError('current projection row was rewritten')
 
-        monkeypatch.setattr(db, 'save_minigame_result', record_write)
+        monkeypatch.setattr(db, 'save_minigame_results', record_write)
 
         assert cog._sync_queens_materialized_results(
             100, migrate_legacy=False) == 0
         assert writes == []
+
+    def test_sync_batches_projection_writes_and_optout_lookup(
+            self, db, monkeypatch):
+        monkeypatch.setattr(cf_common, 'user_db', db)
+        db.set_minigame_player_link(
+            100, 'queens', 300, 'Alice LinkedIn',
+            normalize_queens_name('Alice LinkedIn'), None, 1.0, 999)
+        for index, day in enumerate(('2026-06-08', '2026-06-09'), start=1):
+            db.save_minigame_unresolved_result(
+                100, 'queens', normalize_queens_name('Alice LinkedIn'),
+                'Alice LinkedIn', 200, _queens_number(day), day,
+                100, index + 3, True, f'source {index}')
+        cog = Minigames(bot=None)
+        batch_sizes = []
+        optout_reads = 0
+        original_batch = db.save_minigame_results
+        original_optouts = db.get_minigame_optouts
+
+        def record_batch(rows):
+            rows = list(rows)
+            batch_sizes.append(len(rows))
+            return original_batch(rows)
+
+        def record_optouts(*args, **kwargs):
+            nonlocal optout_reads
+            optout_reads += 1
+            return original_optouts(*args, **kwargs)
+
+        monkeypatch.setattr(db, 'save_minigame_results', record_batch)
+        monkeypatch.setattr(db, 'get_minigame_optouts', record_optouts)
+
+        assert cog._sync_queens_materialized_results(
+            100, migrate_legacy=False) == 2
+        assert batch_sizes == [2]
+        # Per-result is_rated state is authoritative; sync no longer needs a
+        # whole-user opt-out lookup.
+        assert optout_reads == 0
 
     def test_generic_recompute_writes_queens_snapshot_only(self, db, monkeypatch):
         monkeypatch.setattr(cf_common, 'user_db', db)
@@ -363,7 +402,8 @@ class TestQueensImportMigration:
         assert set(queens) == {'300', '301', '302'}
         assert queens['300'].rating > queens['301'].rating
         assert abs(queens['301'].rating - queens['302'].rating) < 1e-9
-        assert queens['300'].games == 2
+        # 300's second day is solo — not a game (contested-days semantics).
+        assert queens['300'].games == 1
         assert queens['301'].games == 1
         assert queens['302'].games == 1
 

@@ -2,6 +2,7 @@ import asyncio
 import logging
 import functools
 import random
+import re
 
 import discord
 from discord.ext import commands
@@ -17,6 +18,44 @@ _CF_COLORS = (0xFFCA1F, 0x198BCC, 0xFF2020)
 _SUCCESS_GREEN = 0x28A745
 _ALERT_AMBER = 0xFFBF00
 _BOT_PREFIX = ';'
+_REDACTED_CREDENTIAL = '[credentials redacted]'
+
+# Provider keys have stable prefixes, but allow only credential-like lengths so
+# ordinary prose such as "xai-api" or "an AIza prefix" is left untouched.
+_PROVIDER_CREDENTIAL_RE = re.compile(
+    r'(?<![A-Za-z0-9_-])(?:'
+    r'(?:xai-|AIza)[A-Za-z0-9_-]{20,}|'
+    r'(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{20,}|'
+    r'AKIA[A-Z0-9]{16}|'
+    r'eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})'
+    r'(?![A-Za-z0-9_-])',
+)
+_LLM_KEY_COMMAND_RE = re.compile(
+    r'\A(?P<command>\s*(?:;|<@!?\d+>\s*)(?:llm|ai)\s+'
+    r'(?:keys|grokkeys|xkeys|xaikeys))(?=\s|\Z)[\s\S]*\Z',
+    re.IGNORECASE,
+)
+
+
+def redact_credentials(value):
+    """Return log-safe text with provider credentials removed.
+
+    A key-management command's entire argument tail is sensitive even when a
+    pasted value has an unfamiliar format. Provider-shaped tokens are also
+    redacted wherever they occur, including exception messages.
+    """
+    text = str(value)
+    command = _LLM_KEY_COMMAND_RE.match(text)
+    if command is not None:
+        text = f'{command.group("command")} {_REDACTED_CREDENTIAL}'
+    return _PROVIDER_CREDENTIAL_RE.sub(_REDACTED_CREDENTIAL, text)
+
+
+class RedactingFormatter(logging.Formatter):
+    """Sanitize the fully rendered record, including exception traceback."""
+
+    def format(self, record):
+        return redact_credentials(super().format(record))
 
 
 def embed_neutral(desc, color=None):
@@ -125,7 +164,9 @@ async def bot_error_handler(ctx, exception):
         msg = 'Ignoring exception in command {}:'.format(ctx.command)
         exc_info = type(exception), exception, exception.__traceback__
         extra = {
-            "message_content": ctx.message.content,
+            # Never attach a raw credential-bearing command to a LogRecord:
+            # file handlers and third-party handlers receive the same record.
+            "message_content": redact_credentials(ctx.message.content),
             "jump_url": ctx.message.jump_url
         }
         logger.exception(msg, exc_info=exc_info, extra=extra)
@@ -178,7 +219,48 @@ async def presence(bot):
 
     #presence_task.start()
 
+
 class TleHelp(commands.DefaultHelpCommand):
+    """Send both requested and automatically-triggered help publicly."""
+
+    def get_destination(self):
+        return self.context.channel
+
+    async def _send_help_pages(self, pages):
+        for page in pages:
+            await self.get_destination().send(page)
+
+    async def send_error_message(self, error, /):
+        await self._send_help_pages((error,))
+
+    async def send_pages(self):
+        await self._send_help_pages(tuple(self.paginator.pages))
+
+    async def send_group_help(self, group):
+        compact = self._compact_help_extra(group, 'compact_help')
+        if compact is not None:
+            await self.get_destination().send(compact)
+            return
+        await super().send_group_help(group)
+
+    async def send_command_help(self, command):
+        renderer = self._compact_help_extra(
+            command, 'compact_command_help', from_root=True)
+        if renderer is not None:
+            content = renderer(command) if callable(renderer) else renderer
+            await self.get_destination().send(content)
+            return
+        await super().send_command_help(command)
+
+    @staticmethod
+    def _compact_help_extra(command, key, *, from_root=False):
+        current = command
+        if from_root:
+            while getattr(current, 'parent', None) is not None:
+                current = current.parent
+        extras = getattr(current, 'extras', None) or {}
+        return extras.get(key)
+
     async def filter_commands(self, cmds, *, sort=False, key=None):
         """Like the default, but also drops commands whose ``extras`` declares a
         ``help_hidden_when`` predicate that returns truthy for this invocation.

@@ -8,7 +8,6 @@ import time
 from tle import constants
 from tle.util import codeforces_common as cf_common
 from tle.util import discord_common
-from tle.util.minigame_rating import compute_ratings
 from tle.util.akari_difficulty import fetch_akari_difficulties
 from tle.util.akari_weekly import (
     compute_weekly_ratings, current_week_standings, week_start,
@@ -23,8 +22,9 @@ from tle.cogs._minigame_akari import (
 from tle.cogs._minigame_helpers import (
     MinigameCogError, _mg, _safe_member_name,
 )
-from tle.cogs._minigame_tables import (
-    _PuzzlePlayerInfo,
+from tle.cogs._minigame_queens_filters import (
+    _filter_queens_weekday_rows, _filter_queens_rating_date_rows,
+    _queens_filter_suffix, _queens_improved_title_suffix,
 )
 
 logger = logging.getLogger(__name__)
@@ -111,7 +111,8 @@ class ImplAkariAMixin:
 
     async def _cmd_akari_ratings(self, ctx, *, excluded_ids=None,
                                   included_ids=None, include_inactive=False,
-                                  test_decay=False, weekly=False):
+                                  test_decay=False, weekly=False,
+                                  weekdays=None, date_bounds=None, beta=False):
         """Guild leaderboard — registered, recently-active players only.
 
         ``excluded_ids`` / ``included_ids`` run an ad-hoc replay with the
@@ -126,28 +127,38 @@ class ImplAkariAMixin:
         filtered out — they're never a real player, just a stale row.
         """
         self._require_enabled(ctx.guild.id, AKARI_GAME)
+        self._validate_akari_beta(
+            beta, test_decay=test_decay, weekly=weekly)
         registrants = cf_common.user_db.get_akari_registrants(ctx.guild.id)
+        # Banned players stay rated (forward-only ban) but are hidden from
+        # public boards at display time, like Queens'; debug shows them.
+        banned_ids = self._akari_banned_user_ids(ctx.guild.id)
+        visible = registrants - banned_ids
+        filtered = bool(excluded_ids or included_ids or test_decay or beta
+                        or weekdays is not None or date_bounds is not None)
         if weekly:
             rows, standings = await self._akari_weekly_preview(
                 ctx.guild.id,
                 excluded_ids=excluded_ids,
                 included_ids=included_ids,
+                weekdays=weekdays, date_bounds=date_bounds,
             )
             # The public board honours the rating opt-out: unregistered
             # players are dropped from the provisional scores table too, not
             # just from the rating table (the debug command shows everyone).
-            standings = [s for s in standings if s.user_id in registrants]
-        elif excluded_ids or included_ids or test_decay:
+            standings = [s for s in standings if s.user_id in visible]
+        elif filtered:
             rows = self._akari_filtered_rating_rows(
                 ctx.guild.id, excluded_ids=excluded_ids,
-                included_ids=included_ids, test_decay=test_decay)
+                included_ids=included_ids, test_decay=test_decay,
+                weekdays=weekdays, date_bounds=date_bounds, beta=beta)
         else:
             rows = cf_common.user_db.get_akari_ratings(ctx.guild.id)
         if not rows and not (weekly and standings):
             raise MinigameCogError(
                 f'No {AKARI_GAME.display_name} ratings yet. They appear once '
                 f'players post results.')
-        registered = [r for r in rows if r.user_id in registrants]
+        registered = [r for r in rows if r.user_id in visible]
         if not registered and not (weekly and standings):
             raise MinigameCogError(
                 f'No registered {AKARI_GAME.display_name} players yet. '
@@ -169,6 +180,9 @@ class ImplAkariAMixin:
             title += ' [test decay]'
         if weekly:
             title += ' [weekly preview]'
+        title += _queens_improved_title_suffix(beta)
+        title += _queens_filter_suffix(
+            weekdays=weekdays, date_bounds=date_bounds)
         if shown:
             table_kwargs = {'games_label': 'Weeks'} if weekly else {}
             discord_file = _mg()._get_akari_rating_table_image_file(
@@ -178,6 +192,11 @@ class ImplAkariAMixin:
             await ctx.send(file=discord_file)
         if weekly:
             await self._send_akari_weekly_scores(ctx, standings)
+
+    @staticmethod
+    def _akari_banned_user_ids(guild_id):
+        return {str(row.user_id)
+                for row in cf_common.user_db.get_akari_bans(guild_id)}
 
     @staticmethod
     async def _send_akari_weekly_scores(ctx, standings):
@@ -200,13 +219,16 @@ class ImplAkariAMixin:
         await ctx.send(file=score_file)
 
     async def _akari_weekly_preview(self, guild_id, *, excluded_ids=None,
-                                    included_ids=None):
+                                    included_ids=None, weekdays=None,
+                                    date_bounds=None):
         """Build weekly ratings plus provisional current-week standings."""
         result_rows = cf_common.user_db.get_minigame_results_for_guild(
             guild_id, AKARI_GAME.name)
         result_rows = self._filter_akari_rows(
             result_rows, excluded_ids=excluded_ids,
             included_ids=included_ids)
+        result_rows = _filter_queens_weekday_rows(result_rows, weekdays)
+        result_rows = _filter_queens_rating_date_rows(result_rows, date_bounds)
         today = dt.date.today()
         current_puzzle = _mg().expected_puzzle_number(today)
         wanted = set()
@@ -266,208 +288,17 @@ class ImplAkariAMixin:
             'decay_max': constants.AKARI_DECAY_BASE,
         }
 
-    def _akari_user_history(self, guild_id, user_id, *, include_decay=False,
-                            excluded_ids=None, included_ids=None,
-                            test_decay=False):
-        """Replay the guild's results and return one user's per-day history.
+    def _akari_extra_compute_kwargs(self, test_decay=False):
+        """Akari overrides for the generic minigame replay helpers.
 
-        Shared by the rating and performance graphs — the replay is the same;
-        each caller picks the field it needs off the :class:`HistoryPoint`s.
-        ``include_decay=True`` additionally emits one entry per absent puzzle
-        day for the rating graph's ``+decay`` mode.  ``excluded_ids`` and
-        ``included_ids`` (sets of stringified user IDs) compose the include /
-        exclude filter before the replay so the queried user's history
-        reflects only the surviving field.  ``test_decay=True`` replays under
-        the experimental decay model (see ``_akari_test_decay_kwargs``).
+        Pins ``current_puzzle_number``/``max_puzzle`` through the
+        monkeypatch-sensitive ``_mg().expected_puzzle_number`` (rather than
+        ``AKARI_GAME.rating.current_puzzle_number_fn``, which resolves to the
+        unpatched module function) and folds in the ``+test`` decay kwargs.
         """
-        state, history = self._akari_user_data(
-            guild_id, user_id, include_decay=include_decay,
-            excluded_ids=excluded_ids, included_ids=included_ids,
-            test_decay=test_decay)
-        del state  # this helper returns history only; callers needing both use _akari_user_data
-        return history
-
-    def _akari_user_data(self, guild_id, user_id, *, include_decay=False,
-                          excluded_ids=None, included_ids=None,
-                          test_decay=False):
-        """One replay, two artefacts: ``(RatingState, [HistoryPoint])`` for one user.
-
-        Used by rating / performance commands that show both an embed (needs
-        the snapshot-shaped state) and a graph (needs the history).  Saves a
-        second replay versus calling ``_akari_user_history`` separately.
-        Returns ``(None, [])`` when the user has no rated days.
-        """
-        result_rows = cf_common.user_db.get_minigame_results_for_guild(
-            guild_id, AKARI_GAME.name)
-        result_rows = self._filter_akari_rows(
-            result_rows, excluded_ids=excluded_ids, included_ids=included_ids)
         current_puzzle = _mg().expected_puzzle_number(dt.date.today())
-        max_puzzle = current_puzzle + constants.AKARI_MAX_PUZZLE_LOOKAHEAD
-        histories = {}
-        states = compute_ratings(
-            result_rows, max_puzzle=max_puzzle, histories=histories,
-            include_decay_in_history=include_decay,
-            current_puzzle_number=current_puzzle,
-            **self._akari_test_decay_kwargs(test_decay))
-        key = str(user_id)
-        return states.get(key), histories.get(key, [])
-
-    def _akari_filtered_rating_rows(self, guild_id, *, excluded_ids=None,
-                                     included_ids=None, test_decay=False):
-        """Fresh leaderboard states with some users excluded/included — bypasses cache.
-
-        Used by ``;mg akari ratings +exclude=...`` / ``+include=...`` so the
-        persisted snapshot (the canonical rating store) stays untouched while
-        we render an ad-hoc view.  Returns the same
-        ``rating DESC, games DESC, user_id ASC`` order ``get_akari_ratings``
-        produces, so the rest of the rendering path doesn't care which source
-        it got.
-        """
-        rows = cf_common.user_db.get_minigame_results_for_guild(
-            guild_id, AKARI_GAME.name)
-        rows = self._filter_akari_rows(
-            rows, excluded_ids=excluded_ids, included_ids=included_ids)
-        current_puzzle = _mg().expected_puzzle_number(dt.date.today())
-        max_puzzle = current_puzzle + constants.AKARI_MAX_PUZZLE_LOOKAHEAD
-        states = compute_ratings(
-            rows, max_puzzle=max_puzzle,
-            current_puzzle_number=current_puzzle,
-            **self._akari_test_decay_kwargs(test_decay))
-        return sorted(
-            states.values(),
-            key=lambda s: (-s.rating, -s.games, int(s.user_id)),
-        )
-
-    def _akari_puzzle_change_info(self, guild_id, puzzle_number,
-                                   *, excluded_ids=None, included_ids=None,
-                                   test_decay=False):
-        """Map ``user_id -> _PuzzlePlayerInfo(pre_rating, delta)`` for puzzle N.
-
-        Replays the full guild history once and pulls each user's HistoryPoint
-        for the target puzzle; the pre-contest rating is the post-contest one
-        minus the day's delta (so first-timers get the seed value, 1200).
-        Used by ``;mg akari stats <puzzle>`` to colour each row by the
-        player's pre-puzzle tier (post-puzzle would be circular) and to fill
-        the Δ column with the day's signed change.  ``excluded_ids`` /
-        ``included_ids`` apply the same include / exclude filter as the rest
-        of the command surface so the surfaced pre-rating and delta reflect
-        the chosen field.
-        """
-        result_rows = cf_common.user_db.get_minigame_results_for_guild(
-            guild_id, AKARI_GAME.name)
-        result_rows = self._filter_akari_rows(
-            result_rows, excluded_ids=excluded_ids, included_ids=included_ids)
-        current_puzzle = _mg().expected_puzzle_number(dt.date.today())
-        max_puzzle = current_puzzle + constants.AKARI_MAX_PUZZLE_LOOKAHEAD
-        histories = {}
-        compute_ratings(
-            result_rows, max_puzzle=max_puzzle, histories=histories,
-            current_puzzle_number=current_puzzle,
-            **self._akari_test_decay_kwargs(test_decay))
-        info = {}
-        for user_id, points in histories.items():
-            for point in points:
-                if point.puzzle_number == puzzle_number:
-                    info[user_id] = _PuzzlePlayerInfo(
-                        pre_rating=point.rating - point.delta,
-                        delta=point.delta,
-                    )
-                    break
-        return info
-
-    async def _extract_akari_filters(self, ctx, args):
-        """Pull akari-wide filter flags out of ``args``.
-
-        Recognised flags:
-
-        - ``+decay``: include decay days in history/graph output
-        - ``+test``: preview the experimental decay model (first missed day
-          costs a virtual last-place finish; later misses use a flat,
-          non-ramping pull).  Forces a fresh replay — the persisted rating
-          snapshot is never touched, so this is a safe what-if view.
-        - ``+inactive``: keep players whose last puzzle is older than
-          ``AKARI_RANKING_MAX_INACTIVE_DAYS`` (default behaviour hides them
-          from the ratings leaderboard).  Only meaningful for commands that
-          surface an active-only leaderboard; harmless elsewhere.
-        - ``+exclude=user1,user2,...``: pretend the listed users never played;
-          they drop out of result tables, leaderboards, and every other user's
-          rating calculation
-        - ``+include=user1,user2,...``: the inverse — *only* the listed users
-          count; everyone else is dropped before the replay.  When both flags
-          are supplied they compose: the universe shrinks to the include set
-          first, then the exclude set is removed from it.
-
-        Each comma-separated name is resolved via the usual case-insensitive
-        member converter, so mentions / display names / raw IDs all work.
-
-        Returns ``(remaining_args, include_decay, excluded_ids, included_ids,
-        include_inactive, test_decay)``.  Unknown flags pass through in
-        ``remaining_args``; the caller decides whether they're a member, a
-        puzzle selector, or an error.
-        """
-        remaining = []
-        include_decay = False
-        include_inactive = False
-        test_decay = False
-        excluded_ids = set()
-        included_ids = set()
-        for arg in args:
-            if arg == '+decay':
-                include_decay = True
-            elif arg == '+test':
-                test_decay = True
-            elif arg == '+inactive':
-                include_inactive = True
-            elif arg.startswith('+exclude=') or arg.startswith('+include='):
-                positive = arg.startswith('+include=')
-                payload = arg[len('+include=' if positive else '+exclude='):]
-                target_set = included_ids if positive else excluded_ids
-                for raw in payload.split(','):
-                    name = raw.strip()
-                    if not name:
-                        continue
-                    member = await self._resolve_member(ctx, name)
-                    target_set.add(str(member.id))
-            else:
-                remaining.append(arg)
-        return (remaining, include_decay, excluded_ids, included_ids,
-                include_inactive, test_decay)
-
-    @staticmethod
-    def _filter_akari_rows(rows, *, excluded_ids=None, included_ids=None):
-        """Apply ``+include`` and ``+exclude`` filters to a result-row iterable.
-
-        Include narrows first, exclude trims; composition is the natural
-        intersection of the two sets minus the excluded ones.  Both arguments
-        accept ``None`` / empty set for "no filter", and the function returns
-        the input untouched in that case.
-        """
-        if included_ids:
-            rows = [r for r in rows if str(r.user_id) in included_ids]
-        if excluded_ids:
-            rows = [r for r in rows if str(r.user_id) not in excluded_ids]
-        return rows
-
-    async def _parse_akari_rating_args(self, ctx, args, *, member_required=False):
-        """Pull ``+decay`` / ``+test`` / ``+inactive`` / ``+exclude=`` /
-        ``+include=`` and zero-or-more members out of the args.
-
-        Returns ``(members, include_decay, excluded_ids, included_ids,
-        include_inactive, test_decay)``.  Every remaining token is resolved
-        via the case-insensitive member converter, so the rating / performance
-        graphs can plot multiple users at once (``;mg akari rating @alice @bob``).
-        An empty list falls back to ``[ctx.author]`` unless
-        ``member_required=True`` (the ``debug`` subcommands), which then
-        errors with a usage hint.
-        """
-        (remaining, include_decay, excluded_ids, included_ids,
-         include_inactive, test_decay) = await self._extract_akari_filters(
-            ctx, args)
-        members = [await self._resolve_member(ctx, token) for token in remaining]
-        if not members:
-            if member_required:
-                raise MinigameCogError('A user is required for this command.')
-            members = [ctx.author]
-        return (members, include_decay, excluded_ids, included_ids,
-                include_inactive, test_decay)
-
+        return {
+            'current_puzzle_number': current_puzzle,
+            'max_puzzle': current_puzzle + constants.AKARI_MAX_PUZZLE_LOOKAHEAD,
+            **self._akari_test_decay_kwargs(test_decay),
+        }

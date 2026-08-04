@@ -70,6 +70,38 @@ constants_mod.AKARI_DECAY_MAX = 0.08
 constants_mod.AKARI_DECAY_GRACE = 0
 constants_mod.AKARI_MAX_PUZZLE_LOOKAHEAD = 2
 constants_mod.AKARI_RANKING_MAX_INACTIVE_DAYS = 30
+constants_mod.LLM_MODELS = ('model-a', 'model-b')
+constants_mod.GEMINI_API_KEYS = ''
+constants_mod.XAI_API_KEYS = ''
+constants_mod.XAI_MODEL = 'grok-test'
+constants_mod.XAI_MODELS = ('grok-test',)
+constants_mod.XAI_MAX_OUTPUT_TOKENS = 1536
+constants_mod.XAI_ROUTER_MAX_OUTPUT_TOKENS = 256
+constants_mod.XAI_USER_RATE_LIMIT = 15
+constants_mod.XAI_USER_RATE_WINDOW_SECONDS = 60 * 60
+constants_mod.XAI_DAILY_REQUEST_LIMIT = 200
+constants_mod.XAI_INPUT_USD_PER_MILLION = 2.00
+constants_mod.XAI_OUTPUT_USD_PER_MILLION = 6.00
+constants_mod.XAI_DAILY_BUDGET_USD = 0.50
+constants_mod.XAI_REQUEST_RESERVE_INPUT_TOKENS = 6000
+constants_mod.LLM_REQUEST_TIMEOUT_SECONDS = 90
+constants_mod.LLM_ROUTER_TIMEOUT_SECONDS = 15
+constants_mod.LLM_QUEUE_TIMEOUT_SECONDS = 10
+constants_mod.LLM_GEMINI_CONCURRENCY = 3
+constants_mod.LLM_XAI_CONCURRENCY = 2
+constants_mod.LLM_TELEMETRY_RETENTION_DAYS = 30
+constants_mod.LLM_MAX_PROMPT_CHARS = 4000
+constants_mod.LLM_CONTEXT_ENABLED = True
+constants_mod.LLM_CONTEXT_MESSAGES = 50
+constants_mod.LLM_CONTEXT_WINDOW_SECONDS = 600
+constants_mod.LLM_CONTEXT_GAP_SECONDS = 600
+constants_mod.LLM_CONTEXT_RECENT_MAX_AGE_SECONDS = 21600
+constants_mod.LLM_REPLY_BEFORE = 25
+constants_mod.LLM_REPLY_AFTER = 24
+constants_mod.LLM_MAX_OUTPUT_TOKENS = 900
+constants_mod.LLM_MAX_IMAGES = 4
+constants_mod.LLM_MAX_IMAGE_BYTES = 4 * 1024 * 1024
+constants_mod.LLM_MAX_TOTAL_IMAGE_BYTES = 12 * 1024 * 1024
 
 # tle.util.codeforces_common needs a user_db attribute and parse_date for starboard cog
 import time as _time
@@ -303,3 +335,16 @@ _load_module('tle.cogs._minigame_guessgame', os.path.join(_cogs_path, '_minigame
 _load_module('tle.cogs._minigame_queens', os.path.join(_cogs_path, '_minigame_queens.py'))
 _load_module('tle.cogs.minigames', os.path.join(_cogs_path, 'minigames.py'))
 _load_module('tle.cogs.greatday', os.path.join(_cogs_path, 'greatday.py'))
+
+# LLM stack — pure helpers plus the cog (its deps are all stubbed above)
+_load_module('tle.util.db.llm_db', os.path.join(_db_path, 'llm_db.py'))
+_load_module('tle.util.llm_keypool', os.path.join(_util_path, 'llm_keypool.py'))
+_load_module('tle.util.llm_models', os.path.join(_util_path, 'llm_models.py'))
+_load_module('tle.util.gemini_api', os.path.join(_util_path, 'gemini_api.py'))
+_load_module('tle.util.xai_api', os.path.join(_util_path, 'xai_api.py'))
+_load_module('tle.cogs._llm_context', os.path.join(_cogs_path, '_llm_context.py'))
+_load_module('tle.cogs._llm_history', os.path.join(_cogs_path, '_llm_history.py'))
+_load_module('tle.cogs._llm_pipeline', os.path.join(_cogs_path, '_llm_pipeline.py'))
+_load_module('tle.cogs._llm_format', os.path.join(_cogs_path, '_llm_format.py'))
+_load_module('tle.cogs._llm_ask', os.path.join(_cogs_path, '_llm_ask.py'))
+_load_module('tle.cogs.llm', os.path.join(_cogs_path, 'llm.py'))

@@ -32,7 +32,7 @@ _EQUIV = [
     {'unitedstates', 'usa', 'unitedstatesofamerica'},
     {'ivorycoast', 'cotedivoire'},
     {'czechia', 'czechrepublic'},
-    {'capeverde', 'caboverde'},
+    {'capeverde', 'caboverde', 'capeverdeislands'},
     {'iran', 'iranislamicrepublic'},
     {'bosnia', 'bosniaherzegovina', 'bosniaandherzegovina'},
     {'drcongo', 'congodr', 'democraticrepublicofcongo'},
@@ -92,6 +92,12 @@ def parse_match(raw):
     commence = raw.get('utcDate')
     finished = (status in ('FINISHED', 'AWARDED')
                 and home_score is not None and away_score is not None)
+    regular = score.get('regularTime') or {}
+    extra = score.get('extraTime') or {}
+    pens = score.get('penalties') or {}
+    pen_home, pen_away = _score_value(pens, 'home'), _score_value(pens, 'away')
+    penalties = ({'home': pen_home, 'away': pen_away}
+                 if pen_home is not None or pen_away is not None else None)
     return {
         'home': (raw.get('homeTeam') or {}).get('name'),
         'away': (raw.get('awayTeam') or {}).get('name'),
@@ -99,9 +105,75 @@ def parse_match(raw):
         'finished': finished,
         'home_score': home_score,
         'away_score': away_score,
+        'regular_home_score': _score_value(regular, 'home'),
+        'regular_away_score': _score_value(regular, 'away'),
+        'extra_home_score': _score_value(extra, 'home'),
+        'extra_away_score': _score_value(extra, 'away'),
         'winner': _winner(score.get('winner')),
         'duration': score.get('duration'),
+        'penalties': penalties,
+        'stage': raw.get('stage'),
     }
+
+
+def is_knockout_stage(stage):
+    """True when a football-data ``stage`` denotes a knockout round.
+
+    Defined as "any known stage that is not the group phase", so a new
+    knockout label (e.g. ``LAST_32`` for the 48-team 2026 format) is treated as
+    knockout with no code change. The one load-bearing assumption is that the
+    group phase is spelled exactly ``GROUP_STAGE`` — football-data v4 uses that
+    literal for the World Cup (``LEAGUE_STAGE`` is the separate UCL value). A
+    missing/unknown stage returns False, so the caller fails safe to a 1X2
+    market that still offers a draw — the conservative direction, since a draw
+    can always be settled but cannot be un-stripped from a group market."""
+    return bool(stage) and stage != 'GROUP_STAGE'
+
+
+def is_after_group_stage(commence_time, fd_matches):
+    """True when ``commence_time`` is later than every GROUP_STAGE kickoff in
+    the feed — i.e. this slot belongs to the knockout phase.
+
+    A fallback for :func:`find_match_stage` returning None because football-data
+    hasn't populated the knockout bracket with team names yet (placeholder
+    fixtures whose teams are still null for days after the feeder games finish).
+    The group phase always fully precedes the knockout phase, so any fixture
+    kicking off after the last scheduled group game is necessarily knockout —
+    no team names required. Returns False with no group data or no
+    ``commence_time``, so the caller still fails safe to a draw-bearing 1X2
+    market."""
+    if commence_time is None:
+        return False
+    group_times = [m['commence_time'] for m in fd_matches
+                   if m.get('stage') == 'GROUP_STAGE'
+                   and m.get('commence_time') is not None]
+    if not group_times:
+        return False
+    return commence_time > max(group_times)
+
+
+def find_match_stage(home_team, away_team, commence_time, fd_matches,
+                     *, max_time_diff=86400):
+    """Return the tournament ``stage`` (e.g. 'GROUP_STAGE', 'LAST_16') for the
+    fixture matching (home vs away) near commence_time, or None when no fixture
+    matches.
+
+    Order-insensitive and date-windowed, mirroring :func:`find_match_result`,
+    but it does NOT require the match to have finished — it runs at market-open
+    time to decide whether a market is 1X2 (group) or to-advance (knockout).
+    """
+    h, a = _canon_key(home_team), _canon_key(away_team)
+    if h == a:
+        return None
+    for m in fd_matches:
+        mh, ma = _canon_key(m['home']), _canon_key(m['away'])
+        if {mh, ma} != {h, a}:
+            continue
+        if (commence_time is not None and m['commence_time'] is not None
+                and abs(commence_time - m['commence_time']) > max_time_diff):
+            continue
+        return m.get('stage')
+    return None
 
 
 def find_result(home_team, away_team, commence_time, fd_matches,
@@ -124,34 +196,58 @@ def find_result(home_team, away_team, commence_time, fd_matches,
 
 def find_match_result(home_team, away_team, commence_time, fd_matches,
                       *, max_time_diff=86400):
-    """Find a FINISHED football-data match and return a dict mapped to the
-    supplied home/away orientation, including the winner when available."""
+    """Find the FINISHED football-data match for this fixture and return a dict
+    mapped to the supplied home/away orientation, including the winner.
+
+    When several finished fixtures share the same team pair inside the window
+    (it shouldn't happen within one tournament, but a stale or duplicated feed
+    entry can do it), the one whose kickoff is NEAREST the expected commence
+    time wins — never just the first in feed order — so we always settle on the
+    intended game rather than some other meeting of the two teams.
+    """
     h, a = _canon_key(home_team), _canon_key(away_team)
+    if h == a:
+        return None
+    best, best_diff = None, None
     for m in fd_matches:
         if not m['finished']:
             continue
         mh, ma = _canon_key(m['home']), _canon_key(m['away'])
-        if {mh, ma} != {h, a} or h == a:
+        if {mh, ma} != {h, a}:
             continue
-        if (commence_time is not None and m['commence_time'] is not None
-                and abs(commence_time - m['commence_time']) > max_time_diff):
-            continue
-        if mh == h and ma == a:
-            return dict(m)
-        winner = m.get('winner')
-        if winner == 'home':
-            winner = 'away'
-        elif winner == 'away':
-            winner = 'home'
-        return {
-            **m,
-            'home': m['away'],
-            'away': m['home'],
-            'home_score': m['away_score'],
-            'away_score': m['home_score'],
-            'winner': winner,
-        }
-    return None
+        if (commence_time is not None and m['commence_time'] is not None):
+            diff = abs(commence_time - m['commence_time'])
+            if diff > max_time_diff:
+                continue
+        else:
+            diff = float('inf')  # no time to compare on — accept, lowest priority
+        if best_diff is None or diff < best_diff:
+            best, best_diff = m, diff
+    if best is None:
+        return None
+    mh, ma = _canon_key(best['home']), _canon_key(best['away'])
+    if mh == h and ma == a:
+        return dict(best)
+    winner = best.get('winner')
+    if winner == 'home':
+        winner = 'away'
+    elif winner == 'away':
+        winner = 'home'
+    pens = best.get('penalties')
+    return {
+        **best,
+        'home': best['away'],
+        'away': best['home'],
+        'home_score': best['away_score'],
+        'away_score': best['home_score'],
+        'regular_home_score': best.get('regular_away_score'),
+        'regular_away_score': best.get('regular_home_score'),
+        'extra_home_score': best.get('extra_away_score'),
+        'extra_away_score': best.get('extra_home_score'),
+        'winner': winner,
+        'penalties': ({'home': pens['away'], 'away': pens['home']}
+                      if pens else None),
+    }
 
 
 async def fetch_wc_matches(token, *, session=None, base_url=BASE_URL):

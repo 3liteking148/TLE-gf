@@ -59,7 +59,8 @@ class BettingWalletDbMixin:
                 result_away    INTEGER,
                 created_by     TEXT NOT NULL,
                 created_at     REAL NOT NULL,
-                settled_at     REAL
+                settled_at     REAL,
+                thread_locked  INTEGER NOT NULL DEFAULT 0
             )
         ''')
         bet_market_cols = [
@@ -69,6 +70,9 @@ class BettingWalletDbMixin:
             self.conn.execute('ALTER TABLE bet_market ADD COLUMN fixture_key TEXT')
         if 'thread_intro_id' not in bet_market_cols:
             self.conn.execute('ALTER TABLE bet_market ADD COLUMN thread_intro_id TEXT')
+        if 'thread_locked' not in bet_market_cols:
+            self.conn.execute('ALTER TABLE bet_market ADD COLUMN '
+                              'thread_locked INTEGER NOT NULL DEFAULT 0')
         self.conn.execute('''
             CREATE INDEX IF NOT EXISTS idx_bet_market_active
                 ON bet_market (guild_id, channel_id, status)
@@ -313,6 +317,16 @@ class BettingWalletDbMixin:
             acc['profit'] += payout - row.stake
             acc['bets'] += 1
             acc['wins'] += 1 if won else 0
+        # Manual `;bet profitadd` ledger entries count as profit too — winning
+        # bets the bot never recorded (e.g. placed right at close). They don't
+        # add to the bets/wins counts.
+        adjustments = self.conn.execute(
+            'SELECT user_id, SUM(amount) AS total FROM bet_wallet_txn '
+            "WHERE guild_id = ? AND action = 'profitadd' GROUP BY user_id",
+            (str(guild_id),)
+        ).fetchall()
+        for row in adjustments:
+            totals[row.user_id]['profit'] += int(row.total or 0)
         Row = namedtuple('BetProfitRow', 'user_id profit bets wins')
         out = [Row(user_id, values['profit'], values['bets'], values['wins'])
                for user_id, values in totals.items()]

@@ -4,6 +4,7 @@ import logging
 
 import discord
 
+from tle import constants
 from tle.util import codeforces_common as cf_common
 from tle.util import discord_common
 from tle.util import paginator
@@ -20,10 +21,12 @@ from tle.cogs._minigame_guessgame import GUESSGAME_GAME
 from tle.cogs._minigame_queens import (
     QUEENS_GAME,
 )
+from tle.cogs._minigame_queens_cog import _queens_current_puzzle_date
 from tle.cogs._minigame_helpers import (
-    MinigameCogError, _safe_member_name,
+    MinigameCogError, _safe_member_name, _safe_user_name,
     _format_score,
 )
+from tle.cogs._minigame_tables import _AKARI_HISTORY_PER_PAGE
 from tle.cogs._minigame_queens_filters import (
     _split_queens_weekday_filter, _filter_queens_weekday_rows,
     _format_queens_weekday_filter,
@@ -32,7 +35,127 @@ from tle.cogs._minigame_queens_filters import (
 logger = logging.getLogger(__name__)
 
 
+def _skipped_puzzles(puzzle_numbers, current_puzzle):
+    """Return the first submission and missing concluded puzzle numbers."""
+    submitted = set()
+    for value in puzzle_numbers:
+        try:
+            puzzle_number = int(value)
+        except (TypeError, ValueError):
+            continue
+        if 0 < puzzle_number <= int(current_puzzle):
+            submitted.add(puzzle_number)
+    if not submitted:
+        return None, []
+
+    first_submission = min(submitted)
+    skipped = [
+        puzzle_number
+        for puzzle_number in range(
+            int(current_puzzle) - 1, first_submission, -1)
+        if puzzle_number not in submitted
+    ]
+    return first_submission, skipped
+
+
 class ImplSharedCmdMixin:
+    # ── Delegated-admin list commands (shared by Queens and Akari) ──────
+
+    async def _cmd_minigame_admins(self, ctx, label, get_ids):
+        admin_ids = get_ids(ctx.guild.id)
+        if not admin_ids:
+            await ctx.send(embed=discord_common.embed_neutral(
+                f'No extra {label} admins configured.'))
+            return
+        lines = [
+            f'- {_safe_user_name(ctx.guild, user_id)} (`{user_id}`)'
+            for user_id in sorted(admin_ids, key=self._user_id_sort_key)
+        ]
+        await ctx.send(embed=discord_common.embed_neutral(
+            f'Extra {label} admins:\n' + '\n'.join(lines)))
+
+    def _require_server_mod_for_admin_list(self, ctx, label):
+        if not self._has_server_mod_role(ctx.author):
+            raise MinigameCogError(
+                f'Only `{"` / `".join(constants.TLE_ALL_MOD_ROLES)}` '
+                f'can change the {label} admin list.')
+
+    async def _cmd_minigame_admins_add(self, ctx, member, label,
+                                       get_ids, set_ids):
+        self._require_server_mod_for_admin_list(ctx, label)
+        admin_ids = get_ids(ctx.guild.id)
+        before = len(admin_ids)
+        admin_ids.add(str(member.id))
+        if len(admin_ids) == before:
+            message = (
+                f'`{_safe_member_name(member)}` already has '
+                f'{label} admin access.')
+        else:
+            set_ids(ctx.guild.id, admin_ids)
+            message = (
+                f'`{_safe_member_name(member)}` can now run '
+                f'{label} mod commands.')
+        await ctx.send(embed=discord_common.embed_success(message))
+
+    async def _cmd_minigame_admins_remove(self, ctx, member, label,
+                                          get_ids, set_ids):
+        self._require_server_mod_for_admin_list(ctx, label)
+        admin_ids = get_ids(ctx.guild.id)
+        removed = str(member.id) in admin_ids
+        admin_ids.discard(str(member.id))
+        if removed:
+            set_ids(ctx.guild.id, admin_ids)
+            message = (
+                f'`{_safe_member_name(member)}` no longer has '
+                f'{label} admin access.')
+        else:
+            message = (
+                f'`{_safe_member_name(member)}` was not an extra '
+                f'{label} admin.')
+        await ctx.send(embed=discord_common.embed_success(message))
+
+    async def _send_minigame_skips(
+            self, ctx, member, game, first_submission, skipped,
+            date_for_puzzle):
+        """Render the shared Akari/Queens skipped-day response."""
+        member_name = _safe_member_name(member)
+        if first_submission is None:
+            raise MinigameCogError(
+                f'No {game.display_name} results found for `{member_name}`.')
+
+        first_date = date_for_puzzle(first_submission)
+        if not skipped:
+            await ctx.send(embed=discord_common.embed_success(
+                f'`{member_name}` has no skipped {game.display_name} days '
+                f'since first submitting **#{first_submission}** on '
+                f'**{first_date.isoformat()}**.'))
+            return
+
+        lines = []
+        for puzzle_number in skipped:
+            puzzle_date = date_for_puzzle(puzzle_number)
+            lines.append(
+                f'**#{puzzle_number}** \N{MIDDLE DOT} '
+                f'{puzzle_date.isoformat()} \N{MIDDLE DOT} '
+                f'{puzzle_date:%A}')
+        day_label = 'day' if len(skipped) == 1 else 'days'
+        title = (
+            f'{game.display_name} skipped days — '
+            f'{member_name} ({len(skipped)} {day_label})')
+        tracking_line = (
+            f'Since first submission: **#{first_submission}** '
+            f'\N{MIDDLE DOT} **{first_date.isoformat()}**')
+        pages = []
+        for chunk in paginator.chunkify(lines, _AKARI_HISTORY_PER_PAGE):
+            pages.append((None, discord.Embed(
+                title=title,
+                description=f'{tracking_line}\n\n' + '\n'.join(chunk),
+                color=discord_common.random_cf_color(),
+            )))
+        paginator.paginate(
+            self.bot, ctx.channel, pages, wait_time=300,
+            set_pagenum_footers=True, author_id=ctx.author.id)
+
     # ── Shared command implementations ──────────────────────────────────
 
     async def _cmd_here(self, ctx, game):
@@ -133,71 +256,6 @@ class ImplSharedCmdMixin:
             set_pagenum_footers=True, author_id=ctx.author.id,
         )
 
-    async def _cmd_vs(self, ctx, game, member1, member2, *args):
-        self._require_enabled(ctx.guild.id, game)
-        self._sync_minigame_results_for_read(ctx.guild.id, game)
-        try:
-            args, scoring_name, scoring = resolve_scoring(game, args)
-            weekdays = None
-            if game.name == QUEENS_GAME.name:
-                args, weekdays = _split_queens_weekday_filter(args)
-            dlo, dhi, plo, phi = parse_date_args(args)
-        except ValueError as e:
-            raise MinigameCogError(str(e)) from e
-
-        rows1 = cf_common.user_db.get_minigame_results_for_user(
-            ctx.guild.id, game.name, member1.id, dlo, dhi, plo, phi)
-        rows2 = cf_common.user_db.get_minigame_results_for_user(
-            ctx.guild.id, game.name, member2.id, dlo, dhi, plo, phi)
-        rows1 = self._filter_minigame_banned_rows(ctx.guild.id, game, rows1)
-        rows2 = self._filter_minigame_banned_rows(ctx.guild.id, game, rows2)
-        if game.name == QUEENS_GAME.name:
-            rows1 = _filter_queens_weekday_rows(rows1, weekdays)
-            rows2 = _filter_queens_weekday_rows(rows2, weekdays)
-        stats = compute_vs(
-            rows1, rows2,
-            score_fn=scoring.score_matchup,
-            missing_is_loss=(
-                scoring.missing_is_loss
-                if scoring.missing_is_loss is not None
-                else game.missing_is_loss
-            ),
-            best_result_sort_key_fn=scoring.best_result_sort_key,
-            group_key_fn=scoring.result_group_key,
-            missing_result=(
-                scoring.missing_result
-                if scoring.missing_result is not None
-                else game.missing_result
-            ),
-        )
-        if stats['common_count'] == 0:
-            raise MinigameCogError(
-                f'These users have no {game.display_name} puzzles to compare.')
-
-        suffix_parts = []
-        if scoring_name:
-            suffix_parts.append(scoring_name.title())
-        weekday_label = (
-            _format_queens_weekday_filter(weekdays)
-            if game.name == QUEENS_GAME.name else '')
-        if weekday_label:
-            suffix_parts.append(weekday_label)
-        title_suffix = f' ({", ".join(suffix_parts)})' if suffix_parts else ''
-        name1 = self._minigame_public_user_name(ctx.guild, game, member1.id)
-        name2 = self._minigame_public_user_name(ctx.guild, game, member2.id)
-        description = '\n'.join([
-            f'`{name1}`: **{stats["score1"]:g}** points, **{stats["wins1"]}** wins',
-            f'`{name2}`: **{stats["score2"]:g}** points, **{stats["wins2"]}** wins',
-            f'Ties: **{stats["ties"]}**',
-            f'Puzzles: **{stats["common_count"]}**',
-        ])
-        embed = discord.Embed(
-            title=f'{game.display_name} Head to Head{title_suffix}',
-            description=description,
-            color=discord_common.random_cf_color(),
-        )
-        await ctx.send(embed=embed)
-
     async def _cmd_guessgame_matchups(self, ctx, member1, member2, *args):
         game = GUESSGAME_GAME
         self._require_enabled(ctx.guild.id, game)
@@ -253,6 +311,7 @@ class ImplSharedCmdMixin:
     async def _cmd_streak(self, ctx, game, *args):
         self._require_enabled(ctx.guild.id, game)
         filter_args = list(args)
+        filter_args, weekdays = _split_queens_weekday_filter(filter_args)
         member = ctx.author
         if filter_args:
             try:
@@ -268,8 +327,9 @@ class ImplSharedCmdMixin:
 
         rows = cf_common.user_db.get_minigame_results_for_user(
             ctx.guild.id, game.name, member.id, dlo, dhi, plo, phi)
-        streak = compute_streak(rows)
-        longest = compute_longest_streak(rows)
+        rows = _filter_queens_weekday_rows(rows, weekdays)
+        streak = compute_streak(rows, weekdays)
+        longest = compute_longest_streak(rows, weekdays)
         if not rows:
             raise MinigameCogError(
                 f'No {game.display_name} results found for `{_safe_member_name(member)}`.')
@@ -277,8 +337,10 @@ class ImplSharedCmdMixin:
         best = pick_best_results(rows)
         latest_row = best[max(best)]
         latest_status = 'Perfect' if latest_row.is_perfect else f'{latest_row.accuracy}%'
+        weekday_label = _format_queens_weekday_filter(weekdays)
+        weekday_suffix = f' ({weekday_label})' if weekday_label else ''
         embed = discord.Embed(
-            title=f'{game.display_name} Streak',
+            title=f'{game.display_name} Streak{weekday_suffix}',
             description='\n'.join([
                 f'`{_safe_member_name(member)}`: **{streak}** consecutive perfect day(s)',
                 f'Longest streak: **{longest}** day(s)',
@@ -293,10 +355,12 @@ class ImplSharedCmdMixin:
         self._sync_minigame_results_for_read(ctx.guild.id, game)
         try:
             args, scoring_name, scoring = resolve_scoring(game, args)
-            weekdays = None
-            if game.name == QUEENS_GAME.name:
-                args, weekdays = _split_queens_weekday_filter(args)
-            dlo, dhi, plo, phi = parse_date_args(args)
+            args, weekdays = _split_queens_weekday_filter(args)
+            reference_date = (
+                _queens_current_puzzle_date()
+                if game.name == QUEENS_GAME.name else None)
+            dlo, dhi, plo, phi = parse_date_args(
+                args, reference_date=reference_date)
         except ValueError as e:
             raise MinigameCogError(str(e)) from e
 
@@ -305,13 +369,14 @@ class ImplSharedCmdMixin:
         rows = self._filter_minigame_banned_rows(ctx.guild.id, game, rows)
         if game.name == QUEENS_GAME.name:
             rows = self._filter_queens_registered_result_rows(ctx.guild.id, rows)
-            rows = _filter_queens_weekday_rows(rows, weekdays)
+        rows = _filter_queens_weekday_rows(rows, weekdays)
         winners = compute_top(
             rows,
             is_eligible=scoring.is_eligible_winner,
             best_result_sort_key_fn=scoring.best_result_sort_key,
             winner_result_sort_key_fn=scoring.winner_result_sort_key,
             group_key_fn=scoring.result_group_key,
+            min_participants=(2 if game.name == QUEENS_GAME.name else 1),
         )
         if not winners:
             raise MinigameCogError(
@@ -320,9 +385,7 @@ class ImplSharedCmdMixin:
         suffix_parts = []
         if scoring_name:
             suffix_parts.append(scoring_name.title())
-        weekday_label = (
-            _format_queens_weekday_filter(weekdays)
-            if game.name == QUEENS_GAME.name else '')
+        weekday_label = _format_queens_weekday_filter(weekdays)
         if weekday_label:
             suffix_parts.append(weekday_label)
         title_suffix = f' ({", ".join(suffix_parts)})' if suffix_parts else ''
@@ -359,4 +422,3 @@ class ImplSharedCmdMixin:
         await ctx.send(embed=discord_common.embed_success(
             f'Removed {game.display_name} result for '
             f'`{_safe_member_name(member)}` on puzzle `{puzzle_id}`.'))
-

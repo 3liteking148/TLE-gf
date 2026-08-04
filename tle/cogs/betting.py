@@ -1,47 +1,24 @@
-"""World Cup soccer betting minigame.
+"""World Cup soccer betting minigame — ARCHIVED.
 
-Fully automated and World Cup–only. An admin points the bot at a channel with
-`;prediction here`; from then on the bot, on its own, ~2 hours before each
-World Cup kickoff:
-  1. reads the live 1X2 odds from The Odds API and **freezes** them,
-  2. posts the market in the configured channel and opens a **thread**,
-  3. members bet by replying in the thread (`home 100`, `away all`, `draw 25%`).
-At kickoff betting closes; at full time the bot reads the final score and
-auto-settles, paying winners stake × odds. Everyone starts at 1000 coins and
-claims +100/day with `;bet daily`.
+`;meta config enable bet_archived` retires the game per guild: bare `;bet`
+answers with a farewell notice, subcommands other than `leaderboard`,
+`me`/`profile` and admin `profitadd` refuse (``cog_check``), the thread bet
+listener goes quiet, and the scheduler/settlement passes skip the guild — no
+odds/scores API traffic. `;meta config disable bet_archived` restores all.
 
-Core commands (group `;bet`, alias `;prediction`) shown in `;help bet`:
-  ;bet home|draw|away <amt> stake on an outcome (also: reply in the thread)
-  ;bet mybet / withdraw     show / remove your bets on the active market
-  ;bet me                   show your betting summary
-  ;bet balance [@user]      show a wallet balance
-  ;bet daily                claim the daily allowance
-  ;bet leaderboard [profit] richest wallets / net profit
-  ;bet matches [query]      list upcoming World Cup matches with odds
-  ;bet notify               toggle the configured notification role
-  ;prediction here          set this channel for auto-opened markets       (admin)
-  ;bet notifyrole [@role|off]  set/clear the ping role for open markets     (admin)
-  ;bet settle <home|draw|away|2-1>  settle the active market manually       (admin)
-  ;bet cancel               cancel the active market, refund stakes         (admin)
-  ;bet grant @user <±amt>   give (or, negative, take) a user's coins        (admin)
-  ;bet grantall <±amt>      grant/raise every wallet (negative reverts)     (admin)
+How the live game worked: after `;prediction here`, ~6h before each kickoff
+the bot froze The Odds API 1X2 odds, posted the market and opened a thread;
+members bet via `;bet home|draw|away <amt>` or thread replies (`home 100`,
+`away all`). Betting closed at kickoff; full time auto-settled at stake ×
+odds. Wallets seeded 1000 coins, `;bet daily` +100. See the class body for
+the full wallet/admin subcommand set.
 
-To keep `;help bet` small, several niche/advanced subcommands are registered
-with ``hidden=True`` — they still work and respond to `;help bet <name>`, they
-just don't clutter the group listing: ``open``, ``not``, ``book``, ``pending``,
-``correct``, ``setbalance``, ``transfer``, ``for``, ``history``, ``odds``,
-``pause``, ``resume``, ``close`` and ``check``. ``grant`` absorbs the old ``take`` and
-``grantall`` absorbs ``ungrantall`` via negative amounts; ``notifyrole off``
-replaces the old ``clearnotifyrole``. ``here`` hides itself from the listing
-once a channel is configured (see ``_bet_channel_is_set``).
-
-The implementation is split across helper modules to keep every file under 500
-lines: pure helpers in ``_betting_helpers``, presentation in ``_betting_format``,
-market/bet/settle engine in ``_betting_engine``, the open/close scheduler in
-``_betting_scheduler``, and the heavier subcommand bodies in
-``_betting_commands`` / ``_betting_wallet_cmds``. This file keeps the cog
-itself: the ``bet`` group and all ``@bet.command`` callbacks in one class body
-(as discord.py requires), the message listener and the background task hooks.
+Split across helper modules to stay under 500 lines/file: ``_betting_helpers``
+(pure), ``_betting_format``, ``_betting_engine``, ``_betting_settlement``,
+``_betting_scheduler``, ``_betting_commands`` / ``_betting_wallet_cmds``.
+This file keeps the cog: the ``bet`` group and every ``@bet.command``
+callback in one class body (discord.py requires it), the message listener
+and the background task hooks.
 """
 import asyncio
 import logging
@@ -57,7 +34,9 @@ from tle.util import tasks
 from tle.cogs._betting_commands import BetCommandImplMixin
 from tle.cogs._betting_engine import BetEngineMixin, BettingCogError
 from tle.cogs._betting_format import BetFormatMixin
+from tle.cogs._betting_remediation import BetRemediationMixin
 from tle.cogs._betting_scheduler import BetSchedulerMixin
+from tle.cogs._betting_settlement import BetSettlementMixin
 from tle.cogs._betting_wallet_cmds import BetWalletCmdImplMixin
 # Re-export the pure helpers so `from tle.cogs.betting import <helper>` keeps
 # working for callers and tests.
@@ -66,22 +45,26 @@ from tle.cogs._betting_helpers import (  # noqa: F401
     normalize_pick, normalized_market_odds, outcome_from_score, parse_amount,
     parse_settle_arg, payout_amount, pick_is_negative, pick_wins, positive_pick,
     rank_line, resolve_bet_pick, resolve_pick, seconds_until_open,
-    _COIN, _api_key, _bot_prefix, _football_data_key, _no_mentions,
+    unknown_subcommand_token,
+    _COIN, _api_key, _bot_prefix, _football_data_key, _is_archived, _no_mentions,
     _role_mentions, _short_error, _utc_today,
 )
 
 logger = logging.getLogger(__name__)
 
-# Each fixture gets a precise asyncio timer that opens its market at exactly
-# kickoff − BET_OPEN_LEAD_SECONDS (never late), mirroring rpoll's per-poll
-# expiry timers. The safety-net task is only a coarse backstop: it re-discovers
-# the schedule (to arm timers for new fixtures) and catches anything a missed
-# timer / restart left in-window. So opening precision comes from the timers,
-# NOT this interval.
+# Subcommands that still respond after `;meta config enable bet_archived`.
+_ARCHIVE_ALLOWED = {'leaderboard', 'me', 'profitadd'}
+_ARCHIVED_NOTICE = ('World cup has ended, congrats to the best bettors! '
+                    'The leaderboard is archived.')
+
+# Precise per-fixture asyncio timers open each market at exactly kickoff −
+# BET_OPEN_LEAD_SECONDS (mirroring rpoll's per-poll expiry timers). The safety
+# net is only a coarse backstop: it re-arms timers for new fixtures and catches
+# anything a missed timer / restart left in-window.
 _SAFETY_NET_INTERVAL = 15 * 60
 # Auto-settle poller cadence. Results come from football-data.org (free), so we
 # can poll often; only hits the network when a market is actually past kickoff.
-_SETTLE_INTERVAL = 5 * 60
+_SETTLE_INTERVAL = 60
 
 _CHANNEL_CONFIG_KEY = 'bet_channel'
 _PAUSED_CONFIG_KEY = 'bet_paused'
@@ -102,7 +85,8 @@ def _bet_channel_is_set(ctx):
 # ── Cog ────────────────────────────────────────────────────────────────────
 
 class Betting(BetWalletCmdImplMixin, BetCommandImplMixin, BetFormatMixin,
-              BetEngineMixin, BetSchedulerMixin, commands.Cog):
+              BetEngineMixin, BetSettlementMixin, BetSchedulerMixin,
+              BetRemediationMixin, commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         # channel_id -> events shown by the last `;bet matches` (for `;bet open <n>`)
@@ -111,19 +95,32 @@ class Betting(BetWalletCmdImplMixin, BetCommandImplMixin, BetFormatMixin,
         # odds), reused by the scheduler, open timers and `;bet matches`.
         self._wc_events = None
         self._wc_fetched_at = None
-        # fixture_key -> asyncio.Task: precise per-fixture "open at kickoff − 2h"
+        # Cache of the football-data fixture list, which carries each match's
+        # tournament stage (group vs knockout) — used to shape new markets.
+        self._fd_matches = None
+        self._fd_fetched_at = None
+        # fixture_key -> asyncio.Task: precise per-fixture "open at kickoff − 6h"
         # timers. Provider event ids can drift, so timers use canonical fixtures.
         self._open_timers = {}
         # market_id -> asyncio.Task: edit/announce exactly when betting closes.
         self._close_timers = {}
         # market_id -> asyncio.Task: coalesced thread intro pool refresh.
         self._pool_refresh_timers = {}
+        # market_id -> asyncio.Task: lock a settled market's thread 12h after
+        # full time; re-armed from DB on restart (timers don't survive one).
+        self._lock_timers = {}
+        # market_id -> (outcome, home_score, away_score) or None: the
+        # beyond-regulation football-data result seen last poll. Such games settle
+        # once two consecutive polls agree, filtering the feed's transient
+        # (sometimes wrong) shootout readings. In-memory: a restart just re-waits
+        # one round, which is safe.
+        self._fd_pending_confirm = {}
 
     @commands.Cog.listener()
     @discord_common.once
     async def on_ready(self):
-        # user_db is set in the bot's on_ready handler, which may run after cog
-        # listeners — wait briefly (as rpoll does) before arming timers.
+        # user_db may be set after cog listeners run — wait briefly (as rpoll
+        # does) before arming timers.
         for _ in range(30):
             if cf_common.user_db is not None:
                 break
@@ -133,39 +130,59 @@ class Betting(BetWalletCmdImplMixin, BetCommandImplMixin, BetFormatMixin,
             return
         await self._refresh_schedule()   # arm open timers + catch in-window games
         await self._arm_close_timers()   # restore close timers after restart
+        try:
+            await self._arm_lock_timers()  # restore delayed thread-lock timers
+        except Exception:  # never abort startup before the settle task starts
+            logger.warning('bet lock timer restore failed', exc_info=True)
+        await self._run_draw_refixture()  # one-time: fix mislabelled no-draw markets
         self._safety_net_task.start()
         self._settle_task.start()
 
     async def cog_unload(self):
         await self._safety_net_task.stop()
         await self._settle_task.stop()
-        for task in list(self._open_timers.values()):
-            if not task.done():
-                task.cancel()
-        self._open_timers.clear()
-        for task in list(self._close_timers.values()):
-            if not task.done():
-                task.cancel()
-        self._close_timers.clear()
-        for task in list(self._pool_refresh_timers.values()):
-            if not task.done():
-                task.cancel()
-        self._pool_refresh_timers.clear()
+        for timers in (self._open_timers, self._close_timers,
+                       self._pool_refresh_timers, self._lock_timers):
+            for task in list(timers.values()):
+                if not task.done():
+                    task.cancel()
+            timers.clear()
 
     # ── Group ──────────────────────────────────────────────────────────
+
+    async def cog_check(self, ctx):
+        """In archived guilds only _ARCHIVE_ALLOWED subcommands still run."""
+        if ctx.guild is None or not _is_archived(ctx.guild.id):
+            return True
+        command = ctx.command
+        if command is None or command.qualified_name == 'bet' \
+                or command.name in _ARCHIVE_ALLOWED:
+            return True
+        raise BettingCogError(_ARCHIVED_NOTICE)
 
     @commands.group(name='bet',
                     aliases=['betting', 'prediction', 'pred', 'wager'],
                     brief='World Cup betting', invoke_without_command=True)
     async def bet(self, ctx):
         """Show the active market here and your balance."""
+        if _is_archived(ctx.guild.id):
+            await ctx.send(embed=discord_common.embed_neutral(_ARCHIVED_NOTICE))
+            return
+        # `invoke_without_command=True` routes `;bet <unknown>` here too;
+        # discord.py wipes `ctx.subcommand_passed` first, so recover the token
+        # from the raw message and error instead of acting like a bare `;bet`.
+        attempted = unknown_subcommand_token(ctx)
+        if attempted:
+            raise BettingCogError(
+                f'`{discord.utils.escape_markdown(attempted)}` isn\'t a `;bet` '
+                'command. See `;help bet` for the full list.')
         balance = cf_common.user_db.bet_ensure_wallet(
             ctx.guild.id, ctx.author.id, self._bet_start_balance(ctx.guild.id))
         market = self._find_market(ctx)
         if market is None:
             configured = cf_common.user_db.get_guild_config(
                 ctx.guild.id, _CHANNEL_CONFIG_KEY)
-            hint = ('Markets auto-open ~2h before each World Cup kickoff'
+            hint = ('Markets auto-open ~6h before each World Cup kickoff'
                     if configured else
                     'An admin can run `;prediction here` to start auto-opening '
                     'World Cup markets in a channel')
@@ -258,8 +275,7 @@ class Betting(BetWalletCmdImplMixin, BetCommandImplMixin, BetFormatMixin,
                  usage='@user <home|draw|away|team> <amount | 50% | all | 0 to remove>')
     @commands.has_any_role(*constants.TLE_ADMIN)
     async def bet_for(self, ctx, member: discord.Member, *, text: str):
-        """Place (or, with `0`, remove) a bet for another member — for when
-        they're away but have told you what they want to wager. Spends their
+        """Place (or with `0` remove) a bet for an absent member. Spends their
         own wallet; you're recorded as the actor in the wallet history."""
         await self._cmd_place_for(ctx, member, text)
 
@@ -279,6 +295,8 @@ class Betting(BetWalletCmdImplMixin, BetCommandImplMixin, BetFormatMixin,
             return
         if cf_common.user_db is None:
             return  # startup window — DB not initialized yet
+        if _is_archived(message.guild.id):
+            return  # game retired here — thread bets are dead
         market = cf_common.user_db.bet_market_get_active_by_thread(
             message.guild.id, message.channel.id)
         if market is None:
@@ -361,10 +379,8 @@ class Betting(BetWalletCmdImplMixin, BetCommandImplMixin, BetFormatMixin,
     @bet.command(name='pending', aliases=['stuck'], hidden=True,
                  brief='List open markets past kickoff awaiting a result')
     async def pending(self, ctx):
-        """Show markets that have kicked off but not yet settled — e.g. a
-        fixture the scores API never reported as completed. Stakes stay
-        escrowed until an admin settles (`;bet settle`) or cancels (`;bet cancel`).
-        """
+        """Markets past kickoff but unsettled (e.g. a scores-API gap); stakes
+        stay escrowed until an admin `;bet settle`s or `;bet cancel`s."""
         await self._cmd_pending(ctx)
 
     @bet.command(name='correct', aliases=['fix', 'resettle'], hidden=True,
@@ -382,6 +398,16 @@ class Betting(BetWalletCmdImplMixin, BetCommandImplMixin, BetFormatMixin,
     @commands.has_any_role(*constants.TLE_ADMIN)
     async def grant(self, ctx, member: discord.Member, amount: int):
         await self._cmd_grant(ctx, member, amount)
+
+    @bet.command(name='profitadd', aliases=['addprofit'],
+                 brief='Credit coins that also count as profit (admin)',
+                 usage='@user <amount | -amount>')
+    @commands.has_any_role(*constants.TLE_ADMIN)
+    async def profitadd(self, ctx, member: discord.Member, amount: int):
+        """For winning bets the bot never recorded (e.g. placed at the last
+        second): credit coins that also count in `;bet leaderboard profit`.
+        Negative reverts a mistaken add. Works while archived."""
+        await self._cmd_profitadd(ctx, member, amount)
 
     @bet.command(name='setbalance', aliases=['setbal'], hidden=True,
                  brief='Set a user\'s balance (admin)', usage='@user <amount>')
@@ -411,7 +437,7 @@ class Betting(BetWalletCmdImplMixin, BetCommandImplMixin, BetFormatMixin,
     async def resume(self, ctx):
         cf_common.user_db.set_guild_config(ctx.guild.id, _PAUSED_CONFIG_KEY, '0')
         await ctx.send(embed=discord_common.embed_success(
-            'Auto-open **resumed** — markets will open ~2h before kickoff again.'))
+            'Auto-open **resumed** — markets will open ~6h before kickoff again.'))
 
     @bet.command(name='book', hidden=True,
                  brief='Show all bets on the active market')
@@ -449,6 +475,10 @@ class Betting(BetWalletCmdImplMixin, BetCommandImplMixin, BetFormatMixin,
             await self._arm_close_timers()
         except Exception:
             logger.warning('bet close timer refresh failed', exc_info=True)
+        try:
+            await self._arm_lock_timers()
+        except Exception:
+            logger.warning('bet lock timer refresh failed', exc_info=True)
 
     @tasks.task_spec(name='BetSettle',
                      waiter=tasks.Waiter.fixed_delay(_SETTLE_INTERVAL))

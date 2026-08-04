@@ -275,7 +275,19 @@ def compute_vs(rows1, rows2, score_fn=None, missing_is_loss=False,
     }
 
 
-def compute_streak(rows):
+def previous_streak_day(day, weekdays=None):
+    """The latest day before ``day`` that counts toward a streak.
+
+    With a weekday filter active, non-matching calendar days are not gaps —
+    e.g. under ``+dow=fri`` two adjacent Fridays are consecutive.
+    """
+    day -= dt.timedelta(days=1)
+    while weekdays and day.weekday() not in weekdays:
+        day -= dt.timedelta(days=1)
+    return day
+
+
+def compute_streak(rows, weekdays=None):
     best_by_day = {}
     for row in rows:
         puzzle_date = normalize_puzzle_date(row.puzzle_date)
@@ -293,11 +305,11 @@ def compute_streak(rows):
         if row is None or not row.is_perfect:
             break
         streak += 1
-        current_day -= dt.timedelta(days=1)
+        current_day = previous_streak_day(current_day, weekdays)
     return streak
 
 
-def compute_longest_streak(rows):
+def compute_longest_streak(rows, weekdays=None):
     """Return the longest run of consecutive perfect days across all data."""
     best_by_day = {}
     for row in rows:
@@ -314,7 +326,9 @@ def compute_longest_streak(rows):
     prev_day = None
     for day in sorted(best_by_day):
         row = best_by_day[day]
-        if row.is_perfect and (prev_day is None or day == prev_day + dt.timedelta(days=1)):
+        if row.is_perfect and (
+                prev_day is None
+                or previous_streak_day(day, weekdays) == prev_day):
             current += 1
         elif row.is_perfect:
             current = 1
@@ -326,7 +340,8 @@ def compute_longest_streak(rows):
 
 
 def compute_top(rows, is_eligible=None, best_result_sort_key_fn=None,
-                winner_result_sort_key_fn=None, group_key_fn=None):
+                winner_result_sort_key_fn=None, group_key_fn=None,
+                min_participants=1):
     if is_eligible is None:
         is_eligible = default_is_eligible_winner
     if best_result_sort_key_fn is None:
@@ -343,7 +358,13 @@ def compute_top(rows, is_eligible=None, best_result_sort_key_fn=None,
             best_by_user_puzzle[key] = row
 
     best_per_puzzle = {}
+    participants_per_puzzle = {}
+    for _, puzzle_key in best_by_user_puzzle:
+        participants_per_puzzle[puzzle_key] = (
+            participants_per_puzzle.get(puzzle_key, 0) + 1)
     for (_, puzzle_key), row in best_by_user_puzzle.items():
+        if participants_per_puzzle[puzzle_key] < min_participants:
+            continue
         if not is_eligible(row):
             continue
         entry = best_per_puzzle.get(puzzle_key)
@@ -364,11 +385,15 @@ def compute_top(rows, is_eligible=None, best_result_sort_key_fn=None,
 
 # ── Argument parsing ────────────────────────────────────────────────────
 
-def parse_date_args(args):
+def parse_date_args(args, *, reference_date=None):
     """Parse timeline and puzzle-number filter arguments.
 
     Returns ``(dlo, dhi, plo, phi)`` where dlo/dhi are timestamps and
     plo/phi are puzzle-number bounds (0 = unbounded).
+
+    ``reference_date`` controls the logical current date used by the
+    ``week``, ``month``, and ``year`` shortcuts. By default, those shortcuts
+    retain their existing host-local behavior.
 
     Raises ``ValueError`` on unrecognized arguments.
     """
@@ -376,18 +401,19 @@ def parse_date_args(args):
     dhi = _NO_TIME_BOUND
     plo = 0
     phi = 0
+    today = reference_date or dt.date.today()
 
     for arg in args:
         lower = arg.lower()
         if lower in _TIMELINE_KEYWORDS:
-            now = dt.datetime.now()
             if lower == 'week':
-                monday = now - dt.timedelta(days=now.weekday())
-                dlo = time.mktime(monday.replace(hour=0, minute=0, second=0, microsecond=0).timetuple())
+                start_date = today - dt.timedelta(days=today.weekday())
             elif lower == 'month':
-                dlo = time.mktime(now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).timetuple())
+                start_date = today.replace(day=1)
             elif lower == 'year':
-                dlo = time.mktime(now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0).timetuple())
+                start_date = today.replace(month=1, day=1)
+            start = dt.datetime.combine(start_date, dt.time.min)
+            dlo = time.mktime(start.timetuple())
         elif lower.startswith('d>='):
             dlo = max(dlo, cf_common.parse_date(arg[3:]))
         elif lower.startswith('d<'):

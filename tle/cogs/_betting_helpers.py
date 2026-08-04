@@ -22,7 +22,6 @@ _PICK_ALIASES = {
 }
 _AMOUNT_WORDS = ('all', 'max', 'allin', 'all-in', 'everything')
 _DIRECT_PICKS = ('home', 'draw', 'away')
-_KNOCKOUT_START_TS = datetime(2026, 6, 28, tzinfo=timezone.utc).timestamp()
 # Provider event ids can drift. Treat the same team pair near the same kickoff
 # as the same market so the 15-minute safety net cannot open a duplicate thread.
 _DUPLICATE_MATCH_WINDOW = 6 * 3600
@@ -37,6 +36,61 @@ def outcome_from_score(home, away):
     if away > home:
         return 'away'
     return 'draw'
+
+
+def _score_leader(home, away):
+    if home is None or away is None or home == away:
+        return None
+    return 'home' if home > away else 'away'
+
+
+def _scores_level(home, away):
+    return home is not None and away is not None and home == away
+
+
+def _shootout_fulltime_winner(result):
+    winner = _score_leader(result.get('home_score'), result.get('away_score'))
+    if winner is None:
+        return None
+    if not _scores_level(
+            result.get('regular_home_score'), result.get('regular_away_score')):
+        return None
+    return winner
+
+
+def fd_settle_outcome(result):
+    """The outcome a football-data result supports for auto-settlement, or None
+    when we must NOT settle it yet.
+
+    football-data's ``winner`` is authoritative — it already reflects extra time
+    and penalties — so it is trusted over the scoreline. But the feed's
+    beyond-regulation data has proven unreliable, so a ``PENALTY_SHOOTOUT`` is
+    accepted only when independent evidence agrees: a clear ``penalties`` tally
+    and/or a decisive ``fullTime`` score with level ``regularTime``. If
+    ``winner`` is present, it must agree too. Inconsistent readings are left for
+    a manual ``;bet settle``. A plain in-regulation game with no published
+    winner falls back to the scoreline.
+    """
+    winner = result.get('winner')
+    duration = result.get('duration')
+    if duration == 'PENALTY_SHOOTOUT':
+        pens = result.get('penalties') or {}
+        evidence = [
+            side for side in (
+                _score_leader(pens.get('home'), pens.get('away')),
+                _shootout_fulltime_winner(result))
+            if side is not None]
+        if not evidence or len(set(evidence)) > 1:
+            return None
+        settled_winner = evidence[0]
+        if winner is not None and winner != settled_winner:
+            return None
+        return settled_winner
+    if winner in ('home', 'away', 'draw'):
+        return winner
+    if duration == 'EXTRA_TIME':
+        return None  # beyond regulation, no decisive winner yet — don't guess
+    return outcome_from_score(result.get('home_score'), result.get('away_score'))
 
 
 def pick_is_negative(pick):
@@ -254,14 +308,17 @@ def normalized_market_odds(odds, *, knockout=False):
             for pick in _DIRECT_PICKS}
 
 
-def _event_is_knockout(event):
-    return (event.get('commence_time') or 0) >= _KNOCKOUT_START_TS
+def normalize_event(event, *, knockout=False):
+    """Normalise a raw odds event into market-ready form.
 
-
-def normalize_event(event):
+    ``knockout`` is decided by the caller from the authoritative competition
+    stage (football-data), NOT from the kickoff date — a knockout match folds
+    the draw into the two teams to form a 2-way 'to advance' market, while a
+    group match stays 1X2. Defaults to False so an unknown stage fails safe to
+    a market that still offers a draw.
+    """
     out = dict(event)
-    out['odds'] = normalized_market_odds(
-        event['odds'], knockout=_event_is_knockout(event))
+    out['odds'] = normalized_market_odds(event['odds'], knockout=knockout)
     out['market_type'] = 'advance' if not _odds_allow_draw(out['odds']) else 'result'
     return out
 
@@ -343,6 +400,36 @@ def _bot_prefix():
     return getattr(discord_common, '_BOT_PREFIX', ';')
 
 
+def unknown_subcommand_token(ctx):
+    """The first token after the group name that isn't a registered subcommand
+    (so ``;bet junk`` -> ``'junk'``), or None for a bare ``;bet`` or a real
+    subcommand/alias.
+
+    Why parse the raw message instead of reading ``ctx.subcommand_passed``:
+    discord.py sets ``subcommand_passed`` on the group but then resets it to
+    None in ``Command.invoke`` *before* a group's own callback runs (the
+    ``invoke_without_command`` fall-through). So inside the ``bet`` callback it
+    is always None — we recover the attempted subcommand from the content.
+    """
+    content = getattr(getattr(ctx, 'message', None), 'content', '') or ''
+    prefix = getattr(ctx, 'prefix', '') or ''
+    if prefix and content.startswith(prefix):
+        content = content[len(prefix):]
+    content = content.lstrip()
+    invoked = getattr(ctx, 'invoked_with', '') or ''
+    if invoked and content[:len(invoked)].lower() == invoked.lower():
+        content = content[len(invoked):]
+    parts = content.split()
+    if not parts:
+        return None
+    token = parts[0]
+    group = getattr(ctx, 'command', None)
+    known = getattr(group, 'all_commands', None) or {}
+    if token.lower() in {name.lower() for name in known}:
+        return None
+    return token
+
+
 def _no_mentions():
     allowed = getattr(discord, 'AllowedMentions', None)
     return allowed.none() if allowed is not None and hasattr(allowed, 'none') else None
@@ -356,6 +443,23 @@ def _role_mentions():
         return allowed(everyone=False, users=False, roles=True, replied_user=False)
     except TypeError:
         return None
+
+
+_ARCHIVED_CONFIG_KEY = 'bet_archived'
+
+
+def _is_archived(guild_id):
+    """True once `;meta config enable bet_archived` was run in the guild: the
+    betting game is retired there — commands (except the read-only ones and
+    admin ``profitadd``) refuse, the thread listener ignores messages, and the
+    scheduler/settlement passes skip the guild entirely."""
+    from tle.util import codeforces_common as cf_common
+    try:
+        return bool(guild_id is not None and cf_common.user_db is not None
+                    and cf_common.user_db.get_guild_config(
+                        guild_id, _ARCHIVED_CONFIG_KEY) == '1')
+    except Exception:
+        return False
 
 
 def _api_key():

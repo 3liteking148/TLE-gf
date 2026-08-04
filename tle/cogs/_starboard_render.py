@@ -15,7 +15,29 @@ from tle.util import codeforces_common as cf_common
 
 logger = logging.getLogger(__name__)
 
-_TIMELINE_KEYWORDS = {'week', 'month', 'year'}
+_PERIOD_ALIASES = {
+    'day': 'day',
+    'today': 'day',
+    'dtd': 'day',
+    'week': 'week',
+    'wtd': 'week',
+    'month': 'month',
+    'mtd': 'month',
+    'year': 'year',
+    'ytd': 'year',
+    'all': 'all',
+    'alltime': 'all',
+    'all-time': 'all',
+    'lifetime': 'all',
+}
+_PERIOD_LABELS = {
+    'day': 'Today',
+    'week': 'Week to date',
+    'month': 'Month to date',
+    'year': 'Year to date',
+    'all': 'All time',
+}
+_TIMELINE_KEYWORDS = frozenset(_PERIOD_ALIASES)
 
 # No time bound sentinel — matches the DB layer constant
 _NO_TIME_BOUND = 10 ** 10
@@ -32,6 +54,24 @@ _VIDEO_EXTENSIONS = ('mp4', 'mov', 'webm')
 # Audio extensions that need to be re-uploaded as files for the player
 _AUDIO_EXTENSIONS = ('mp3', 'ogg', 'wav', 'flac', 'm4a', 'aac', 'wma')
 
+# Discord's API represents forwarded references as type 1.  The named enum was
+# added after the reference payload itself, so deployments on older discord.py
+# releases can receive ordinary replies without exposing MessageReferenceType.
+_FORWARD_REFERENCE_VALUE = 1
+
+
+def _is_forward_reference(reference):
+    """Recognize forwards without requiring a recent discord.py enum."""
+    if reference is None:
+        return False
+    reference_type = getattr(reference, 'type', None)
+    enum = getattr(discord, 'MessageReferenceType', None)
+    forward = getattr(enum, 'forward', None)
+    if forward is not None:
+        return reference_type == forward
+    return getattr(reference_type, 'value', reference_type) == \
+        _FORWARD_REFERENCE_VALUE
+
 
 def _starboard_content(emoji_str, count, jump_url):
     """Build the header line for a starboard message.
@@ -42,44 +82,88 @@ def _starboard_content(emoji_str, count, jump_url):
     return f'{emoji_str} **{count}** | {jump_url}'
 
 
-def _parse_starboard_args(args, default_emoji=constants._DEFAULT_STAR):
+def _period_start(period, now):
+    """Return the host-local start timestamp for a calendar period."""
+    if period == 'day':
+        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    elif period == 'week':
+        start = (now - datetime.timedelta(days=now.weekday())).replace(
+            hour=0, minute=0, second=0, microsecond=0)
+    elif period == 'month':
+        start = now.replace(
+            day=1, hour=0, minute=0, second=0, microsecond=0)
+    elif period == 'year':
+        start = now.replace(
+            month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+    else:
+        return 0
+    return time.mktime(start.timetuple())
+
+
+def _scope_date(timestamp):
+    value = datetime.datetime.fromtimestamp(timestamp)
+    return f'{value:%b} {value.day}, {value.year}'
+
+
+def _custom_scope_label(dlo, dhi):
+    if dlo > 0 and dhi < _NO_TIME_BOUND:
+        final_day = datetime.datetime.fromtimestamp(
+            dhi) - datetime.timedelta(days=1)
+        return f'{_scope_date(dlo)} – {final_day:%b} {final_day.day}, {final_day.year}'
+    if dlo > 0:
+        return f'Since {_scope_date(dlo)}'
+    return f'Before {_scope_date(dhi)}'
+
+
+def _parse_starboard_args(
+        args, default_emoji=constants._DEFAULT_STAR, *,
+        include_label=False, now=None):
     """Parse args for starboard leaderboard/top commands.
 
     Returns (emoji, dlo, dhi) where dlo/dhi are unix timestamps (seconds).
     Supports:
-      - timeline keywords: week, month, year
+      - calendar-to-date keywords: day, week, month, year
+      - aliases: today/dtd, wtd, mtd, ytd, all/alltime/lifetime
       - date ranges: d>=[[dd]mm]yyyy  d<[[dd]mm]yyyy
       - emoji (anything else that isn't a keyword or date arg)
     If no emoji is provided, defaults to default_emoji.
     If no time filter is provided, dlo=0 and dhi=_NO_TIME_BOUND.
+    With include_label=True, a fourth display-label value is returned.
     """
     emoji = None
-    dlo = 0
+    reference = now or datetime.datetime.now()
+    period_candidates = [(0, 'all')]
+    custom_dlo = 0
     dhi = _NO_TIME_BOUND
+    has_custom_bound = False
 
     for arg in args:
         lower = arg.lower()
-        if lower in _TIMELINE_KEYWORDS:
-            now = datetime.datetime.now()
-            if lower == 'week':
-                # Monday of this week at 00:00
-                monday = now - datetime.timedelta(days=now.weekday())
-                dlo = time.mktime(monday.replace(hour=0, minute=0, second=0, microsecond=0).timetuple())
-            elif lower == 'month':
-                dlo = time.mktime(now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).timetuple())
-            elif lower == 'year':
-                dlo = time.mktime(now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0).timetuple())
+        period = _PERIOD_ALIASES.get(lower)
+        if period is not None:
+            period_candidates.append(
+                (_period_start(period, reference), period))
         elif lower.startswith('d>='):
-            dlo = max(dlo, cf_common.parse_date(arg[3:]))
+            custom_dlo = max(custom_dlo, cf_common.parse_date(arg[3:]))
+            has_custom_bound = True
         elif lower.startswith('d<'):
             dhi = min(dhi, cf_common.parse_date(arg[2:]))
+            has_custom_bound = True
         else:
             emoji = arg
 
+    period_dlo, period = max(period_candidates, key=lambda item: item[0])
+    dlo = max(period_dlo, custom_dlo)
     if emoji is None:
         emoji = default_emoji
         logger.debug(f'No emoji specified, falling back to default: {default_emoji!r}')
-    return emoji, dlo, dhi
+    if not include_label:
+        return emoji, dlo, dhi
+    label = (
+        _custom_scope_label(dlo, dhi)
+        if has_custom_bound else _PERIOD_LABELS[period]
+    )
+    return emoji, dlo, dhi, label
 
 
 async def build_starboard_message(message, emoji_str, count, color):
@@ -94,6 +178,15 @@ async def build_starboard_message(message, emoji_str, count, color):
     order is: content (author) → file attachment (video) → embeds.
     For non-video: author goes in the main embed via set_author.
     """
+    snapshots = getattr(message, 'message_snapshots', None) or ()
+    snapshot = snapshots[0] if snapshots else None
+    rendered = snapshot or message
+    reference = getattr(message, 'reference', None)
+    is_forward = snapshot is not None or _is_forward_reference(reference)
+    forwarder_label = (
+        f'Forwarded by {message.author.display_name}'
+        if is_forward else message.author.display_name
+    )
     content = _starboard_content(emoji_str, count, message.jump_url)
     embeds = []
     files = []
@@ -104,7 +197,7 @@ async def build_starboard_message(message, emoji_str, count, color):
     audio_attachments = []
     spoiler_image_attachments = []
     other_attachments = []
-    for att in message.attachments:
+    for att in rendered.attachments:
         ext = att.filename.lower().rsplit('.', 1)[-1] if '.' in att.filename else ''
         if ext in _IMAGE_EXTENSIONS:
             if att.is_spoiler():
@@ -128,7 +221,7 @@ async def build_starboard_message(message, emoji_str, count, color):
     # appears above the player (file attachments render after content
     # but before embeds).
     if has_media_files:
-        safe_name = discord.utils.escape_mentions(message.author.display_name)
+        safe_name = discord.utils.escape_mentions(forwarder_label)
         content = (
             f'{emoji_str} **{count}** \u00b7 **{safe_name}** '
             f'| {message.jump_url}'
@@ -145,7 +238,8 @@ async def build_starboard_message(message, emoji_str, count, color):
                 logger.debug(f'Failed to download attachment {att.filename}')
 
     # --- Reply context embed (goes first / above main embed) ---
-    if message.reference and message.reference.message_id:
+    if (not is_forward and message.reference
+            and message.reference.message_id):
         try:
             ref_msg = message.reference.resolved
             if ref_msg is None or isinstance(ref_msg, discord.DeletedReferencedMessage):
@@ -225,21 +319,21 @@ async def build_starboard_message(message, emoji_str, count, color):
 
     # --- Main embed ---
     # For media-only messages (no text), skip the main embed entirely.
-    has_text = bool(message.content)
+    has_text = bool(rendered.content)
     has_other = bool(other_attachments)
     need_embed = not has_media_files or has_text or has_other or image_url
 
     if need_embed:
-        embed = discord.Embed(color=color, timestamp=message.created_at)
+        embed = discord.Embed(color=color, timestamp=rendered.created_at)
         if not has_media_files:
             embed.set_author(
-                name=message.author.display_name,
+                name=forwarder_label,
                 icon_url=message.author.display_avatar.url,
                 url=message.jump_url,
             )
 
         if has_text:
-            text = message.content
+            text = rendered.content
             if len(text) > 4096:
                 text = text[:4093] + '...'
             embed.description = text
@@ -257,8 +351,8 @@ async def build_starboard_message(message, emoji_str, count, color):
         # already have any from attachments. For URL pastes that produce
         # multiple image-type embeds, collect all of them so the gallery
         # logic below can render them.
-        if not image_urls and message.embeds:
-            for e in message.embeds:
+        if not image_urls and rendered.embeds:
+            for e in rendered.embeds:
                 if e.type == 'image' and e.url:
                     image_urls.append(e.url)
                     continue
@@ -308,7 +402,7 @@ async def build_starboard_message(message, emoji_str, count, color):
     # Carry over rich and link embeds from the original message (bot
     # embeds like Codeforces problem cards, and URL previews like blog
     # post link previews). Skip image/video/gifv auto-embeds.
-    for e in message.embeds:
+    for e in rendered.embeds:
         if e.type in ('rich', 'link', 'article'):
             embeds.append(e)
 

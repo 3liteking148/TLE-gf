@@ -1,17 +1,14 @@
-"""Betting unit tests: pure helpers, odds-API parsers, football-data parsing,
-and the small scheduling math (is_due / seconds_until_open)."""
+"""Betting unit tests: pure helpers, football-data parsing, and scheduling math."""
 from datetime import datetime, timezone
 
 import pytest
 
-from tle.util import odds_api
 from tle.util import football_data
 from tle.cogs.betting import (
     outcome_from_score, payout_amount, normalize_pick, parse_amount,
     extract_bet_tokens, resolve_pick, resolve_bet_pick, parse_settle_arg,
     rank_line, is_due, normalized_market_odds, normalize_event,
 )
-from tests.betting_test_utils import _raw_event, _FakeResp, _FakeSession
 
 
 class TestOutcome:
@@ -169,13 +166,79 @@ class TestNormalizedOdds:
         assert abs((1 / fair['home']) + (1 / fair['away']) - 1.0) < 1e-9
         assert abs(fair['home'] - 1.5) < 1e-3
 
-    def test_normalize_event_marks_knockout(self):
+    def test_normalize_event_knockout_drops_draw(self):
         event = {'commence_time': datetime(2026, 6, 28, 19, 0,
                                            tzinfo=timezone.utc).timestamp(),
                  'odds': {'home': 2.0, 'draw': 4.0, 'away': 4.0}}
-        out = normalize_event(event)
+        out = normalize_event(event, knockout=True)
         assert out['market_type'] == 'advance'
         assert out['odds']['draw'] == 0.0
+
+    def test_normalize_event_group_keeps_draw(self):
+        # A late group game (any date) must stay 1X2 — the date no longer
+        # decides knockout; the caller passes the stage-derived flag.
+        event = {'commence_time': datetime(2026, 6, 28, 19, 0,
+                                           tzinfo=timezone.utc).timestamp(),
+                 'odds': {'home': 2.0, 'draw': 4.0, 'away': 4.0}}
+        out = normalize_event(event)  # knockout defaults to False (fail-safe)
+        assert out['market_type'] == 'result'
+        assert out['odds']['draw'] > 1
+
+
+class TestStageDetection:
+    def test_is_knockout_stage(self):
+        assert football_data.is_knockout_stage('LAST_16') is True
+        assert football_data.is_knockout_stage('QUARTER_FINALS') is True
+        assert football_data.is_knockout_stage('GROUP_STAGE') is False
+        assert football_data.is_knockout_stage(None) is False
+        assert football_data.is_knockout_stage('') is False
+
+    def test_find_match_stage_matches_either_orientation(self):
+        matches = [{'home': 'Austria', 'away': 'Algeria',
+                    'commence_time': 1000.0, 'stage': 'GROUP_STAGE'},
+                   {'home': 'France', 'away': 'Brazil',
+                    'commence_time': 2000.0, 'stage': 'LAST_16'}]
+        # Query flipped vs the feed orientation still resolves.
+        assert football_data.find_match_stage(
+            'Algeria', 'Austria', 1000.0, matches) == 'GROUP_STAGE'
+        assert football_data.find_match_stage(
+            'Brazil', 'France', 2000.0, matches) == 'LAST_16'
+
+    def test_find_match_stage_unknown_fixture(self):
+        matches = [{'home': 'Austria', 'away': 'Algeria',
+                    'commence_time': 1000.0, 'stage': 'GROUP_STAGE'}]
+        assert football_data.find_match_stage(
+            'Spain', 'Japan', 1000.0, matches) is None
+
+    def test_find_match_stage_out_of_window(self):
+        matches = [{'home': 'Austria', 'away': 'Algeria',
+                    'commence_time': 1000.0, 'stage': 'GROUP_STAGE'}]
+        assert football_data.find_match_stage(
+            'Algeria', 'Austria', 1000.0 + 10 * 86400, matches) is None
+
+    def test_is_after_group_stage(self):
+        matches = [{'home': 'A', 'away': 'B', 'commence_time': 1000.0,
+                    'stage': 'GROUP_STAGE'},
+                   {'home': 'C', 'away': 'D', 'commence_time': 2000.0,
+                    'stage': 'GROUP_STAGE'},
+                   {'home': None, 'away': None, 'commence_time': 5000.0,
+                    'stage': 'LAST_16'}]
+        assert football_data.is_after_group_stage(2500.0, matches) is True
+        # The last group game itself is not "after" the group stage.
+        assert football_data.is_after_group_stage(2000.0, matches) is False
+        assert football_data.is_after_group_stage(1500.0, matches) is False
+        # No group data / no time → fail safe (caller keeps the draw).
+        assert football_data.is_after_group_stage(2500.0, []) is False
+        assert football_data.is_after_group_stage(None, matches) is False
+
+    def test_find_match_stage_cape_verde_islands_spelling(self):
+        # Regression: The Odds API says 'Cape Verde', football-data says
+        # 'Cape Verde Islands'. Without unifying the two spellings the stage
+        # lookup missed and a knockout tie fell back to a 1X2 draw market.
+        matches = [{'home': 'Argentina', 'away': 'Cape Verde Islands',
+                    'commence_time': 1000.0, 'stage': 'LAST_32'}]
+        assert football_data.find_match_stage(
+            'Argentina', 'Cape Verde', 1000.0, matches) == 'LAST_32'
 
 
 class TestParseSettleArg:
@@ -217,151 +280,6 @@ class TestRankLine:
         assert 'not on' in rank_line(rows, 999, 'balance', 'wallet')
 
 
-class TestIsoToUnix:
-    def test_z_suffix(self):
-        expected = datetime(2026, 6, 20, 15, 0, tzinfo=timezone.utc).timestamp()
-        assert odds_api.iso_to_unix('2026-06-20T15:00:00Z') == expected
-
-    def test_offset(self):
-        expected = datetime(2026, 6, 20, 15, 0, tzinfo=timezone.utc).timestamp()
-        assert odds_api.iso_to_unix('2026-06-20T16:00:00+01:00') == expected
-
-    def test_naive_treated_as_utc(self):
-        expected = datetime(2026, 6, 20, 15, 0, tzinfo=timezone.utc).timestamp()
-        assert odds_api.iso_to_unix('2026-06-20T15:00:00') == expected
-
-
-def _raw_event(**over):
-    raw = {
-        'id': 'evt1', 'sport_key': 'soccer_epl',
-        'commence_time': '2026-06-20T15:00:00Z',
-        'home_team': 'Spain', 'away_team': 'Cape Verde',
-        'bookmakers': [
-            {'key': 'b1', 'markets': [{'key': 'h2h', 'outcomes': [
-                {'name': 'Spain', 'price': 1.5},
-                {'name': 'Cape Verde', 'price': 6.0},
-                {'name': 'Draw', 'price': 4.0}]}]},
-            {'key': 'b2', 'markets': [{'key': 'h2h', 'outcomes': [
-                {'name': 'Spain', 'price': 1.6},
-                {'name': 'Cape Verde', 'price': 6.5},
-                {'name': 'Draw', 'price': 4.2}]}]},
-        ],
-    }
-    raw.update(over)
-    return raw
-
-
-class TestParseH2H:
-    def test_averages_across_bookmakers(self):
-        parsed = odds_api.parse_h2h_event(_raw_event())
-        assert parsed['event_id'] == 'evt1'
-        assert parsed['home_team'] == 'Spain'
-        assert parsed['away_team'] == 'Cape Verde'
-        assert parsed['odds']['home'] == 1.55
-        assert parsed['odds']['away'] == 6.25
-        assert parsed['odds']['draw'] == 4.1
-        assert parsed['commence_time'] == \
-            datetime(2026, 6, 20, 15, 0, tzinfo=timezone.utc).timestamp()
-
-    def test_missing_market_returns_none(self):
-        assert odds_api.parse_h2h_event(_raw_event(bookmakers=[])) is None
-
-    def test_partial_market_returns_none(self):
-        # A book that only priced home/away (no draw) → incomplete 1X2.
-        raw = _raw_event(bookmakers=[
-            {'key': 'b', 'markets': [{'key': 'h2h', 'outcomes': [
-                {'name': 'Spain', 'price': 1.5},
-                {'name': 'Cape Verde', 'price': 6.0}]}]}])
-        assert odds_api.parse_h2h_event(raw) is None
-
-    def test_missing_teams_returns_none(self):
-        assert odds_api.parse_h2h_event(_raw_event(home_team=None)) is None
-
-    def test_missing_event_id_returns_none(self):
-        assert odds_api.parse_h2h_event(_raw_event(id=None)) is None
-
-
-class TestFetchAsync:
-    """Exercise the async client wiring (URL/params, loop, None-filtering)
-    with an injected session — no network, no aiohttp needed."""
-
-    def _run(self, coro):
-        import asyncio
-        return asyncio.run(coro)
-
-    def test_fetch_h2h_params_and_parse(self):
-        session = _FakeSession([_raw_event(), _raw_event(id='evt2'),
-                                _raw_event(id='evt3', bookmakers=[])])  # last → None
-        events = self._run(odds_api.fetch_h2h(
-            'KEY', [odds_api.WORLD_CUP_SPORT_KEY], session=session))
-        assert len(events) == 2  # the no-odds event is dropped
-        url, params = session.calls[0]
-        assert url.endswith('/sports/soccer_fifa_world_cup/odds')
-        assert params['markets'] == 'h2h'
-        assert params['oddsFormat'] == 'decimal'
-        assert params['apiKey'] == 'KEY'
-
-    def test_fetch_sports_params(self):
-        session = _FakeSession([
-            {'key': odds_api.WORLD_CUP_SPORT_KEY, 'title': 'FIFA World Cup 2026'}])
-        sports = self._run(odds_api.fetch_sports('KEY', session=session))
-        assert sports[0]['key'] == odds_api.WORLD_CUP_SPORT_KEY
-        url, params = session.calls[0]
-        assert url.endswith('/sports')
-        assert params == {'apiKey': 'KEY'}
-
-    def test_fetch_scores_params_and_parse(self):
-        raw = [{'id': 'evt1', 'completed': True, 'home_team': 'A',
-                'away_team': 'B', 'scores': [{'name': 'A', 'score': '2'},
-                                             {'name': 'B', 'score': '0'}]}]
-        session = _FakeSession(raw)
-        scores = self._run(odds_api.fetch_scores(
-            'KEY', odds_api.WORLD_CUP_SPORT_KEY, event_ids=['evt1'],
-            session=session))
-        assert scores == [{'event_id': 'evt1', 'completed': True,
-                           'home_score': 2, 'away_score': 0}]
-        url, params = session.calls[0]
-        assert url.endswith('/sports/soccer_fifa_world_cup/scores')
-        assert params['daysFrom'] == '1'        # cheap completed-games window
-        assert params['eventIds'] == 'evt1'
-
-    def test_fetch_h2h_raises_when_all_sports_fail(self):
-        class _BadSession:
-            def get(self, url, params=None):
-                return _FakeResp({}, status=401, text='bad key')
-
-        with pytest.raises(odds_api.OddsApiError) as exc:
-            self._run(odds_api.fetch_h2h(
-                'BAD', [odds_api.WORLD_CUP_SPORT_KEY], session=_BadSession()))
-        assert 'soccer_fifa_world_cup' in str(exc.value)
-        assert 'HTTP 401' in str(exc.value)
-
-
-class TestParseScore:
-    def test_completed_with_scores(self):
-        raw = {'id': 'evt1', 'completed': True,
-               'home_team': 'Spain', 'away_team': 'Cape Verde',
-               'scores': [{'name': 'Spain', 'score': '2'},
-                          {'name': 'Cape Verde', 'score': '1'}]}
-        p = odds_api.parse_score_event(raw)
-        assert p == {'event_id': 'evt1', 'completed': True,
-                     'home_score': 2, 'away_score': 1}
-
-    def test_not_completed(self):
-        raw = {'id': 'evt1', 'completed': False}
-        p = odds_api.parse_score_event(raw)
-        assert p['completed'] is False
-        assert p['home_score'] is None
-
-    def test_completed_but_missing_score(self):
-        raw = {'id': 'evt1', 'completed': True,
-               'home_team': 'Spain', 'away_team': 'Cape Verde',
-               'scores': [{'name': 'Spain', 'score': '2'}]}
-        p = odds_api.parse_score_event(raw)
-        assert p['completed'] is True
-        assert p['home_score'] is None
-
-
 # ── football-data.org (results) ──────────────────────────────────────────────
 
 class TestFootballDataParse:
@@ -377,14 +295,19 @@ class TestFootballDataParse:
         assert p['winner'] == 'home'
 
     def test_finished_penalties_keeps_winner(self):
+        # Real football-data v4 shape for a shootout: `fullTime` holds the LEVEL
+        # regular+extra-time score (1-1), the shootout tally lives in a separate
+        # `penalties` node, and `winner` is the team that won on penalties.
         raw = {'status': 'FINISHED', 'utcDate': '2026-07-01T16:01:00Z',
                'homeTeam': {'name': 'Spain'}, 'awayTeam': {'name': 'Cape Verde'},
                'score': {'winner': 'AWAY_TEAM', 'duration': 'PENALTY_SHOOTOUT',
-                         'fullTime': {'homeTeam': 4, 'awayTeam': 5},
-                         'regularTime': {'homeTeam': 1, 'awayTeam': 1}}}
+                         'fullTime': {'home': 1, 'away': 1},
+                         'regularTime': {'home': 1, 'away': 1},
+                         'penalties': {'home': 3, 'away': 4}}}
         p = football_data.parse_match(raw)
         assert p['finished'] is True
-        assert p['home_score'] == 4 and p['away_score'] == 5
+        # The scoreline stays level; the WINNER carries the real result.
+        assert p['home_score'] == 1 and p['away_score'] == 1
         assert p['winner'] == 'away'
         assert p['duration'] == 'PENALTY_SHOOTOUT'
 

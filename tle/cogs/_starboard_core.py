@@ -272,9 +272,10 @@ class CoreMixin:
             raise StarboardCogError(f'Source channel {payload.channel_id} not found')
         message = await channel.fetch_message(payload.message_id)
 
+        snapshots = getattr(message, 'message_snapshots', None) or ()
         if ((message.type != discord.MessageType.default and message.type != discord.MessageType.reply)
                 or (len(message.content) == 0 and len(message.attachments) == 0
-                    and len(message.embeds) == 0)):
+                    and len(message.embeds) == 0 and not snapshots)):
             raise StarboardCogError(f'Cannot starboard message {message.id}: invalid type or empty content')
 
         # Track the reactor under the raw emoji they actually used
@@ -424,12 +425,12 @@ class CoreMixin:
     def _leaderboard_entry(self, ctx, emoji):
         """Validate the feature gate + emoji config for a leaderboard command.
 
-        Returns the starboard entry. Raises StarboardCogError on failure.
+        Returns the configured main emoji. Raises StarboardCogError on failure.
         """
         if cf_common.user_db.get_guild_config(ctx.guild.id, 'starboard_leaderboard') != '1':
             raise StarboardCogError('Starboard leaderboard is not enabled. '
                                     'An admin can enable it with `;meta config enable starboard_leaderboard`.')
-        entry = cf_common.user_db.get_starboard_entry(ctx.guild.id, emoji)
+        main_emoji, entry = self._resolve_emoji(ctx.guild.id, emoji)
         if entry is None:
             raise StarboardCogError(f'Emoji {emoji} is not configured for this starboard.')
-        return entry
+        return main_emoji

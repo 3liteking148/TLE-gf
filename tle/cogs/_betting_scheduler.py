@@ -13,7 +13,7 @@ import discord
 from tle import constants
 from tle.util import codeforces_common as cf_common
 from tle.cogs._betting_helpers import (
-    seconds_until_open, _api_key, _event_fixture_key,
+    seconds_until_open, _api_key, _event_fixture_key, _is_archived,
 )
 from tle.cogs._betting_engine import BettingCogError
 
@@ -34,6 +34,8 @@ class BetSchedulerMixin:
         if not self.bot:
             return out
         for guild in self.bot.guilds:
+            if _is_archived(guild.id):
+                continue
             if cf_common.user_db.get_guild_config(
                     guild.id, _PAUSED_CONFIG_KEY) == '1':
                 continue
@@ -45,7 +47,7 @@ class BetSchedulerMixin:
 
     async def _refresh_schedule(self):
         """Discover the fixture list (cached schedule, cheap) and, for each
-        upcoming game, either arm a precise open timer (kickoff − 2h still in
+        upcoming game, either arm a precise open timer (kickoff − 6h still in
         the future) or open it now (already inside the window — restart / missed
         timer catch-up). This is idempotent and safe to call often."""
         if not _api_key():
@@ -64,7 +66,7 @@ class BetSchedulerMixin:
             if seconds_until_open(event['commence_time'], lead, now) > 0:
                 self._schedule_open(event)
             else:
-                # Inside the 2h window already — open (or attach a thread) now.
+                # Inside the 6h window already — open (or attach a thread) now.
                 await self._fire_open(_event_fixture_key(event))
 
     def _schedule_open(self, event):
@@ -97,6 +99,8 @@ class BetSchedulerMixin:
             return
         now = time.time()
         for guild in self.bot.guilds:
+            if _is_archived(guild.id):
+                continue
             for market in cf_common.user_db.bet_markets_open(guild.id):
                 if market.bets_closed:
                     continue
@@ -209,32 +213,43 @@ class BetSchedulerMixin:
                                fixture_key, guild_id, exc_info=True)
 
     async def _open_market_auto(self, guild_id, channel_id, event):
+        """Open + announce + thread a market headlessly. Returns the new
+        market_id on success, or None if it could not be posted (channel gone,
+        duplicate, or the announcement failed) — callers that void-then-reopen
+        rely on this to tell a real repost from a no-op."""
         channel = self.bot.get_channel(int(channel_id)) if self.bot else None
         if channel is None:
             logger.warning('configured bet channel %s missing for guild %s',
                            channel_id, guild_id)
-            return
+            return None
         market_id = self._create_market(guild_id, channel_id, event)
         if market_id is None:
             logger.info('Auto-open skipped duplicate fixture %s (%s vs %s) '
                         'in guild %s',
                         event.get('event_id'), event.get('home_team'),
                         event.get('away_team'), guild_id)
-            return
+            return None
+        # Several games can kick off at the same time in one channel; ping the
+        # notify role only on the first market opened for that kickoff so members
+        # aren't tagged once per simultaneous game.
+        suppress_mention = cf_common.user_db.bet_market_has_earlier_open_at_kickoff(
+            guild_id, channel_id, event['commence_time'], market_id)
         try:
             msg = await channel.send(
-                **self._open_announcement_kwargs(guild_id, event))
+                **self._open_announcement_kwargs(
+                    guild_id, event, suppress_mention=suppress_mention))
         except discord.HTTPException:
             logger.warning('failed to post auto market for %s in guild %s',
                            event.get('event_id'), guild_id, exc_info=True)
             cf_common.user_db.bet_void(guild_id, market_id, time.time())
-            return
+            return None
         cf_common.user_db.bet_market_set_message(market_id, msg.id)
         market = cf_common.user_db.bet_market_get(market_id)
         await self._create_thread(market_id, msg, market)
         self._schedule_close(market)
         logger.info('Auto-opened market %s (%s vs %s) in guild %s',
                     market_id, event['home_team'], event['away_team'], guild_id)
+        return market_id
 
     async def _ensure_thread(self, market):
         if not market.message_id or not self.bot:

@@ -9,6 +9,7 @@ from tle.util import discord_common
 
 from tle.cogs._minigame_common import (
     format_duration,
+    normalize_puzzle_date,
 )
 from tle.cogs._minigame_queens import (
     QUEENS_GAME, normalize_queens_name, parse_queens_leaderboard,
@@ -31,29 +32,22 @@ logger = logging.getLogger(__name__)
 
 
 class ImplQueensImportMixin:
-    def _resolve_queens_leaderboard(self, ctx, leaderboard, *,
-                                    skip_importer=False):
+    def _resolve_queens_leaderboard(self, ctx, leaderboard):
         """Resolve a parsed leaderboard into rated rows + unresolved names.
 
-        ``skip_importer=True`` is the bot-driven mode used by ``;queens play``
-        / ``;queens update``: no Discord user is treated as the importer, and
-        the "You" row (the bot's own scraper-paced solve) is dropped on sight
-        so it never enters the rating pool.  The default ``False`` is the
-        manual ``;queens import`` paste path — a human ran the command, their
-        Discord-side player_link supplies the "You" row's identity.
+        A manual import's ``You`` row belongs to the command author, whose
+        registered Queens name supplies its external identity.
         """
         entries = parse_queens_leaderboard(leaderboard)
         if not entries:
             raise MinigameCogError('No LinkedIn Queens leaderboard rows found.')
 
-        importer_link = None
-        if not skip_importer:
-            importer_link = cf_common.user_db.get_minigame_player_link(
-                ctx.guild.id, QUEENS_GAME.name, ctx.author.id)
-            if importer_link is None:
-                raise MinigameCogError(
-                    'Register the importer with `;queens register` before '
-                    'importing LinkedIn Queens leaderboard results.')
+        importer_link = cf_common.user_db.get_minigame_player_link(
+            ctx.guild.id, QUEENS_GAME.name, ctx.author.id)
+        if importer_link is None:
+            raise MinigameCogError(
+                'Register the importer with `;queens register` before '
+                'importing LinkedIn Queens leaderboard results.')
 
         resolved = []
         unresolved = []
@@ -62,9 +56,6 @@ class ImplQueensImportMixin:
         for entry in entries:
             normalized = normalize_queens_name(entry.linkedin_name)
             if entry.is_you:
-                if skip_importer:
-                    # Bot's own row — never imported.
-                    continue
                 link = importer_link
             else:
                 link = cf_common.user_db.get_minigame_player_link_by_name(
@@ -95,12 +86,11 @@ class ImplQueensImportMixin:
 
         return resolved, unresolved
 
-    def _make_queens_import_preview(self, ctx, date_text, leaderboard, *,
-                                    skip_importer=False):
+    def _make_queens_import_preview(self, ctx, date_text, leaderboard):
         puzzle_date = _parse_queens_date(date_text)
         puzzle_number = _queens_puzzle_number_for_date(puzzle_date)
         resolved, unresolved = self._resolve_queens_leaderboard(
-            ctx, leaderboard, skip_importer=skip_importer)
+            ctx, leaderboard)
         if not resolved and not unresolved:
             raise MinigameCogError(
                 'No leaderboard rows matched Queens players.')
@@ -181,22 +171,43 @@ class ImplQueensImportMixin:
 
         return new_resolved, new_unresolved
 
-    def _save_queens_import(self, ctx, preview, *, skip_wipe=True):
-        del skip_wipe
+    def _save_queens_import(self, ctx, preview):
         new_resolved, new_unresolved = self._filter_new_queens_entries(
             ctx.guild.id, preview)
         preview = preview._replace(
             resolved=new_resolved, unresolved=new_unresolved)
-        for entry in preview.resolved:
-            self._save_queens_external_result(
-                ctx.guild.id, ctx.channel.id, entry, preview.puzzle_date,
-                preview.raw_content)
-        for entry in preview.unresolved:
-            self._save_queens_external_result(
-                ctx.guild.id, ctx.channel.id, entry, preview.puzzle_date,
-                preview.raw_content)
-        self._sync_queens_materialized_results(ctx.guild.id)
-        self._recompute_minigame_ratings(ctx.guild.id, QUEENS_GAME)
+        links_by_name = {
+            row.normalized_name: row
+            for row in cf_common.user_db.get_minigame_player_links(
+                ctx.guild.id, QUEENS_GAME.name)
+        }
+        optouts = cf_common.user_db.get_minigame_optouts(
+            ctx.guild.id, QUEENS_GAME.name)
+        opted_out_ids = {str(row.user_id) for row in optouts}
+        opted_out_names = {
+            row.normalized_name
+            for row in optouts
+            if row.normalized_name is not None
+        }
+        source_rows = []
+        for entry in (*preview.resolved, *preview.unresolved):
+            normalized_name = normalize_queens_name(entry.linkedin_name)
+            link = links_by_name.get(normalized_name)
+            is_rated = (
+                str(link.user_id) not in opted_out_ids
+                if link is not None
+                else normalized_name not in opted_out_names
+            )
+            source_rows.append(self._queens_external_result_values(
+                ctx.guild.id, ctx.channel.id, entry,
+                preview.puzzle_date, preview.raw_content,
+                is_rated=is_rated))
+        cf_common.user_db.apply_minigame_source_migration(
+            ctx.guild.id, QUEENS_GAME.name, source_rows, [])
+        self._sync_queens_materialized_results(
+            ctx.guild.id, migrate_legacy=False)
+        self._recompute_minigame_ratings(
+            ctx.guild.id, QUEENS_GAME, sync_results=False)
         return _QueensImportSaveResult(
             resolved=len(preview.resolved),
             unresolved=len(preview.unresolved),
@@ -237,6 +248,11 @@ class ImplQueensImportMixin:
             raise MinigameCogError(
                 f'`{_safe_member_name(member)}` is not registered for '
                 f'{QUEENS_GAME.display_name} (`;queens register LinkedIn Name`).')
+        # Public rating/performance/history views hide banned players, just
+        # like Akari's (whose bans auto-opt the user out of displays); the
+        # mod-only debug variants skip this gate.
+        self._ensure_not_minigame_banned(
+            guild_id, QUEENS_GAME, member.id, _safe_member_name(member))
         return link
 
     def _queens_rating_identity_fn(self, links_by_user):
@@ -313,16 +329,18 @@ class ImplQueensImportMixin:
             'Usage: `;queens add <@user|LinkedIn Name> DATE/# time [status...]`.')
 
     @staticmethod
-    def _parse_queens_remove_args(args):
+    def _parse_queens_remove_args(args, *, command='remove'):
         tokens = str(args or '').split()
         if len(tokens) < 2:
             raise MinigameCogError(
-                'Usage: `;queens remove <@user|LinkedIn Name> DATE/#`.')
+                f'Usage: `;queens {command} '
+                '<@user|LinkedIn Name> DATE/#`.')
         try:
             parsed_date = _parse_queens_date_or_number(tokens[-1])
         except MinigameCogError as exc:
             raise MinigameCogError(
-                'Usage: `;queens remove <@user|LinkedIn Name> DATE/#`.') from exc
+                f'Usage: `;queens {command} '
+                '<@user|LinkedIn Name> DATE/#`.') from exc
         player_text = ' '.join(tokens[:-1]).strip()
         return player_text, parsed_date
 
@@ -337,7 +355,26 @@ class ImplQueensImportMixin:
         parsed_number = _queens_puzzle_number_for_date(parsed_date)
         no_hints, no_mistakes, _status_text = queens_status_flags(status)
         time_seconds = parse_queens_time(time_text)
-        for puzzle_number in _queens_puzzle_numbers_for_date(parsed_date):
+        puzzle_numbers = set(_queens_puzzle_numbers_for_date(parsed_date))
+        existing_sources = [
+            row
+            for row in cf_common.user_db.get_minigame_unresolved_results_for_name(
+                ctx.guild.id, QUEENS_GAME.name, linked.normalized_name)
+            if (
+                int(row.puzzle_number) in puzzle_numbers
+                or normalize_puzzle_date(row.puzzle_date) == parsed_date
+            )
+        ]
+        preserved_source = max(
+            existing_sources,
+            key=lambda row: (
+                int(not bool(row.is_rated)),
+                int(int(row.puzzle_number) == parsed_number),
+                float(row.stored_at),
+            ),
+            default=None,
+        )
+        for puzzle_number in puzzle_numbers:
             cf_common.user_db.delete_minigame_unresolved_result_for_name_puzzle(
                 ctx.guild.id, QUEENS_GAME.name, linked.normalized_name,
                 puzzle_number)
@@ -352,9 +389,22 @@ class ImplQueensImportMixin:
         )
         self._save_queens_external_result(
             ctx.guild.id, ctx.channel.id, entry, parsed_date,
-            f'{linked.external_name}\n{status}\n{time_text}')
+            f'{linked.external_name}\n{status}\n{time_text}',
+            is_rated=(
+                None if preserved_source is None
+                else preserved_source.is_rated),
+            stored_at=(
+                None if preserved_source is None
+                else preserved_source.stored_at),
+            source_message_id=(
+                None if preserved_source is None
+                else preserved_source.source_message_id),
+            rating_override=(
+                None if preserved_source is None
+                else preserved_source.rating_override))
         self._sync_queens_materialized_results(ctx.guild.id)
-        self._recompute_minigame_ratings(ctx.guild.id, QUEENS_GAME)
+        self._recompute_minigame_ratings(
+            ctx.guild.id, QUEENS_GAME, sync_results=False)
         await ctx.send(embed=discord_common.embed_success(
             f'Added {QUEENS_GAME.display_name} result for '
             f'`{label}` on #{parsed_number} {parsed_date.isoformat()}: '
@@ -377,9 +427,9 @@ class ImplQueensImportMixin:
                 f'No {QUEENS_GAME.display_name} result found for '
                 f'`{label}` on {parsed_date.isoformat()}.')
         self._sync_queens_materialized_results(ctx.guild.id)
-        self._recompute_minigame_ratings(ctx.guild.id, QUEENS_GAME)
+        self._recompute_minigame_ratings(
+            ctx.guild.id, QUEENS_GAME, sync_results=False)
         await ctx.send(embed=discord_common.embed_success(
             f'Removed {QUEENS_GAME.display_name} result for '
             f'`{label}` on #{_queens_puzzle_number_for_date(parsed_date)} '
             f'{parsed_date.isoformat()}.'))
-

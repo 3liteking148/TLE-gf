@@ -1,6 +1,5 @@
 """Queens slash group (Minigames cog slash mixin; see minigames.py)."""
 
-import datetime as dt
 import logging
 from typing import Optional
 
@@ -10,6 +9,7 @@ from discord import app_commands
 
 from tle.cogs._minigame_queens import QUEENS_GAME
 from tle.cogs._minigame_helpers import _SlashCtx
+from tle.cogs._minigame_queens_cog import _queens_current_puzzle_date
 from tle.cogs._minigame_slash_consts import _TIMEFRAME_CHOICES, _MODE_CHOICES
 
 logger = logging.getLogger(__name__)
@@ -18,6 +18,12 @@ logger = logging.getLogger(__name__)
 class QueensSlashMixin:
     queens_slash = app_commands.Group(
         name='queens', description='LinkedIn Queens commands', guild_only=True)
+    # Nested group: Discord caps a group at 25 direct children, and this
+    # group is at that limit. It also mirrors the ';queens import <sub>'
+    # prefix commands.
+    queens_slash_import = app_commands.Group(
+        name='import', description='Manage imported Queens history',
+        parent=queens_slash)
 
     @queens_slash.command(name='show', description='Show LinkedIn Queens settings')
     async def slash_queens_show(self, interaction: discord.Interaction):
@@ -34,6 +40,16 @@ class QueensSlashMixin:
             return
         try:
             await self._cmd_here(_SlashCtx(interaction), QUEENS_GAME)
+        except Exception as _slash_exc:
+            await self._slash_handle_error(interaction, _slash_exc)
+
+    @queens_slash.command(name='clear', description='Clear the LinkedIn Queens channel')
+    async def slash_queens_channel_clear(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        if not await self._slash_require_queens_mod(interaction):
+            return
+        try:
+            await self._cmd_clear(_SlashCtx(interaction), QUEENS_GAME)
         except Exception as _slash_exc:
             await self._slash_handle_error(interaction, _slash_exc)
 
@@ -57,7 +73,7 @@ class QueensSlashMixin:
         except Exception as _slash_exc:
             await self._slash_handle_error(interaction, _slash_exc)
 
-    @queens_slash.command(name='set', description='Set a Queens LinkedIn name without verification')
+    @queens_slash.command(name='set', description='Overwrite a member Queens name')
     @app_commands.describe(
         member='Discord member to set',
         linkedin_name='LinkedIn display name',
@@ -91,38 +107,33 @@ class QueensSlashMixin:
         except Exception as _slash_exc:
             await self._slash_handle_error(interaction, _slash_exc)
 
-    @queens_slash.command(name='update', description='Refresh the LinkedIn Queens leaderboard')
-    @app_commands.describe(yesterday='Fetch the Yesterday results tab')
-    async def slash_queens_update(
-        self, interaction: discord.Interaction,
-        yesterday: bool = False,
-    ):
-        await interaction.response.defer()
-        try:
-            await self._cmd_queens_update(
-                _SlashCtx(interaction),
-                results_day='yesterday' if yesterday else 'today')
-        except Exception as _slash_exc:
-            await self._slash_handle_error(interaction, _slash_exc)
-
-    @queens_slash.command(name='vs', description='Head-to-head comparison')
+    @queens_slash.command(name='vs', description='Compare two to five players')
     @app_commands.describe(
         member1='First player', member2='Second player',
-        timeframe='Time period filter', mode='Scoring mode',
+        member3='Optional third player', member4='Optional fourth player',
+        member5='Optional fifth player',
+        timeframe='Time period filter',
         weekdays='Queens days: mon,wed, weekday, or weekend')
-    @app_commands.choices(timeframe=_TIMEFRAME_CHOICES, mode=_MODE_CHOICES)
+    @app_commands.choices(timeframe=_TIMEFRAME_CHOICES)
     async def slash_queens_vs(
         self, interaction: discord.Interaction,
         member1: discord.Member, member2: discord.Member,
+        member3: Optional[discord.Member] = None,
+        member4: Optional[discord.Member] = None,
+        member5: Optional[discord.Member] = None,
         timeframe: Optional[app_commands.Choice[str]] = None,
-        mode: Optional[app_commands.Choice[str]] = None,
         weekdays: Optional[str] = None,
     ):
         await interaction.response.defer()
         try:
-            await self._cmd_vs(
-                _SlashCtx(interaction), QUEENS_GAME, member1, member2,
-                *self._slash_choice_args(timeframe, mode),
+            members = [
+                member for member in
+                (member1, member2, member3, member4, member5)
+                if member is not None
+            ]
+            await self._cmd_vs_members(
+                _SlashCtx(interaction), QUEENS_GAME, members,
+                *self._slash_choice_args(timeframe),
                 *self._slash_queens_weekday_args(weekdays))
         except Exception as _slash_exc:
             await self._slash_handle_error(interaction, _slash_exc)
@@ -195,37 +206,48 @@ class QueensSlashMixin:
     @app_commands.describe(
         date='Date or puzzle number (defaults to today)',
         weekdays='Queens days: mon,wed, weekday, or weekend',
-        date_filter='Rating date filter, e.g. d>=01062026 d<08062026')
+        date_filter='Rating date filter, e.g. d>=01062026 d<08062026',
+        beta='Use the beta testing rating system',
+        unrated='Also show permanently unrated results')
     async def slash_queens_results(
         self, interaction: discord.Interaction,
         date: Optional[str] = None,
         weekdays: Optional[str] = None,
         date_filter: Optional[str] = None,
+        beta: bool = False,
+        unrated: bool = False,
     ):
         await interaction.response.defer()
         try:
             await self._cmd_queens_stats_date(
-                _SlashCtx(interaction), date or dt.date.today().isoformat(),
+                _SlashCtx(interaction),
+                date or _queens_current_puzzle_date().isoformat(),
                 weekdays=self._slash_queens_weekdays(weekdays),
-                date_bounds=self._slash_queens_date_bounds(date_filter))
+                date_bounds=self._slash_queens_date_bounds(date_filter),
+                improved=beta, show_unrated=unrated)
         except Exception as _slash_exc:
             await self._slash_handle_error(interaction, _slash_exc)
 
     @queens_slash.command(name='ratings', description='Show Queens rating leaderboard')
     @app_commands.describe(
+        weekly='Preview weekly-contest ratings and this week\'s scores',
         weekdays='Queens days: mon,wed, weekday, or weekend',
-        date_filter='Rating date filter, e.g. d>=01062026 d<08062026')
+        date_filter='Rating date filter, e.g. d>=01062026 d<08062026',
+        beta='Use the beta testing rating system')
     async def slash_queens_ratings(
         self, interaction: discord.Interaction,
+        weekly: bool = False,
         weekdays: Optional[str] = None,
         date_filter: Optional[str] = None,
+        beta: bool = False,
     ):
         await interaction.response.defer()
         try:
             await self._cmd_queens_ratings(
                 _SlashCtx(interaction),
                 weekdays=self._slash_queens_weekdays(weekdays),
-                date_bounds=self._slash_queens_date_bounds(date_filter))
+                date_bounds=self._slash_queens_date_bounds(date_filter),
+                improved=beta, weekly=weekly)
         except Exception as _slash_exc:
             await self._slash_handle_error(interaction, _slash_exc)
 
@@ -234,13 +256,15 @@ class QueensSlashMixin:
         member='Player (defaults to you)',
         weekdays='Queens days: mon,wed, weekday, or weekend',
         date_filter='Rating date filter, e.g. d>=01062026 d<08062026',
-        recalculate='Recalculate ratings from the filtered result set')
+        recalculate='Recalculate ratings from the filtered result set',
+        beta='Use the beta testing rating system')
     async def slash_queens_rating(
         self, interaction: discord.Interaction,
         member: Optional[discord.Member] = None,
         weekdays: Optional[str] = None,
         date_filter: Optional[str] = None,
         recalculate: Optional[bool] = False,
+        beta: bool = False,
     ):
         await interaction.response.defer()
         target = member or interaction.user
@@ -249,7 +273,7 @@ class QueensSlashMixin:
                 _SlashCtx(interaction), [target],
                 weekdays=self._slash_queens_weekdays(weekdays),
                 date_bounds=self._slash_queens_date_bounds(date_filter),
-                recalculate=bool(recalculate))
+                recalculate=bool(recalculate), improved=beta)
         except Exception as _slash_exc:
             await self._slash_handle_error(interaction, _slash_exc)
 
@@ -257,12 +281,14 @@ class QueensSlashMixin:
     @app_commands.describe(
         member='Player (defaults to you)',
         weekdays='Queens days: mon,wed, weekday, or weekend',
-        date_filter='Rating date filter, e.g. d>=01062026 d<08062026')
+        date_filter='Rating date filter, e.g. d>=01062026 d<08062026',
+        beta='Use the beta testing rating system')
     async def slash_queens_performance(
         self, interaction: discord.Interaction,
         member: Optional[discord.Member] = None,
         weekdays: Optional[str] = None,
         date_filter: Optional[str] = None,
+        beta: bool = False,
     ):
         await interaction.response.defer()
         target = member or interaction.user
@@ -270,7 +296,8 @@ class QueensSlashMixin:
             await self._cmd_queens_performance(
                 _SlashCtx(interaction), [target],
                 weekdays=self._slash_queens_weekdays(weekdays),
-                date_bounds=self._slash_queens_date_bounds(date_filter))
+                date_bounds=self._slash_queens_date_bounds(date_filter),
+                improved=beta)
         except Exception as _slash_exc:
             await self._slash_handle_error(interaction, _slash_exc)
 
@@ -278,12 +305,14 @@ class QueensSlashMixin:
     @app_commands.describe(
         member='Player (defaults to you)',
         weekdays='Queens days: mon,wed, weekday, or weekend',
-        date_filter='Rating date filter, e.g. d>=01062026 d<08062026')
+        date_filter='Rating date filter, e.g. d>=01062026 d<08062026',
+        beta='Use the beta testing rating system')
     async def slash_queens_history(
         self, interaction: discord.Interaction,
         member: Optional[discord.Member] = None,
         weekdays: Optional[str] = None,
         date_filter: Optional[str] = None,
+        beta: bool = False,
     ):
         await interaction.response.defer()
         target = member or interaction.user
@@ -291,7 +320,8 @@ class QueensSlashMixin:
             await self._cmd_queens_history(
                 _SlashCtx(interaction), target,
                 weekdays=self._slash_queens_weekdays(weekdays),
-                date_bounds=self._slash_queens_date_bounds(date_filter))
+                date_bounds=self._slash_queens_date_bounds(date_filter),
+                improved=beta)
         except Exception as _slash_exc:
             await self._slash_handle_error(interaction, _slash_exc)
 
@@ -331,9 +361,9 @@ class QueensSlashMixin:
         except Exception as _slash_exc:
             await self._slash_handle_error(interaction, _slash_exc)
 
-    @queens_slash.command(name='clear', description='Remove all Queens results for a date')
+    @queens_slash.command(name='delete', description='Remove all Queens results for a date')
     @app_commands.describe(date='Date or puzzle number')
-    async def slash_queens_clear(
+    async def slash_queens_delete(
         self, interaction: discord.Interaction, date: str,
     ):
         await interaction.response.defer()
@@ -371,7 +401,7 @@ class QueensSlashMixin:
         except Exception as _slash_exc:
             await self._slash_handle_error(interaction, _slash_exc)
 
-    @queens_slash.command(name='import-start', description='Rebuild imported Queens history')
+    @queens_slash_import.command(name='start', description='Rebuild imported Queens history')
     @app_commands.describe(channel='Channel to import from')
     async def slash_queens_import_start(
         self, interaction: discord.Interaction,
@@ -388,7 +418,7 @@ class QueensSlashMixin:
         except Exception as _slash_exc:
             await self._slash_handle_error(interaction, _slash_exc)
 
-    @queens_slash.command(name='import-status', description='Show Queens import status')
+    @queens_slash_import.command(name='status', description='Show Queens import status')
     async def slash_queens_import_status(self, interaction: discord.Interaction):
         await interaction.response.defer()
         if not await self._slash_require_queens_mod(interaction):
@@ -398,7 +428,7 @@ class QueensSlashMixin:
         except Exception as _slash_exc:
             await self._slash_handle_error(interaction, _slash_exc)
 
-    @queens_slash.command(name='import-cancel', description='Cancel a running Queens import')
+    @queens_slash_import.command(name='cancel', description='Cancel a running Queens import')
     async def slash_queens_import_cancel(self, interaction: discord.Interaction):
         await interaction.response.defer()
         if not await self._slash_require_queens_mod(interaction):
@@ -408,7 +438,7 @@ class QueensSlashMixin:
         except Exception as _slash_exc:
             await self._slash_handle_error(interaction, _slash_exc)
 
-    @queens_slash.command(name='import-clear', description='Delete imported Queens history')
+    @queens_slash_import.command(name='clear', description='Delete imported Queens history')
     async def slash_queens_import_clear(self, interaction: discord.Interaction):
         await interaction.response.defer()
         if not await self._slash_require_queens_mod(interaction):

@@ -34,7 +34,7 @@ class BetWalletCmdImplMixin:
         if market is None:
             raise BettingCogError(
                 'No open market here. Bets are placed in the match thread the '
-                'bot opens ~2h before kickoff.')
+                'bot opens ~6h before kickoff.')
         if not self._pick_allowed(market, pick):
             raise BettingCogError('That outcome is not available for this market.')
         status, data = await self._execute_bet(
@@ -100,7 +100,7 @@ class BetWalletCmdImplMixin:
         if market is None:
             raise BettingCogError(
                 'No open market here. Run this in the match thread the bot opens '
-                '~2h before kickoff.')
+                '~6h before kickoff.')
         tokens = extract_bet_tokens(text)
         if tokens is None:
             raise BettingCogError(
@@ -383,6 +383,35 @@ class BetWalletCmdImplMixin:
             await ctx.send(embed=discord_common.embed_success(
                 f'Took **{-amount}** {_COIN} from `{name}`. '
                 f'New balance: **{new}** {_COIN}.'))
+
+    async def _cmd_profitadd(self, ctx, member, amount):
+        """Credit coins that also count toward `;bet leaderboard profit` — for
+        winning bets the bot never recorded (e.g. placed right at close). The
+        ledger rows (action='profitadd') are what the leaderboard sums."""
+        if amount == 0:
+            raise BettingCogError(
+                'Amount must be a non-zero whole number (negative reverts).')
+        seed = self._bet_start_balance(ctx.guild.id)
+        before = cf_common.user_db.bet_ensure_wallet(ctx.guild.id, member.id, seed)
+        new = cf_common.user_db.bet_adjust_balance(
+            ctx.guild.id, member.id, amount, seed,
+            actor_id=ctx.author.id, action='profitadd')
+        # Balances floor at 0, so a revert can apply less than requested; the
+        # ledger (and hence the profit board) records what actually moved —
+        # report that, not the requested amount.
+        applied = new - before
+        name = discord.utils.escape_markdown(member.display_name)
+        if applied == 0:
+            await ctx.send(embed=discord_common.embed_alert(
+                f'`{name}`\'s balance is already 0 — nothing removed and '
+                f'profit unchanged (requested {amount}).'))
+            return
+        verb, prep = ('Added', 'to') if applied > 0 else ('Removed', 'from')
+        text = (f'{verb} **{abs(applied)}** {_COIN} {prep} `{name}`\'s balance '
+                f'**and profit**. New balance: **{new}** {_COIN}.')
+        if applied != amount:
+            text += f'\n⚠️ Requested {amount}; balances floor at 0.'
+        await ctx.send(embed=discord_common.embed_success(text))
 
     async def _cmd_setbalance(self, ctx, member, amount):
         if amount < 0:

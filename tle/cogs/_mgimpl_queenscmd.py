@@ -2,36 +2,72 @@
 
 import datetime as dt
 import logging
+from collections import namedtuple
 
 import discord
 
 from tle.util import codeforces_common as cf_common
 from tle.util import discord_common
 from tle.util.akari_rating import rank_for_rating
+from tle.util.akari_weekly import (
+    compute_weekly_ratings, current_week_standings,
+)
 
 from tle.cogs._minigame_queens import (
-    QUEENS_GAME,
+    QUEENS_GAME, queens_weekly_difficulty_map,
 )
 from tle.cogs._minigame_helpers import (
     MinigameCogError, _mg,
+    _display_rating, _display_peak, _display_games,
 )
 from tle.cogs._minigame_queens_filters import (
     _split_queens_weekday_filter, _split_queens_rating_date_filter, _split_queens_recalculate_filter,
     _filter_queens_rating_date_history,
     _format_queens_weekday_filter, _format_queens_date_filter, _queens_filter_suffix,
+    _queens_improved_title_suffix,
     _filter_queens_contested_rating_history,
 )
 from tle.cogs._minigame_queens_cog import (
     _queens_puzzle_number_for_date,
+    _queens_date_for_puzzle_number,
     _parse_queens_date_or_number,
+    _queens_current_puzzle_date,
     _queens_puzzle_numbers_for_date,
     _queens_puzzle_date_text,
 )
+from tle.cogs._mgimpl_sharedcmd import _skipped_puzzles
 
 logger = logging.getLogger(__name__)
 
+_QueensWeeklyRow = namedtuple(
+    '_QueensWeeklyRow',
+    'user_id puzzle_number puzzle_date accuracy time_seconds is_perfect',
+)
+
 
 class ImplQueensCmdMixin:
+    async def _cmd_queens_skips(self, ctx, member):
+        """List missing concluded puzzles since a linked user's first day."""
+        self._require_enabled(ctx.guild.id, QUEENS_GAME)
+        link = self._require_queens_registered_member(ctx.guild.id, member)
+        self._migrate_legacy_queens_results_to_external(ctx.guild.id)
+        rows = cf_common.user_db.get_minigame_unresolved_results_for_name(
+            ctx.guild.id, QUEENS_GAME.name, link.normalized_name)
+        puzzle_numbers = []
+        for row in rows:
+            try:
+                puzzle_numbers.append(
+                    _queens_puzzle_number_for_date(row.puzzle_date))
+            except (AttributeError, TypeError, ValueError, OverflowError):
+                continue
+        current_puzzle = _queens_puzzle_number_for_date(
+            _queens_current_puzzle_date())
+        first_submission, skipped = _skipped_puzzles(
+            puzzle_numbers, current_puzzle)
+        await self._send_minigame_skips(
+            ctx, member, QUEENS_GAME, first_submission, skipped,
+            _queens_date_for_puzzle_number)
+
     async def _cmd_queens_clear(self, ctx, puzzle_date):
         self._require_enabled(ctx.guild.id, QUEENS_GAME)
         if puzzle_date is None:
@@ -95,7 +131,8 @@ class ImplQueensCmdMixin:
     async def _cmd_queens_ratings_recompute(self, ctx):
         self._require_enabled(ctx.guild.id, QUEENS_GAME)
         self._sync_queens_materialized_results(ctx.guild.id)
-        self._recompute_minigame_ratings(ctx.guild.id, QUEENS_GAME)
+        self._recompute_minigame_ratings(
+            ctx.guild.id, QUEENS_GAME, sync_results=False)
         await ctx.send(embed=discord_common.embed_success(
             f'{QUEENS_GAME.display_name} ratings recomputed.'))
 
@@ -131,25 +168,55 @@ class ImplQueensCmdMixin:
 
     async def _cmd_queens_ratings(self, ctx, *, show_all=False,
                                   excluded_ids=None, included_ids=None,
-                                  weekdays=None, date_bounds=None):
+                                  weekdays=None, date_bounds=None,
+                                  improved=False, weekly=False):
         self._require_enabled(ctx.guild.id, QUEENS_GAME)
-        self._recompute_minigame_ratings(ctx.guild.id, QUEENS_GAME)
-        if (excluded_ids or included_ids or weekdays is not None
-                or date_bounds is not None):
+        if weekly and improved:
+            raise MinigameCogError(
+                '`+weekly` and `+beta` are separate testing rating '
+                'systems and cannot be combined.')
+        standings = []
+        if weekly:
+            rows, standings = self._queens_weekly_preview(
+                ctx.guild.id,
+                excluded_ids=excluded_ids, included_ids=included_ids,
+                weekdays=weekdays, date_bounds=date_bounds)
+        elif not improved:
+            self._recompute_minigame_ratings(ctx.guild.id, QUEENS_GAME)
+            rows = None
+        else:
+            rows = None
+        if not weekly and (
+                improved or excluded_ids or included_ids
+                or weekdays is not None or date_bounds is not None):
             rows = self._minigame_rating_rows(
                 ctx.guild.id, QUEENS_GAME,
                 excluded_ids=excluded_ids, included_ids=included_ids,
-                weekdays=weekdays, date_bounds=date_bounds)
-        else:
+                weekdays=weekdays, date_bounds=date_bounds,
+                improved=improved)
+        elif not weekly and rows is None:
             rows = cf_common.user_db.get_minigame_ratings(
                 ctx.guild.id, QUEENS_GAME.name)
-        if not rows:
+        if not rows and not standings:
             raise MinigameCogError(
                 f'No {QUEENS_GAME.display_name} ratings yet.')
         links_by_user = self._queens_links_by_user(ctx.guild.id)
         linked_ids = set(links_by_user)
-        shown = rows if show_all else [row for row in rows if row.user_id in linked_ids]
-        if not shown:
+        # Banned players stay rated (forward-only ban) but are hidden from
+        # the public board, like Akari's auto-opted-out banned users; the
+        # debug view still shows them.
+        banned_ids = self._minigame_banned_user_ids(ctx.guild.id, QUEENS_GAME)
+        shown = rows if show_all else [
+            row for row in rows
+            if row.user_id in linked_ids and row.user_id not in banned_ids
+        ]
+        if weekly and not show_all:
+            standings = [
+                standing for standing in standings
+                if standing.user_id in linked_ids
+                and standing.user_id not in banned_ids
+            ]
+        if not shown and not standings:
             raise MinigameCogError(
                 f'No registered {QUEENS_GAME.display_name} players yet. '
                 f'Players register with `;queens register LinkedIn Name`.')
@@ -162,34 +229,94 @@ class ImplQueensCmdMixin:
             if date_label:
                 suffix_parts.append(date_label)
             title = (
-                f'{QUEENS_GAME.display_name} Ratings '
+                f'{QUEENS_GAME.display_name} Ratings'
+                f'{_queens_improved_title_suffix(improved)}'
+                f'{" [weekly preview]" if weekly else ""} '
                 f'({", ".join(suffix_parts)})')
         else:
             title = (
                 f'{QUEENS_GAME.display_name} Ratings'
+                f'{_queens_improved_title_suffix(improved)}'
+                f'{" [weekly preview]" if weekly else ""}'
                 f'{_queens_filter_suffix(weekdays=weekdays, date_bounds=date_bounds)}')
-        discord_file = _mg()._get_akari_rating_table_image_file(
-            ctx.guild, shown, linked_ids,
-            title=title,
-            mark_registered=show_all,
+        if shown:
+            discord_file = _mg()._get_akari_rating_table_image_file(
+                ctx.guild, shown, linked_ids,
+                title=title,
+                mark_registered=show_all,
+                games_label='Weeks' if weekly else 'Games',
+                identity_label='LinkedIn',
+                identity_fn=self._queens_rating_identity_fn(links_by_user),
+                name_fn=self._queens_name_fn(links_by_user))
+            await ctx.send(file=discord_file)
+        if weekly:
+            await self._send_queens_weekly_scores(
+                ctx, standings, links_by_user)
+
+    def _queens_weekly_preview(self, guild_id, *, excluded_ids=None,
+                               included_ids=None, weekdays=None,
+                               date_bounds=None):
+        """Build speed-based weekly ratings and this week's live scores."""
+        result_rows = self._filtered_minigame_result_rows(
+            guild_id, QUEENS_GAME,
+            excluded_ids=excluded_ids, included_ids=included_ids,
+            weekdays=weekdays, date_bounds=date_bounds)
+        # Queens' native competition rule is time-only. Direct share messages
+        # do not preserve hint/mistake badges while pasted leaderboards do, so
+        # feeding those badges into Akari's accuracy model would make the same
+        # solve worth different amounts based solely on its ingestion path.
+        scoring_rows = [
+            _QueensWeeklyRow(
+                row.user_id, row.puzzle_number, row.puzzle_date,
+                100, row.time_seconds, True)
+            for row in result_rows
+        ]
+        today = _queens_current_puzzle_date()
+        difficulties = queens_weekly_difficulty_map(scoring_rows)
+        states = compute_weekly_ratings(
+            scoring_rows, difficulties, as_of_date=today)
+        rating_rows = sorted(
+            states.values(),
+            key=lambda state: (
+                -state.rating, -state.games, int(state.user_id)))
+        standings = current_week_standings(
+            scoring_rows, difficulties, as_of_date=today)
+        return rating_rows, standings
+
+    async def _send_queens_weekly_scores(
+            self, ctx, standings, links_by_user):
+        if not standings:
+            await ctx.send(embed=discord_common.embed_neutral(
+                f'No {QUEENS_GAME.display_name} scores have been posted '
+                'this week yet.'))
+            return
+        start = standings[0].week_start
+        end = standings[0].week_end
+        score_file = _mg()._get_akari_weekly_table_image_file(
+            ctx.guild, standings,
+            title=(
+                f'{QUEENS_GAME.display_name} Weekly Scores · '
+                f'{start:%b %d}–{end:%b %d} (in progress)'),
             identity_label='LinkedIn',
             identity_fn=self._queens_rating_identity_fn(links_by_user),
-            name_fn=self._queens_name_fn(links_by_user))
-        await ctx.send(file=discord_file)
+            name_fn=self._queens_name_fn(links_by_user),
+            filename='queens-weekly-scores.png')
+        await ctx.send(file=score_file)
 
     async def _cmd_queens_rating(self, ctx, members, *,
                                  require_registered=True,
                                  excluded_ids=None, included_ids=None,
                                  weekdays=None, date_bounds=None,
-                                 recalculate=False):
+                                 recalculate=False, improved=False):
         self._require_enabled(ctx.guild.id, QUEENS_GAME)
-        self._recompute_minigame_ratings(ctx.guild.id, QUEENS_GAME)
+        if not improved:
+            self._recompute_minigame_ratings(ctx.guild.id, QUEENS_GAME)
         if require_registered:
             for member in members:
                 self._require_queens_registered_member(ctx.guild.id, member)
 
         replay_date_bounds = date_bounds if recalculate else None
-        filtered = bool(excluded_ids or included_ids or weekdays is not None
+        filtered = bool(improved or excluded_ids or included_ids or weekdays is not None
                         or replay_date_bounds is not None)
         per_member = []
         for member in members:
@@ -197,7 +324,8 @@ class ImplQueensCmdMixin:
                 row, history = self._minigame_user_data(
                     ctx.guild.id, QUEENS_GAME, member.id,
                     excluded_ids=excluded_ids, included_ids=included_ids,
-                    weekdays=weekdays, date_bounds=replay_date_bounds)
+                    weekdays=weekdays, date_bounds=replay_date_bounds,
+                    improved=improved)
             else:
                 row = cf_common.user_db.get_minigame_rating(
                     ctx.guild.id, QUEENS_GAME.name, member.id)
@@ -226,26 +354,12 @@ class ImplQueensCmdMixin:
         ]
         discord_file = _mg().plot_akari_rating(series)
 
-        def _display_rating(row, history):
-            return history[-1].rating if date_bounds is not None else row.rating
-
-        def _display_peak(row, history):
-            if date_bounds is None:
-                return row.peak
-            return max(point.rating for point in history)
-
-        def _display_games(row, history):
-            if date_bounds is None:
-                return row.games
-            return sum(1 for point in history
-                       if not getattr(point, 'is_decay', False))
-
         if len(per_member) == 1:
             member, row, history, _graph_history = per_member[0]
             display_name = self._queens_public_user_name(ctx.guild, member.id)
-            rating = round(_display_rating(row, history))
+            rating = round(_display_rating(row, history, date_bounds))
             rank = rank_for_rating(rating)
-            peak = round(_display_peak(row, history))
+            peak = round(_display_peak(row, history, date_bounds))
             peak_rank = rank_for_rating(peak)
             last_contest = next((h for h in reversed(history)
                                  if h.performance is not None), None)
@@ -256,23 +370,24 @@ class ImplQueensCmdMixin:
                 f'({rank_for_rating(round(last_contest.performance)).title_abbr})'
                 if last_contest is not None else '—')
             embed = discord.Embed(
-                title=(f'{QUEENS_GAME.display_name} rating — '
+                title=(f'{QUEENS_GAME.display_name} rating'
+                       f'{_queens_improved_title_suffix(improved)} — '
                        f'{display_name}'),
                 color=rank.color_embed,
             )
             embed.add_field(name='Rating', value=f'{rating} ({rank.title_abbr})')
             embed.add_field(name='Peak', value=f'{peak} ({peak_rank.title_abbr})')
-            embed.add_field(name='Games', value=str(_display_games(row, history)))
+            embed.add_field(name='Games', value=str(_display_games(row, history, date_bounds)))
             embed.add_field(name='Last change', value=last_change_str)
             embed.add_field(name='Last performance', value=last_perf_str)
         else:
             _top_member, top_row, top_history, _top_graph_history = max(
-                per_member, key=lambda t: _display_rating(t[1], t[2]))
+                per_member, key=lambda t: _display_rating(t[1], t[2], date_bounds))
             top_rank = rank_for_rating(
-                round(_display_rating(top_row, top_history)))
+                round(_display_rating(top_row, top_history, date_bounds)))
 
             def _rating_line(member, row, history):
-                rating = round(_display_rating(row, history))
+                rating = round(_display_rating(row, history, date_bounds))
                 return (
                     f'**{self._queens_public_user_name(ctx.guild, member.id)}**: '
                     f'{rating} ({rank_for_rating(rating).title_abbr})'
@@ -283,7 +398,8 @@ class ImplQueensCmdMixin:
                 for member, row, history, _graph_history in per_member
             ]
             embed = discord.Embed(
-                title=(f'{QUEENS_GAME.display_name} ratings — '
+                title=(f'{QUEENS_GAME.display_name} ratings'
+                       f'{_queens_improved_title_suffix(improved)} — '
                        f'{len(per_member)} players'),
                 description='\n'.join(lines),
                 color=top_rank.color_embed,
@@ -291,4 +407,3 @@ class ImplQueensCmdMixin:
 
         discord_common.attach_image(embed, discord_file)
         await ctx.send(embed=embed, file=discord_file)
-

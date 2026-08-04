@@ -33,18 +33,31 @@ class MinigameCogError(commands.CommandError):
     pass
 
 
-def queens_mod_only():
+def _game_mod_only(access_attr, error_message_attr):
+    """Per-game mod gate: allow when the cog's ``access_attr`` check passes,
+    else raise with the ``error_message_attr`` classmethod's message."""
     async def predicate(ctx):
         cog = getattr(ctx, 'cog', None)
-        if cog is not None and cog._has_queens_mod_access(
+        if cog is not None and getattr(cog, access_attr)(
                 ctx.guild.id, ctx.author):
             return True
-        raise MinigameCogError(_mg().Minigames._mod_role_error_message())
+        raise MinigameCogError(
+            getattr(_mg().Minigames, error_message_attr)())
 
     check = getattr(commands, 'check', None)
     if check is None:
         return lambda func: func
     return check(predicate)
+
+
+def queens_mod_only():
+    return _game_mod_only(
+        '_has_queens_mod_access', '_mod_role_error_message')
+
+
+def akari_mod_only():
+    return _game_mod_only(
+        '_has_akari_mod_access', '_akari_mod_role_error_message')
 
 
 class ChannelOrThread(commands.Converter):
@@ -140,20 +153,6 @@ class _SlashCtx:
         pass
 
 
-class _ScheduledCtx:
-    """Minimal ctx for scheduled jobs that send into a configured channel."""
-
-    def __init__(self, bot, guild, channel):
-        self.bot = bot
-        self.guild = guild
-        self.channel = channel
-        self.author = getattr(guild, 'me', None) or getattr(bot, 'user', None)
-        self.message = type('_Msg', (), {'id': f'scheduled:{guild.id}:{channel.id}'})()
-
-    async def send(self, content=None, *, embed=None, **kw):
-        return await self.channel.send(content, embed=embed, **kw)
-
-
 def _safe_user_name(guild, user_id):
     member = guild.get_member(int(user_id))
     if member is not None:
@@ -184,6 +183,27 @@ def _legend_name_for(guild, member):
 
 def _format_score(score):
     return f'{score:.3f}'.rstrip('0').rstrip('.')
+
+
+# ── Rating-embed display values under an optional d>=/d< filter ─────────
+# Shared by the Akari and Queens rating commands: with date bounds active
+# the numbers come from the filtered history, not the stored snapshot.
+
+def _display_rating(row, history, date_bounds):
+    return history[-1].rating if date_bounds is not None else row.rating
+
+
+def _display_peak(row, history, date_bounds):
+    if date_bounds is None:
+        return row.peak
+    return max(point.rating for point in history)
+
+
+def _display_games(row, history, date_bounds):
+    if date_bounds is None:
+        return row.games
+    # Contested days only — a solo day is not a game.
+    return sum(1 for point in history if point.performance is not None)
 
 
 def _format_akari_history_line(point):

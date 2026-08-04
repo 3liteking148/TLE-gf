@@ -1,8 +1,10 @@
 import logging
 import sqlite3
 import unicodedata
+import keyword
 from enum import IntEnum
 from collections import namedtuple
+from functools import lru_cache
 
 from discord.ext import commands
 
@@ -27,6 +29,8 @@ from tle.util.db.betting_wallet_db import BettingWalletDbMixin
 from tle.util.db.betting_market_db import BettingMarketDbMixin
 from tle.util.db.betting_wager_db import BettingWagerDbMixin
 from tle.util.db.command_gate_db import CommandGateDbMixin
+from tle.util.db.llm_db import LlmDbMixin
+from tle.util import file_permissions
 
 logger = logging.getLogger(__name__)
 
@@ -132,21 +136,53 @@ class UniqueConstraintFailed(UserDbError):
     pass
 
 
+@lru_cache(maxsize=512)
+def _namedtuple_row_type(column_names):
+    """Return one reusable row type for a SQLite result shape."""
+    fields = []
+    used = set()
+    for index, raw_name in enumerate(column_names):
+        name = str(raw_name)
+        if (
+                not name.isidentifier()
+                or keyword.iskeyword(name)
+                or name.startswith('_')
+                or name in used):
+            name = f'col_{index}'
+        suffix = 2
+        base = name
+        while name in used:
+            name = f'{base}_{suffix}'
+            suffix += 1
+        fields.append(name)
+        used.add(name)
+    return namedtuple('Row', fields)
+
+
 def namedtuple_factory(cursor, row):
-    """Returns sqlite rows as named tuples."""
-    fields = [col[0] if col[0].isidentifier() else f'col_{i}'
-              for i, col in enumerate(cursor.description)]
-    Row = namedtuple("Row", fields)
-    return Row(*row)
+    """Return SQLite rows as named tuples, reusing types by result shape."""
+    column_names = tuple(column[0] for column in cursor.description)
+    return _namedtuple_row_type(column_names)(*row)
 
 
 class UserDbConn(HandleDbMixin, ChallengeDbMixin, DuelDbMixin, TrainingDbMixin,
                  VcDbMixin, LockoutDbMixin, RpollDbMixin, ComplaintDbMixin,
                  GreatdayDbMixin, KvsDbMixin, MiscDbMixin,
                  BettingWalletDbMixin, BettingMarketDbMixin, BettingWagerDbMixin,
-                 CommandGateDbMixin,
+                 CommandGateDbMixin, LlmDbMixin,
                  MinigameDbMixin, StarboardDbMixin, MigrationDbMixin):
     def __init__(self, dbfile):
+        # Pre-creation avoids a world-readable window before chmod. The private
+        # umask also covers rollback journals created during schema upgrades;
+        # normal bot startup keeps the same umask for all later transactions.
+        with file_permissions.private_umask():
+            file_permissions.prepare_sqlite_database(dbfile)
+            try:
+                self._initialize_database(dbfile)
+            finally:
+                file_permissions.harden_sqlite_files(dbfile)
+
+    def _initialize_database(self, dbfile):
         logger.info(f'Opening user database: {dbfile}')
         self.conn = sqlite3.connect(dbfile)
         self.conn.row_factory = namedtuple_factory
@@ -197,6 +233,7 @@ class UserDbConn(HandleDbMixin, ChallengeDbMixin, DuelDbMixin, TrainingDbMixin,
         self._create_kvs_tables()
         self._create_rpoll_tables()
         self._create_command_gate_tables()
+        self._create_llm_tables()
         self._create_migration_tables()
 
     # Helper functions.

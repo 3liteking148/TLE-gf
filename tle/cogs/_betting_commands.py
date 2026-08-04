@@ -40,9 +40,9 @@ class BetCommandImplMixin:
                 '\n⚠️ No `ODDS_API_KEY` is set, so nothing will auto-open until '
                 'one is configured.')
         await ctx.send(embed=discord_common.embed_success(
-            f'World Cup markets will auto-open in {ctx.channel.mention} ~2h '
+            f'World Cup markets will auto-open in {ctx.channel.mention} ~6h '
             f'before each kickoff, with a thread for bets.{note}'))
-        # Arm timers now (and open anything already inside the 2h window) so we
+        # Arm timers now (and open anything already inside the 6h window) so we
         # don't wait for the next safety-net sweep.
         if _api_key():
             try:
@@ -196,7 +196,7 @@ class BetCommandImplMixin:
                 f'    {odds_line}')
         embed = discord.Embed(title='⚽ Upcoming World Cup matches',
                               description='\n'.join(lines), color=0x3498db)
-        embed.set_footer(text='Auto-opens ~2h before kickoff · '
+        embed.set_footer(text='Auto-opens ~6h before kickoff · '
                               'admins: ;bet open <number> to open early')
         await ctx.send(embed=embed)
 
@@ -234,9 +234,12 @@ class BetCommandImplMixin:
         market_id = self._create_market(ctx.guild.id, ctx.channel.id, event)
         if market_id is None:
             raise BettingCogError('There is already an open market on that match.')
+        suppress_mention = cf_common.user_db.bet_market_has_earlier_open_at_kickoff(
+            ctx.guild.id, ctx.channel.id, event['commence_time'], market_id)
         try:
             msg = await ctx.send(
-                **self._open_announcement_kwargs(ctx.guild.id, event))
+                **self._open_announcement_kwargs(
+                    ctx.guild.id, event, suppress_mention=suppress_mention))
         except discord.HTTPException:
             cf_common.user_db.bet_void(ctx.guild.id, market_id, time.time())
             raise

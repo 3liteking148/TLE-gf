@@ -20,8 +20,14 @@ from tle.cogs._minigame_akari import (
 from tle.cogs._minigame_helpers import (
     MinigameCogError, _safe_member_name,
 )
+from tle.cogs._minigame_queens_filters import (
+    _split_queens_weekday_filter, _filter_queens_weekday_rows,
+)
 from tle.cogs._minigame_tables import (
     _maybe_parse_puzzle_selector,
+)
+from tle.cogs._minigame_result_rows import (
+    _akari_results_time_rank_key, _akari_results_time_sort_key,
 )
 
 logger = logging.getLogger(__name__)
@@ -37,7 +43,11 @@ class ImplStatsMixin:
         excluded_ids = set()
         included_ids = set()
         test_decay = False
+        sort_by_time = False
+        args, weekdays = _split_queens_weekday_filter(args)
         if game.name == AKARI_GAME.name:
+            sort_by_time = '+time' in args
+            args = tuple(arg for arg in args if arg != '+time')
             (remaining, _include_decay, excluded_ids, included_ids,
              _include_inactive, test_decay) = await self._extract_akari_filters(
                 ctx, args)
@@ -47,8 +57,15 @@ class ImplStatsMixin:
                 await self._cmd_akari_stats_puzzle(
                     ctx, args[0],
                     excluded_ids=excluded_ids, included_ids=included_ids,
-                    test_decay=test_decay)
+                    test_decay=test_decay, weekdays=weekdays,
+                    sort_key_fn=(
+                        _akari_results_time_sort_key if sort_by_time else None),
+                    rank_key_fn=(
+                        _akari_results_time_rank_key if sort_by_time else None))
                 return
+        if sort_by_time:
+            raise MinigameCogError(
+                '`+time` is only supported when viewing one Akari puzzle.')
 
         filter_args = list(args)
         member = ctx.author
@@ -66,6 +83,7 @@ class ImplStatsMixin:
 
         rows = cf_common.user_db.get_minigame_results_for_user(
             ctx.guild.id, game.name, member.id, dlo, dhi, plo, phi)
+        rows = _filter_queens_weekday_rows(rows, weekdays)
         if not rows:
             raise MinigameCogError(
                 f'No {game.display_name} results found for `{_safe_member_name(member)}`.')
@@ -74,7 +92,8 @@ class ImplStatsMixin:
         if plotter is None:
             raise MinigameCogError(f'Stats are not available for {game.display_name}.')
 
-        discord_file = plotter(rows, _safe_member_name(member))
+        discord_file = plotter(rows, _safe_member_name(member),
+                               weekdays=weekdays)
         await ctx.send(file=discord_file)
 
     async def _cmd_import_start(self, ctx, game, channel=None):
@@ -224,4 +243,3 @@ class ImplStatsMixin:
         result = ('\N{GLOWING STAR}' if is_perfect
                   else f'{accuracy}%')
         return f'{result} {format_duration(time_seconds)}'
-

@@ -1,11 +1,10 @@
-"""Queens text-command bodies (admins/links/connection/ban/import) (Minigames cog impl mixin; see minigames.py)."""
+"""Queens text-command bodies (admins/links/ban/import)."""
 
 import logging
 import time
 
 import discord
 
-from tle import constants
 from tle.util import codeforces_common as cf_common
 from tle.util import discord_common
 from tle.util import paginator
@@ -14,14 +13,13 @@ from tle.cogs._minigame_queens import (
     QUEENS_GAME,
 )
 from tle.cogs._minigame_helpers import (
-    MinigameCogError, _safe_member_name,
-    _safe_user_name, _format_akari_ban_line,
+    MinigameCogError, _format_akari_ban_line,
 )
 from tle.cogs._minigame_queens_cog import (
     _QUEENS_ANONYMOUS_FLAGS, _QUEENS_HISTORY_PER_PAGE,
     _queens_public_link_name,
+    _queens_public_link_sort_key,
     _split_queens_anonymous_flag, _is_queens_anonymous_modal_request,
-    _split_queens_connection_account_text,
     _QueensAnonymousRegisterView,
 )
 from tle.cogs._minigame_tables import _AKARI_HISTORY_PER_PAGE
@@ -32,55 +30,18 @@ logger = logging.getLogger(__name__)
 class ImplQueensTextMixin:
 
     async def _cmd_queens_admins(self, ctx):
-        admin_ids = self._queens_admin_ids(ctx.guild.id)
-        if not admin_ids:
-            await ctx.send(embed=discord_common.embed_neutral(
-                'No extra LinkedIn Queens admins configured.'))
-            return
-        lines = [
-            f'- {_safe_user_name(ctx.guild, user_id)} (`{user_id}`)'
-            for user_id in sorted(admin_ids, key=self._user_id_sort_key)
-        ]
-        await ctx.send(embed=discord_common.embed_neutral(
-            'Extra LinkedIn Queens admins:\n' + '\n'.join(lines)))
+        await self._cmd_minigame_admins(
+            ctx, QUEENS_GAME.display_name, self._queens_admin_ids)
 
     async def _cmd_queens_admins_add(self, ctx, member):
-        if not self._has_server_mod_role(ctx.author):
-            raise MinigameCogError(
-                f'Only `{"` / `".join(constants.TLE_ALL_MOD_ROLES)}` '
-                'can change the LinkedIn Queens admin list.')
-        admin_ids = self._queens_admin_ids(ctx.guild.id)
-        before = len(admin_ids)
-        admin_ids.add(str(member.id))
-        self._set_queens_admin_ids(ctx.guild.id, admin_ids)
-        if len(admin_ids) == before:
-            message = (
-                f'`{_safe_member_name(member)}` already has '
-                'LinkedIn Queens admin access.')
-        else:
-            message = (
-                f'`{_safe_member_name(member)}` can now run '
-                'LinkedIn Queens mod commands.')
-        await ctx.send(embed=discord_common.embed_success(message))
+        await self._cmd_minigame_admins_add(
+            ctx, member, QUEENS_GAME.display_name,
+            self._queens_admin_ids, self._set_queens_admin_ids)
 
     async def _cmd_queens_admins_remove(self, ctx, member):
-        if not self._has_server_mod_role(ctx.author):
-            raise MinigameCogError(
-                f'Only `{"` / `".join(constants.TLE_ALL_MOD_ROLES)}` '
-                'can change the LinkedIn Queens admin list.')
-        admin_ids = self._queens_admin_ids(ctx.guild.id)
-        removed = str(member.id) in admin_ids
-        admin_ids.discard(str(member.id))
-        self._set_queens_admin_ids(ctx.guild.id, admin_ids)
-        if removed:
-            message = (
-                f'`{_safe_member_name(member)}` no longer has '
-                'LinkedIn Queens admin access.')
-        else:
-            message = (
-                f'`{_safe_member_name(member)}` was not an extra '
-                'LinkedIn Queens admin.')
-        await ctx.send(embed=discord_common.embed_success(message))
+        await self._cmd_minigame_admins_remove(
+            ctx, member, QUEENS_GAME.display_name,
+            self._queens_admin_ids, self._set_queens_admin_ids)
 
     async def _cmd_queens_register_cmd(self, ctx, first, linkedin):
         self._require_enabled(ctx.guild.id, QUEENS_GAME)
@@ -129,6 +90,11 @@ class ImplQueensTextMixin:
         if not rows:
             raise MinigameCogError(
                 f'No {QUEENS_GAME.display_name} links registered.')
+        # The database orders by normalized LinkedIn name for lookup
+        # efficiency. Re-sort on the public label so anonymous registrations
+        # are grouped as "Anonymous" instead of leaking their hidden names
+        # through their positions in this list.
+        rows = sorted(rows, key=_queens_public_link_sort_key)
         lines = []
         for row in rows:
             display_name = self._queens_public_user_name(
@@ -146,29 +112,12 @@ class ImplQueensTextMixin:
             self.bot, ctx.channel, pages, wait_time=300,
             set_pagenum_footers=True, author_id=ctx.author.id)
 
-    async def _cmd_queens_connection(self, ctx):
-        self._require_enabled(ctx.guild.id, QUEENS_GAME)
-        account = self._get_queens_connection_account(ctx.guild.id)
-        if account is None:
-            raise MinigameCogError(
-                'No LinkedIn connection account configured yet.')
-        await ctx.send(embed=discord_common.embed_neutral(
-            self._queens_connection_instruction(ctx.guild.id)))
-
-    async def _cmd_queens_connection_set(self, ctx, linkedin):
-        self._require_enabled(ctx.guild.id, QUEENS_GAME)
-        name, external_url = _split_queens_connection_account_text(linkedin)
-        self._set_queens_connection_account(ctx.guild.id, name, external_url)
-        await ctx.send(embed=discord_common.embed_success(
-            self._queens_connection_instruction(ctx.guild.id)))
-
-    async def _cmd_queens_connection_clear(self, ctx):
-        self._require_enabled(ctx.guild.id, QUEENS_GAME)
-        self._clear_queens_connection_account(ctx.guild.id)
-        await ctx.send(embed=discord_common.embed_success(
-            'Cleared the LinkedIn Queens connection account.'))
-
     async def _cmd_queens_ban(self, ctx, member, reason):
+        """Forward-only ban, mirroring Akari's: new results from the user are
+        blocked at every entry point (imports, manual adds, channel shares)
+        and they disappear from the public ratings board, but their existing
+        results stay stored and rated, and their LinkedIn link is kept so the
+        name stays claimed and the block is airtight."""
         self._require_enabled(ctx.guild.id, QUEENS_GAME)
         added = cf_common.user_db.ban_minigame_user(
             ctx.guild.id, QUEENS_GAME.name, member.id, time.time(),
@@ -181,20 +130,12 @@ class ImplQueensTextMixin:
             raise MinigameCogError(
                 f'`{display_name}` is already banned from '
                 f'{QUEENS_GAME.display_name}.')
-        self._migrate_legacy_queens_results_to_external(ctx.guild.id)
-        if link is not None:
-            self._delete_queens_materialized_results_for_link(
-                ctx.guild.id, link)
-        cf_common.user_db.delete_minigame_player_link(
-            ctx.guild.id, QUEENS_GAME.name, member.id)
-        self._sync_queens_materialized_results(
-            ctx.guild.id, migrate_legacy=False)
-        self._recompute_minigame_ratings(ctx.guild.id, QUEENS_GAME)
         lines = [
             f'`{display_name}` is now banned from '
-            f'{QUEENS_GAME.display_name}. They will be skipped by imports, '
-            'manual adds, and rating recomputes.',
-            'Their LinkedIn Queens registration was removed.',
+            f'{QUEENS_GAME.display_name}. New results from them will be '
+            'dropped by imports, manual adds, and channel shares, and they '
+            'are hidden from the public ratings board.',
+            'Existing results stay stored and rated.',
         ]
         if reason:
             lines.append(f'Reason: {reason}')
@@ -251,4 +192,3 @@ class ImplQueensTextMixin:
             f'Added {saved.resolved} registered {QUEENS_GAME.display_name} '
             f'result(s) for #{preview.puzzle_number} '
             f'{preview.puzzle_date.isoformat()}.{unresolved}'))
-

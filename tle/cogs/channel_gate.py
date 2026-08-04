@@ -7,6 +7,9 @@ channel, not just the bot-created one. A global check enforces the gate for
 every prefix command; on a blocked attempt it drops a short, auto-deleting
 notice (linking the thread when there is one). ``;allow`` reverts.
 
+``;rpoll`` (and its subcommands) is exempt from the gate — rating-weighted
+polls run in any channel, even one where bot commands are otherwise blocked.
+
 Only prefix commands are gated — the minigame slash commands run through a
 separate app-command path that ``bot.add_check`` does not cover.
 """
@@ -25,7 +28,11 @@ logger = logging.getLogger(__name__)
 _THREAD_NAME = 'bot-commands'
 _THREAD_AUTO_ARCHIVE = 1440  # minutes (1 day)
 _NOTICE_DELETE_AFTER = 15    # seconds — the notice auto-deletes so it doesn't pile up
-_EXEMPT_COMMANDS = frozenset({'disallow', 'allow'})
+# ``disallow``/``allow`` must stay usable so an admin can always lift the gate;
+# ``rpoll`` is exempt so rating-weighted polls can be run in any channel,
+# including ones where bot commands are otherwise blocked.
+_EXEMPT_COMMANDS = frozenset({'disallow', 'allow', 'rpoll'})
+_SECRET_COMMANDS = frozenset({'keys', 'grokkeys', 'xkeys', 'xaikeys'})
 
 
 class ChannelGate(commands.Cog):
@@ -52,7 +59,7 @@ class ChannelGate(commands.Cog):
         command = ctx.command
         if command is not None \
                 and (command.root_parent or command).name in _EXEMPT_COMMANDS:
-            return True  # admins must always be able to lift the gate
+            return True  # exempt commands always run (see _EXEMPT_COMMANDS)
         parent_id, current_thread_id = self._location(ctx.channel)
         if parent_id is None:
             return True
@@ -60,6 +67,11 @@ class ChannelGate(commands.Cog):
         allowed, allowed_thread_id = gate_decision(gate, current_thread_id)
         if allowed:
             return True
+        if _is_llm_secret_command(command):
+            try:
+                await ctx.message.delete()
+            except Exception:  # noqa: BLE001 - best-effort leak containment
+                logger.warning('Could not delete blocked LLM key command')
         await self._notify_blocked(ctx, allowed_thread_id)
         raise discord_common.FeatureDisabledSilent()
 
@@ -162,3 +174,10 @@ class ChannelGate(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(ChannelGate(bot))
+
+
+def _is_llm_secret_command(command):
+    if command is None or getattr(command, 'name', None) not in _SECRET_COMMANDS:
+        return False
+    parent = getattr(command, 'root_parent', None)
+    return getattr(parent, 'name', None) == 'llm'

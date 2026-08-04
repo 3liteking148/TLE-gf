@@ -75,6 +75,25 @@ class BettingMarketDbMixin:
         )
         self.conn.commit()
 
+    def bet_market_mark_thread_locked(self, market_id):
+        """Record that the market's betting thread has been locked (archived)."""
+        self.conn.execute(
+            'UPDATE bet_market SET thread_locked = 1 WHERE market_id = ?',
+            (market_id,)
+        )
+        self.conn.commit()
+
+    def bet_markets_pending_lock(self):
+        """Settled markets with a thread that has not been locked yet — the
+        delayed 12h thread-lock work-list, across all guilds. Used to re-arm
+        (or catch up) lock timers after a restart, since the in-memory timers
+        are lost. Oldest-settled first so a backlog drains in order."""
+        return self.conn.execute(
+            "SELECT * FROM bet_market WHERE status = 'settled' "
+            'AND thread_id IS NOT NULL AND thread_locked = 0 '
+            'ORDER BY settled_at ASC, market_id ASC'
+        ).fetchall()
+
     def bet_market_get_active_by_thread(self, guild_id, thread_id):
         """Return the open market whose betting thread is thread_id, or None."""
         return self.conn.execute(
@@ -126,6 +145,24 @@ class BettingMarketDbMixin:
             "AND status = 'open' ORDER BY market_id DESC LIMIT 1",
             (str(guild_id), fixture_key)
         ).fetchone()
+
+    def bet_market_has_earlier_open_at_kickoff(self, guild_id, channel_id,
+                                               commence_time, market_id):
+        """True if another open market in the same channel shares this kickoff
+        time and was created earlier (smaller market_id).
+
+        Used to ping the notify role only once when several games kick off at
+        the same time in one channel: the earliest-created market of the group
+        pings, the rest stay quiet. Ordering-independent — market_id reflects
+        insert order, so exactly one market in the group sees no earlier sibling.
+        """
+        row = self.conn.execute(
+            "SELECT 1 FROM bet_market "
+            "WHERE guild_id = ? AND channel_id = ? AND status = 'open' "
+            'AND commence_time = ? AND market_id < ? LIMIT 1',
+            (str(guild_id), str(channel_id), commence_time, market_id)
+        ).fetchone()
+        return row is not None
 
     def bet_markets_pending_settlement(self, before_time):
         """Return all open markets whose kickoff is at/before before_time —

@@ -39,7 +39,7 @@ _DEFAULT_DURATION = 86400  # 24 hours in seconds
 _SAFETY_NET_INTERVAL = 300  # Safety-net sweep every 5 minutes
 _DURATION_RE = re.compile(r'^\+(\d+)([mhd])$')
 _VALID_FORMULAS = ('sum', 'exp', 'team', 'osu', 'gg', 'mgg', 'fffff',
-                   'akari', 'akariexp')
+                   'akari', 'akariexp', 'queens', 'queensexp')
 _FORMULA_LABELS = {
     'sum': 'sum of ratings',
     'exp': 'exponential: `2^(rating/400) * 100`',
@@ -49,7 +49,9 @@ _FORMULA_LABELS = {
     'mgg': 'monthly gitgud: score for poll creation month',
     'fffff': 'scaled linear: `max(0, 1 + (rating - 1900) / 1600) * 100`',
     'akari': 'sum of Daily Akari ratings',
-    'akariexp': 'exponential of Daily Akari rating: `2^(rating/400) * 100`',
+    'akariexp': 'exponential of Daily Akari rating: `2^(rating/250) * 100`',
+    'queens': 'sum of LinkedIn Queens ratings',
+    'queensexp': 'exponential of LinkedIn Queens rating: `2^(rating/250) * 100`',
 }
 
 class RpollError(commands.CommandError):
@@ -75,12 +77,13 @@ def _parse_duration(token):
 def _apply_formula(formula, ratings):
     """Apply a scoring formula to a list of individual ratings. Returns total score.
 
-    ``akari`` / ``akariexp`` share their composition with ``sum`` / ``exp``;
-    only the rating source (the Daily Akari snapshot vs CF) differs, and that
-    happens in :func:`_get_vote_weight` before the rating reaches this function.
+    The minigame exponential formulas use a tighter 250-point scale than the
+    400-point Codeforces exponential formula.
     """
-    if formula in ('exp', 'akariexp'):
+    if formula == 'exp':
         return round(sum(2 ** (r / 400) * 100 for r in ratings))
+    if formula in ('akariexp', 'queensexp'):
+        return round(sum(2 ** (r / 250) * 100 for r in ratings))
     if formula == 'team':
         if not ratings:
             return 0
@@ -155,6 +158,17 @@ def _get_vote_weight(poll, user_id, guild_id):
         if row is None:
             return 0
         return int(round(row.rating))
+    if poll.formula in ('queens', 'queensexp'):
+        # Same privacy rules as the Akari formulas, via the generic minigame
+        # tables ('queens' is the GameDef name the DB rows are keyed by).
+        if cf_common.user_db.is_minigame_opted_out(guild_id, 'queens', user_id):
+            return 0
+        if cf_common.user_db.is_minigame_banned(guild_id, 'queens', user_id):
+            return 0
+        row = cf_common.user_db.get_minigame_rating(guild_id, 'queens', user_id)
+        if row is None:
+            return 0
+        return int(round(row.rating))
     return cf_common.user_db.get_rpoll_user_rating(user_id, guild_id)
 
 
@@ -174,7 +188,7 @@ def _refresh_poll_ratings(poll, guild_id):
 
 def _compute_totals_map(poll_id, formula):
     """Compute per-option totals using the given scoring formula."""
-    if formula in {'exp', 'team', 'osu', 'fffff', 'akariexp'}:
+    if formula in {'exp', 'team', 'osu', 'fffff', 'akariexp', 'queensexp'}:
         votes = cf_common.user_db.get_rpoll_vote_ratings(poll_id)
         totals = {}
         for vote in votes:
