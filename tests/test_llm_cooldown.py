@@ -132,7 +132,7 @@ class TestCooldownStorage:
             ('100', 'family:44', 60, 100.0),
             ('200', '*', 120, 50.0),
         ]
-        assert registry.get_current_version(db.conn) == '1.51.0'
+        assert registry.get_current_version(db.conn) == registry.latest_version
         denial = db.llm_cooldown_retry(
             100, 99, family_id=44, now=110.0)
         assert (denial.scope, denial.retry_at) == ('threads', 160.0)
@@ -180,7 +180,7 @@ class TestCooldownStorage:
         database = UserDbConn(str(dbfile))
         try:
             assert registry.get_current_version(
-                database.conn) == registry.latest_version == '1.51.0'
+                database.conn) == registry.latest_version
             denial = database.llm_cooldown_retry(
                 100, 99, family_id=44, now=110.0)
             assert (denial.scope, denial.retry_at) == ('threads', 160.0)

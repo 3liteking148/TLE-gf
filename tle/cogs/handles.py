@@ -125,11 +125,13 @@ class Handles(GudgittersMixin, RankUpMixin, commands.Cog):
                           get_exception=lambda: HandleCogError('Identification is already running for you'))
     async def identify(self, ctx, handle: str):
         """Link a codeforces account to discord account by submitting a compile error to a random problem"""
-        if cf_common.user_db.get_handle(ctx.author.id, ctx.guild.id):
+        handle_row = cf_common.user_db.get_handle_row(ctx.author.id, ctx.guild.id)
+        if handle_row and handle_row[1] is None:
             raise HandleCogError(f'{ctx.author.mention}, you cannot identify when your handle is '
                                  'already set. Ask an Admin or Moderator if you wish to change it')
 
-        if cf_common.user_db.get_user_id(handle, ctx.guild.id):
+        claimed_by = cf_common.user_db.get_user_id(handle, ctx.guild.id)
+        if claimed_by and claimed_by != ctx.author.id:
             raise HandleCogError(f'The handle `{handle}` is already associated with another user. Ask an Admin or Moderator in case of an inconsistency.')
 
         if handle in cf_common.HandleIsVjudgeError.HANDLES:

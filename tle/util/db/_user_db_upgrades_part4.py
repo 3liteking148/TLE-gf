@@ -310,3 +310,36 @@ def upgrade_1_51_0(db):
             ambiguous)
     db.commit()
     logger.info('1.51.0: Upgrade complete')
+
+
+@registry.register('1.52.0', 'Cross-guild handle sync timestamps')
+def upgrade_1_52_0(db):
+    """Add sync provenance and last-set time to ``user_handle``.
+
+    ``updated_at`` lets the pre-command sync hook pick the most recently set
+    handle when a user has handles in several guilds; ``synced_at`` (NULL =
+    set manually via ``;handle identify``/``;handle set``) lets ``identify``
+    overwrite only auto-synced rows.
+    """
+    logger.info('1.52.0: Adding handle sync columns')
+    tables = {row[0] for row in db.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
+    if 'user_handle' not in tables:
+        # user_handle is created before upgrades run in the real bot; only
+        # stripped-down test harnesses can reach here without it.
+        logger.info('1.52.0: user_handle table absent; nothing to migrate')
+        return
+    columns = {
+        row[1] for row in db.execute(
+            'PRAGMA table_info(user_handle)').fetchall()
+    }
+    additions = {
+        'updated_at': 'INTEGER',
+        'synced_at': 'INTEGER',
+    }
+    for name, declaration in additions.items():
+        if name not in columns:
+            db.execute(
+                f'ALTER TABLE user_handle ADD COLUMN {name} {declaration}')
+    db.commit()
+    logger.info('1.52.0: Upgrade complete')

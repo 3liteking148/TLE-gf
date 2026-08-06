@@ -19,6 +19,7 @@ from discord.ext import commands
 from matplotlib import pyplot as plt
 
 from tle import constants
+from tle.cogs import _handles_sync as handle_sync
 from tle.util import codeforces_common as cf_common
 from tle.util import discord_common, font_downloader
 
@@ -109,6 +110,7 @@ async def main():
         asyncio.create_task(discord_common.presence(bot))
 
     bot.add_listener(discord_common.bot_error_handler, name='on_command_error')
+    bot.before_invoke(handle_sync.maybe_sync_handle)
     await bot.start(token)
 
 

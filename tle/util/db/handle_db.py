@@ -6,6 +6,7 @@ be a sqlite3 connection and ``UniqueConstraintFailed`` to be importable from
 the composing module.
 """
 import logging
+import time
 
 from tle.util import codeforces_api as cf
 from tle.util import codeforces_common as cf_common
@@ -23,6 +24,8 @@ class HandleDbMixin:
             'guild_id    TEXT,'
             'handle      TEXT,'
             'active      INTEGER,'
+            'updated_at  INTEGER,'
+            'synced_at   INTEGER,'
             'PRIMARY KEY (user_id, guild_id)'
             ')'
         )
@@ -62,7 +65,7 @@ class HandleDbMixin:
         user = self.conn.execute(query, (handle,)).fetchone()
         return cf_common.fix_urls(cf.User._make(user)) if user else None
 
-    def set_handle(self, user_id, guild_id, handle):
+    def set_handle(self, user_id, guild_id, handle, synced=False):
         from tle.util.db.user_db_conn import UniqueConstraintFailed
         query = ('SELECT user_id '
                  'FROM user_handle '
@@ -71,11 +74,36 @@ class HandleDbMixin:
         if existing and int(existing[0]) != user_id:
             raise UniqueConstraintFailed
 
+        now = int(time.time())
+        synced_at = now if synced else None
         query = ('INSERT OR REPLACE INTO user_handle '
-                 '(user_id, guild_id, handle, active) '
-                 'VALUES (?, ?, ?, 1)')
+                 '(user_id, guild_id, handle, active, updated_at, synced_at) '
+                 'VALUES (?, ?, ?, 1, ?, ?)')
         with self.conn:
-            return self.conn.execute(query, (user_id, guild_id, handle)).rowcount
+            return self.conn.execute(
+                query, (user_id, guild_id, handle, now, synced_at)).rowcount
+
+    def get_handle_row(self, user_id, guild_id):
+        """Return ``(handle, synced_at)`` for a user in a guild, else None."""
+        query = ('SELECT handle, synced_at '
+                 'FROM user_handle '
+                 'WHERE user_id = ? AND guild_id = ?')
+        res = self.conn.execute(query, (user_id, guild_id)).fetchone()
+        return (res[0], res[1]) if res else None
+
+    def get_other_guild_handle(self, user_id, exclude_guild_id):
+        """Most recently set active handle of a user outside ``exclude_guild_id``.
+
+        Legacy rows without ``updated_at`` sort last (NULLs are smallest in
+        descending order), so a manual identify elsewhere still wins over them.
+        """
+        query = ('SELECT handle '
+                 'FROM user_handle '
+                 'WHERE user_id = ? AND guild_id != ? AND active = 1 '
+                 'ORDER BY updated_at DESC, guild_id ASC '
+                 'LIMIT 1')
+        res = self.conn.execute(query, (user_id, exclude_guild_id)).fetchone()
+        return res[0] if res else None
 
     def set_inactive(self, guild_id_user_id_pairs):
         query = ('UPDATE user_handle '
