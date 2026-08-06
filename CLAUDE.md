@@ -16,7 +16,7 @@ Splits MUST preserve public behavior: keep cog class names, `setup()`, and comma
 
 ### DB Migration System (`tle/util/db/upgrades.py`, `tle/util/db/user_db_upgrades.py`)
 
-TLE-gf had no schema migration system — every table used `CREATE TABLE IF NOT EXISTS`, so adding columns to existing DBs was silently ignored. We added an `UpgradeRegistry` that tracks a `db_version` table and runs versioned upgrade functions (1.0.0 through 1.4.0). Fresh DBs get stamped at the latest version; existing DBs run pending upgrades.
+TLE-gf had no schema migration system — every table used `CREATE TABLE IF NOT EXISTS`, so adding columns to existing DBs was silently ignored. We added an `UpgradeRegistry` that tracks a `db_version` table and runs versioned upgrade functions (1.0.0 through 1.52.0). Fresh DBs get stamped at the latest version; existing DBs run pending upgrades.
 
 ### Multi-Emoji Starboard (`tle/cogs/starboard.py`)
 
@@ -33,6 +33,12 @@ A one-time background task runs on startup to populate `author_id` and `star_cou
 ### Guild Config System
 
 Key-value config per guild (`guild_config` table). Used for feature gating (e.g., `starboard_leaderboard`). Managed via `;meta config`.
+
+### Cross-Guild Handle Sync (`tle/cogs/_handles_sync.py`)
+
+Handles live per `(user, guild)` in `user_handle`, so a user identified in one server previously had to `;handle identify` again in every other server before commands like `;gitgud` worked. A bot-level `bot.before_invoke` hook registered in `tle/__main__.py` now runs before every command: if the invoker has no handle in the current guild but has an active handle in another guild, it registers the most recently set one (driven by `updated_at`, migration 1.52.0) and, only on guilds with `;roleupdate auto` enabled, best-effort assigns the matching rank role. The hook must never raise — a `before_invoke` failure would abort the command — so every failure is logged and swallowed, and it skips DMs, bots, and all `;handle`-group commands.
+
+Users keep per-server alts without any opt-out command. Migration 1.52.0 also added `synced_at` to `user_handle` (NULL = set manually via `;handle identify` / `;handle set`; non-NULL = auto-synced). `;handle identify` refuses only when the existing row is manual; an auto-synced row is replaced through the normal verification flow, and the "already associated with another user" check is skipped when the claiming user is the caller themselves. `set_handle(..., synced=)` writes the provenance; `get_other_guild_handle(user_id, exclude_guild_id)` picks the most recent active row (legacy rows without `updated_at` sort last); `get_handle_row` returns `(handle, synced_at)` for the identify guard. Auto-synced rows never block the manual path, so switching a guild to an alt needs no admin.
 
 ### `;llm` — Gemini plus Grok
 
@@ -92,10 +98,11 @@ The Gemini system instruction advertises **only** URL reading, never web search.
 | File | What it does |
 |---|---|
 | `tle/util/db/upgrades.py` | Generic `UpgradeRegistry` class |
-| `tle/util/db/user_db_upgrades.py` | Upgrade functions 1.0.0 - 1.4.0 |
+| `tle/util/db/user_db_upgrades.py` | Upgrade functions 1.0.0 - 1.52.0 |
 | `tle/util/db/user_db_conn.py` | All DB methods (starboard, guild config, leaderboards) |
 | `tle/cogs/starboard.py` | Starboard cog (reactions, commands, backfill) |
 | `tle/cogs/meta.py` | Meta cog (guild config commands) |
+| `tle/cogs/_handles_sync.py` | Pre-command cross-guild handle sync hook |
 | `tle/cogs/llm.py` | `;llm` cog lifecycle, process-only keys, privacy policy, literal provider listeners |
 | `tle/cogs/_llm_ask.py` | Shared guarded Gemini/Grok request flow |
 | `tle/cogs/_llm_limits.py` | Persistent per-guild regular-user Grok allowance |
