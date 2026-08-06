@@ -43,6 +43,25 @@ from tle.cogs._handles_gudgitters import GudgittersMixin
 from tle.cogs._handles_rankup import RankUpMixin
 
 
+def _check_identify_allowed(user_db, author_id, guild_id, handle, author_mention):
+    """Raise if a manual handle blocks ``;handle identify``.
+
+    Auto-synced rows (``synced_at`` non-NULL) never block: the user may
+    replace them with an alt through the normal verification flow. A handle
+    claimed by someone else still blocks, unless the claimer is the caller
+    themselves re-identifying their own synced handle.
+    """
+    handle_row = user_db.get_handle_row(author_id, guild_id)
+    if handle_row and handle_row[1] is None:
+        raise HandleCogError(f'{author_mention}, you cannot identify when your handle is '
+                             'already set. Ask an Admin or Moderator if you wish to change it')
+
+    claimed_by = user_db.get_user_id(handle, guild_id)
+    if claimed_by and claimed_by != author_id:
+        raise HandleCogError(f'The handle `{handle}` is already associated with another user. '
+                             'Ask an Admin or Moderator in case of an inconsistency.')
+
+
 class Handles(GudgittersMixin, RankUpMixin, commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -125,14 +144,8 @@ class Handles(GudgittersMixin, RankUpMixin, commands.Cog):
                           get_exception=lambda: HandleCogError('Identification is already running for you'))
     async def identify(self, ctx, handle: str):
         """Link a codeforces account to discord account by submitting a compile error to a random problem"""
-        handle_row = cf_common.user_db.get_handle_row(ctx.author.id, ctx.guild.id)
-        if handle_row and handle_row[1] is None:
-            raise HandleCogError(f'{ctx.author.mention}, you cannot identify when your handle is '
-                                 'already set. Ask an Admin or Moderator if you wish to change it')
-
-        claimed_by = cf_common.user_db.get_user_id(handle, ctx.guild.id)
-        if claimed_by and claimed_by != ctx.author.id:
-            raise HandleCogError(f'The handle `{handle}` is already associated with another user. Ask an Admin or Moderator in case of an inconsistency.')
+        _check_identify_allowed(cf_common.user_db, ctx.author.id, ctx.guild.id,
+                                handle, ctx.author.mention)
 
         if handle in cf_common.HandleIsVjudgeError.HANDLES:
             raise cf_common.HandleIsVjudgeError(handle)

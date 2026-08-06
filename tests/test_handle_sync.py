@@ -13,6 +13,7 @@ import pytest
 
 import tle.util.codeforces_api as cf
 from tle.cogs import _handles_sync as handle_sync
+from tle.cogs.handles import _check_identify_allowed, HandleCogError
 from tle.util import codeforces_common as cf_common
 from tle.util.db import handle_db
 from tle.util.db.user_db_conn import UserDbConn
@@ -319,3 +320,46 @@ def test_hook_never_raises_on_db_errors(user_db):
     guild = FakeGuild(GUILD_B)
     _run(handle_sync.maybe_sync_handle(_ctx(guild, USER_ID, FakeCommand('gitgud'))))
     assert user_db.get_handle(USER_ID, GUILD_B) is None
+
+
+# ── full journey: sync via gitgud, then override with alt ────────────────
+
+def test_gitgud_sync_then_identify_overrides_with_alt(user_db):
+    user_db.set_handle(USER_ID, GUILD_A, 'main')
+    guild = FakeGuild(GUILD_B)
+
+    _run(handle_sync.maybe_sync_handle(
+        _ctx(guild, USER_ID, FakeCommand('gitgud'))))
+    assert user_db.get_handle_row(USER_ID, GUILD_B) == ('main', 1000)
+
+    _check_identify_allowed(cf_common.user_db, USER_ID, GUILD_B,
+                            'alt', f'<@{USER_ID}>')
+    handle_db.time.value = 2000
+    user_db.set_handle(USER_ID, GUILD_B, 'alt')
+    assert user_db.get_handle_row(USER_ID, GUILD_B) == ('alt', None)
+    assert user_db.get_other_guild_handle(USER_ID, GUILD_C) == 'alt'
+
+
+def test_identify_allowed_when_no_row(user_db):
+    _check_identify_allowed(cf_common.user_db, USER_ID, GUILD_B,
+                            'alt', f'<@{USER_ID}>')
+
+
+def test_identify_rejected_for_manual_row(user_db):
+    user_db.set_handle(USER_ID, GUILD_B, 'main')
+    with pytest.raises(HandleCogError, match='already set'):
+        _check_identify_allowed(cf_common.user_db, USER_ID, GUILD_B,
+                                'alt', f'<@{USER_ID}>')
+
+
+def test_identify_rejected_when_handle_claimed_by_other(user_db):
+    user_db.set_handle(USER_ID + 1, GUILD_B, 'main')
+    with pytest.raises(HandleCogError, match='another user'):
+        _check_identify_allowed(cf_common.user_db, USER_ID, GUILD_B,
+                                'main', f'<@{USER_ID}>')
+
+
+def test_identify_allowed_for_own_synced_handle(user_db):
+    user_db.set_handle(USER_ID, GUILD_B, 'main', synced=True)
+    _check_identify_allowed(cf_common.user_db, USER_ID, GUILD_B,
+                            'main', f'<@{USER_ID}>')
