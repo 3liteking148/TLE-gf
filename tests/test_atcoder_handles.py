@@ -372,6 +372,23 @@ class TestGet:
         assert 'https://atcoder.jp/users/tourist' in embed.description
         assert embed.fields == []
 
+    def test_empty_profile_fields_fall_back(self, monkeypatch):
+        db = _make_db()
+        db.set_atcoder_handle(1, 2, 'tourist')
+        monkeypatch.setattr(cf_common, 'user_db', db)
+
+        async def fake_get_user(handle):
+            return _user('tourist', '', '', '')
+
+        monkeypatch.setattr(atcoder_api, 'get_user', fake_get_user)
+        ctx = _make_ctx()
+        _run(_invoke('get', ctx))
+        embed = ctx.sent_kwargs[0]['embed']
+        assert embed.fields == [
+            {'name': 'Rating', 'value': 'Unrated', 'inline': True},
+            {'name': 'Country', 'value': 'Unknown', 'inline': True},
+        ]
+
 
 # =====================================================================
 # ;atcoder remove — message content
