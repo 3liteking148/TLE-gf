@@ -69,7 +69,7 @@ class AtcoderHandlesMixin:
             string.ascii_lowercase + string.digits, k=_TOKEN_LENGTH))
         await ctx.send(f'`{invoker}`, set your AtCoder profile affiliation to '
                        f'**`{token}`** '
-                       f'(<https://atcoder.jp/users/{handle}>) within 60 seconds')
+                       f'(<https://atcoder.jp/settings>) within 60 seconds')
         for _ in range(_POLL_ATTEMPTS):
             await asyncio.sleep(_POLL_INTERVAL)
             user = await atcoder_api.get_user(handle)
