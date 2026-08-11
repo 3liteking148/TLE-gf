@@ -6,9 +6,10 @@ some other guild, it registers the most recently set one and (on guilds that
 enabled automatic role updates) best-effort assigns the matching rank role.
 
 The hook must never raise: a ``before_invoke`` failure would abort the
-command. All failures are logged and swallowed. ``;handle``-group commands are
-skipped entirely so ``;handle identify`` can always run and override a
-synced row.
+command. All failures are logged and swallowed. Handle-linking groups
+(``;handle``, ``;atcoder``) are skipped entirely so ``;handle identify`` can
+always run and override a synced row, and AtCoder-only flows never get a
+Codeforces handle or rank role synced into them.
 """
 import logging
 
@@ -19,13 +20,15 @@ from tle.cogs._handles_rankup import RankUpMixin
 logger = logging.getLogger(__name__)
 
 
+_SKIPPED_GROUPS = ('handle', 'atcoder')
+
+
 def _is_handle_command(ctx):
     command = ctx.command
     if command is None:
         return False
-    if command.name == 'handle':
-        return True
-    return any(parent.name == 'handle' for parent in command.parents)
+    names = [command.name] + [parent.name for parent in command.parents]
+    return any(name in _SKIPPED_GROUPS for name in names)
 
 
 async def maybe_sync_handle(ctx):

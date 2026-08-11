@@ -252,6 +252,16 @@ def test_hook_skips_handle_commands(user_db):
     assert user_db.get_handle(USER_ID, GUILD_B) is None
 
 
+def test_hook_skips_atcoder_commands(user_db):
+    user_db.set_handle(USER_ID, GUILD_A, 'main')
+
+    guild = FakeGuild(GUILD_B)
+    command = FakeCommand('identify', parents=[FakeCommand('atcoder')])
+    _run(handle_sync.maybe_sync_handle(_ctx(guild, USER_ID, command)))
+
+    assert user_db.get_handle(USER_ID, GUILD_B) is None
+
+
 def test_hook_skips_dm_and_bots(user_db):
     user_db.set_handle(USER_ID, GUILD_A, 'main')
 
