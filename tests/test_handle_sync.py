@@ -132,8 +132,10 @@ def test_sync_migration_is_registered_after_cooldown_scopes():
     versions = [version for version, _, _ in registry.upgrades]
     assert '1.51.0' in versions
     assert '1.52.0' in versions
+    assert '1.53.0' in versions
     assert versions.index('1.52.0') > versions.index('1.51.0')
-    assert registry.latest_version == '1.52.0'
+    assert versions.index('1.53.0') > versions.index('1.52.0')
+    assert registry.latest_version == '1.53.0'
 
 
 def test_fresh_db_schema_has_sync_columns():

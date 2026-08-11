@@ -15,6 +15,7 @@ from tle.util.db.starboard_db import (
 from tle.util.db.minigame_db import MinigameDbMixin
 from tle.util.db.migration_db import MigrationDbMixin
 from tle.util.db.handle_db import HandleDbMixin
+from tle.util.db.atcoder_handle_db import AtcoderHandleDbMixin
 from tle.util.db.challenge_db import ChallengeDbMixin
 from tle.util.db.duel_db import DuelDbMixin
 from tle.util.db.training_db import TrainingDbMixin
@@ -165,7 +166,7 @@ def namedtuple_factory(cursor, row):
     return _namedtuple_row_type(column_names)(*row)
 
 
-class UserDbConn(HandleDbMixin, ChallengeDbMixin, DuelDbMixin, TrainingDbMixin,
+class UserDbConn(HandleDbMixin, AtcoderHandleDbMixin, ChallengeDbMixin, DuelDbMixin, TrainingDbMixin,
                  VcDbMixin, LockoutDbMixin, RpollDbMixin, ComplaintDbMixin,
                  GreatdayDbMixin, KvsDbMixin, MiscDbMixin,
                  BettingWalletDbMixin, BettingMarketDbMixin, BettingWagerDbMixin,
@@ -219,6 +220,7 @@ class UserDbConn(HandleDbMixin, ChallengeDbMixin, DuelDbMixin, TrainingDbMixin,
         # ``_create_<domain>_tables`` method. ``CREATE TABLE IF NOT EXISTS`` is
         # order-independent, so the call order here does not matter.
         self._create_handle_tables()
+        self._create_atcoder_handle_tables()
         self._create_duel_tables()
         self._create_challenge_tables()
         self._create_misc_tables()

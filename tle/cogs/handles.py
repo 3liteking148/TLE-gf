@@ -41,6 +41,7 @@ from tle.cogs._handles_helpers import (
 )
 from tle.cogs._handles_gudgitters import GudgittersMixin
 from tle.cogs._handles_rankup import RankUpMixin
+from tle.cogs._atcoder_handles import AtcoderHandlesMixin
 
 
 def _check_identify_allowed(user_db, author_id, guild_id, handle, author_mention):
@@ -62,7 +63,7 @@ def _check_identify_allowed(user_db, author_id, guild_id, handle, author_mention
                              'Ask an Admin or Moderator in case of an inconsistency.')
 
 
-class Handles(GudgittersMixin, RankUpMixin, commands.Cog):
+class Handles(GudgittersMixin, RankUpMixin, AtcoderHandlesMixin, commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.logger = logging.getLogger(self.__class__.__name__)
@@ -108,7 +109,8 @@ class Handles(GudgittersMixin, RankUpMixin, commands.Cog):
 
     @commands.group(brief='Commands that have to do with handles', invoke_without_command=True)
     async def handle(self, ctx):
-        """Change or collect information about specific handles on Codeforces"""
+        """Change or collect information about specific handles on Codeforces.
+        AtCoder handles are handled by the `;atcoder` group."""
         await ctx.send_help(ctx.command)
 
     @handle.command(brief='Set Codeforces handle of a user', aliases=["link"])

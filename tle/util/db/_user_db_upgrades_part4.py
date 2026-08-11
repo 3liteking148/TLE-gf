@@ -343,3 +343,30 @@ def upgrade_1_52_0(db):
                 f'ALTER TABLE user_handle ADD COLUMN {name} {declaration}')
     db.commit()
     logger.info('1.52.0: Upgrade complete')
+
+
+@registry.register('1.53.0', 'AtCoder handle table')
+def upgrade_1_53_0(db):
+    """Create ``user_atcoder_handle`` for ``;atcoder`` handle linking.
+
+    AtCoder handles are stored separately from ``user_handle`` (whose
+    primary key and unique handle index are Codeforces-specific); the mixin
+    also creates this table via ``CREATE TABLE IF NOT EXISTS``, so the
+    upgrade is a no-op on databases that already have it.
+    """
+    logger.info('1.53.0: Creating AtCoder handle table')
+    db.execute('''
+        CREATE TABLE IF NOT EXISTS user_atcoder_handle (
+            user_id     TEXT,
+            guild_id    TEXT,
+            handle      TEXT,
+            active      INTEGER,
+            updated_at  INTEGER,
+            PRIMARY KEY (user_id, guild_id)
+        )
+    ''')
+    db.execute('CREATE UNIQUE INDEX IF NOT EXISTS '
+               'ix_user_atcoder_handle_guild_handle '
+               'ON user_atcoder_handle (guild_id, handle)')
+    db.commit()
+    logger.info('1.53.0: Upgrade complete')
