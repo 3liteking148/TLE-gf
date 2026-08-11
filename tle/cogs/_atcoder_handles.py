@@ -27,6 +27,28 @@ _TOKEN_LENGTH = 8
 _IDENTIFY_GROUP = 'atcoder_identify'
 
 
+def _check_atcoder_identify_allowed(user_db, author_id, guild_id, handle,
+                                    author_mention):
+    """Raise if a manual handle blocks ``;atcoder identify``.
+
+    Auto-synced rows (``synced_at`` non-NULL) never block: the user may
+    replace them with an alt through the normal verification flow. A handle
+    claimed by someone else still blocks, unless the claimer is the caller
+    themselves re-identifying their own synced handle.
+    """
+    handle_row = user_db.get_atcoder_handle_row(author_id, guild_id)
+    if handle_row and handle_row[1] is None:
+        raise HandleCogError(f'{author_mention}, your AtCoder handle is '
+                             f'already set to `{handle_row[0]}`. Ask an Admin '
+                             'or Moderator if you wish to change it')
+
+    claimed_by = user_db.get_atcoder_user_id(handle, guild_id)
+    if claimed_by and claimed_by != author_id:
+        raise HandleCogError(f'The handle `{handle}` is already associated '
+                             'with another user. Ask an Admin or Moderator '
+                             'in case of an inconsistency.')
+
+
 class AtcoderHandlesMixin:
     """``;atcoder`` group: link and look up AtCoder handles."""
 
@@ -53,17 +75,8 @@ class AtcoderHandlesMixin:
             raise HandleCogError(f'AtCoder user `{handle}` not found')
         handle = user.handle
 
-        existing = user_db.get_atcoder_handle(ctx.author.id, ctx.guild.id)
-        if existing:
-            raise HandleCogError(f'{ctx.author.mention}, your AtCoder handle is '
-                                 f'already set to `{existing}`. Ask an Admin or '
-                                 'Moderator to change it.')
-
-        claimed_by = user_db.get_atcoder_user_id(handle, ctx.guild.id)
-        if claimed_by and claimed_by != ctx.author.id:
-            raise HandleCogError(f'The handle `{handle}` is already associated '
-                                 'with another user. Ask an Admin or Moderator '
-                                 'in case of an inconsistency.')
+        _check_atcoder_identify_allowed(user_db, ctx.author.id, ctx.guild.id,
+                                        handle, ctx.author.mention)
 
         token = 'tle-' + ''.join(random.choices(
             string.ascii_lowercase + string.digits, k=_TOKEN_LENGTH))

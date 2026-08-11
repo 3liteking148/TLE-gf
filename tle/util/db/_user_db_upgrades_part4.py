@@ -370,3 +370,28 @@ def upgrade_1_53_0(db):
                'ON user_atcoder_handle (guild_id, handle)')
     db.commit()
     logger.info('1.53.0: Upgrade complete')
+
+
+@registry.register('1.54.0', 'AtCoder handle sync provenance')
+def upgrade_1_54_0(db):
+    """Add ``synced_at`` to ``user_atcoder_handle``.
+
+    NULL = set manually via ``;atcoder identify``; non-NULL = auto-synced
+    from another guild by the pre-command hook. Lets ``identify`` overwrite
+    only auto-synced rows, mirroring ``upgrade_1_52_0`` on ``user_handle``.
+    """
+    logger.info('1.54.0: Adding AtCoder handle sync column')
+    tables = {row[0] for row in db.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
+    if 'user_atcoder_handle' not in tables:
+        logger.info('1.54.0: user_atcoder_handle table absent; nothing to migrate')
+        return
+    columns = {
+        row[1] for row in db.execute(
+            'PRAGMA table_info(user_atcoder_handle)').fetchall()
+    }
+    if 'synced_at' not in columns:
+        db.execute(
+            'ALTER TABLE user_atcoder_handle ADD COLUMN synced_at INTEGER')
+    db.commit()
+    logger.info('1.54.0: Upgrade complete')

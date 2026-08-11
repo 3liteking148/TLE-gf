@@ -175,7 +175,7 @@ class TestMigration:
         tables = {row[0] for row in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'")}
         assert 'user_atcoder_handle' in tables
-        assert registry.get_current_version(conn) == '1.53.0'
+        assert registry.get_current_version(conn) == '1.54.0'
         conn.close()
 
 
