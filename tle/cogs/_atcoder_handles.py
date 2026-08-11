@@ -37,12 +37,12 @@ class AtcoderHandlesMixin:
         to a random token. Run `;atcoder identify <handle>` to start."""
         await ctx.send_help(ctx.command)
 
-    @atcoder.command(brief='Identify yourself', usage='<handle>')
+    @atcoder.command(name='identify', brief='Identify yourself', usage='<handle>')
     @cf_common.user_guard(
         group=_IDENTIFY_GROUP,
         get_exception=lambda: HandleCogError(
             'AtCoder identification is already running for you'))
-    async def identify(self, ctx, handle: str):
+    async def atcoder_identify(self, ctx, handle: str):
         """Link an AtCoder account to your Discord account by setting your
         AtCoder profile affiliation to a random token within 60 seconds."""
         invoker = str(ctx.author)
@@ -65,7 +65,7 @@ class AtcoderHandlesMixin:
                                  'with another user. Ask an Admin or Moderator '
                                  'in case of an inconsistency.')
 
-        token = 'tle-gf-' + ''.join(random.choices(
+        token = 'tle-' + ''.join(random.choices(
             string.ascii_lowercase + string.digits, k=_TOKEN_LENGTH))
         await ctx.send(f'`{invoker}`, set your AtCoder profile affiliation to '
                        f'**`{token}`** '
@@ -89,8 +89,9 @@ class AtcoderHandlesMixin:
                        'your affiliation to the token exactly, then wait for '
                        'confirmation.')
 
-    @atcoder.command(brief='Show AtCoder handle of a user', usage='[member]')
-    async def get(self, ctx, member: discord.Member = None):
+    @atcoder.command(name='get', brief='Show AtCoder handle of a user',
+                     usage='[member]')
+    async def atcoder_get(self, ctx, member: discord.Member = None):
         """Show the AtCoder handle (and live profile info) of a user."""
         member = member or ctx.author
         handle = cf_common.user_db.get_atcoder_handle(member.id, ctx.guild.id)
@@ -108,9 +109,10 @@ class AtcoderHandlesMixin:
                             inline=True)
         await ctx.send(embed=embed)
 
-    @atcoder.command(brief='Unlink AtCoder handle', usage='<handle>')
+    @atcoder.command(name='remove', brief='Unlink AtCoder handle',
+                     usage='<handle>')
     @commands.has_any_role(*constants.TLE_ADMIN, *constants.TLE_MODERATOR)
-    async def remove(self, ctx, handle: str):
+    async def atcoder_remove(self, ctx, handle: str):
         """Remove an AtCoder handle from the database."""
         user_id = cf_common.user_db.get_atcoder_user_id(handle, ctx.guild.id)
         if user_id is None:

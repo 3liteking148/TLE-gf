@@ -232,13 +232,15 @@ def _invoke(cmd_name, *args):
 
     The stubbed ``commands.group`` decorator wraps callbacks in a
     no-op ``_StubGroupResult``; the real coroutine function lives at
-    ``.__wrapped__`` (after the user_guard wrapper).
+    ``.__wrapped__`` (after the user_guard wrapper). Method names differ
+    from the public command names (``atcoder_identify`` vs ``identify``)
+    so the mixin commands survive discord.py's cog-command collection.
     """
     return getattr(_Cog(), cmd_name).__wrapped__(_Cog(), *args)
 
 
 def _invoke_identify(ctx, handle):
-    return _invoke('identify', ctx, handle)
+    return _invoke('atcoder_identify', ctx, handle)
 
 
 def _make_ctx(author_id=1, guild_id=2):
@@ -269,7 +271,7 @@ class TestIdentify:
 
         monkeypatch.setattr(atcoder_api, 'get_user', fake_get_user)
         _run(_invoke_identify(ctx, 'tourist'))
-        assert token['v'].startswith('tle-gf-')
+        assert token['v'].startswith('tle-')
         assert db.get_atcoder_handle(1, 2) == 'tourist'
         assert ctx.sent[-1][0] == 'You can now revert your affiliation.'
         assert embeds == ['AtCoder handle for <@1> successfully set to **tourist**']
@@ -337,7 +339,7 @@ class TestGet:
         monkeypatch.setattr(cf_common, 'user_db', db)
         ctx = _make_ctx()
         with pytest.raises(HandleCogError):
-            _run(_invoke('get', ctx))
+            _run(_invoke('atcoder_get', ctx))
 
     def test_with_handle(self, monkeypatch):
         db = _make_db()
@@ -349,7 +351,7 @@ class TestGet:
 
         monkeypatch.setattr(atcoder_api, 'get_user', fake_get_user)
         ctx = _make_ctx()
-        _run(_invoke('get', ctx))
+        _run(_invoke('atcoder_get', ctx))
         embed = ctx.sent_kwargs[0]['embed']
         assert 'https://atcoder.jp/users/tourist' in embed.description
         assert embed.fields == [
@@ -367,7 +369,7 @@ class TestGet:
 
         monkeypatch.setattr(atcoder_api, 'get_user', fake_get_user)
         ctx = _make_ctx()
-        _run(_invoke('get', ctx))
+        _run(_invoke('atcoder_get', ctx))
         embed = ctx.sent_kwargs[0]['embed']
         assert 'https://atcoder.jp/users/tourist' in embed.description
         assert embed.fields == []
@@ -382,7 +384,7 @@ class TestGet:
 
         monkeypatch.setattr(atcoder_api, 'get_user', fake_get_user)
         ctx = _make_ctx()
-        _run(_invoke('get', ctx))
+        _run(_invoke('atcoder_get', ctx))
         embed = ctx.sent_kwargs[0]['embed']
         assert embed.fields == [
             {'name': 'Rating', 'value': 'Unrated', 'inline': True},
@@ -403,7 +405,7 @@ class TestRemove:
         monkeypatch.setattr(discord_common, 'embed_success',
                             lambda desc: embeds.append(desc) or FakeEmbed(desc))
         ctx = _make_ctx()
-        _run(_invoke('remove', ctx, 'tourist'))
+        _run(_invoke('atcoder_remove', ctx, 'tourist'))
         assert db.get_atcoder_handle(1, 2) is None
         assert db.get_atcoder_user_id('tourist', 2) is None
         assert embeds == ['Removed `tourist` from database']
@@ -413,7 +415,7 @@ class TestRemove:
         monkeypatch.setattr(cf_common, 'user_db', db)
         ctx = _make_ctx()
         with pytest.raises(HandleCogError):
-            _run(_invoke('remove', ctx, 'nobody'))
+            _run(_invoke('atcoder_remove', ctx, 'nobody'))
 
 
 # =====================================================================
