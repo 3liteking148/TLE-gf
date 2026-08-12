@@ -29,18 +29,15 @@ class _AcBackend:
     platform = 'ac'
 
     def parse_args(self, args, rating):
-        """Parse gitgud args in AtCoder mode: an optional rating or range.
-
-        Tags, banned tags and division filters do not exist on AtCoder and are
-        rejected. ``rating`` is the 0-4000-clamped user rating used as the
-        default range. Returns ``(srating, erating, hidden, None, None)``."""
+        """Parse gitgud args: an optional rating or range plus optional
+        ``+``/``~`` tag and division filters. ``rating`` is the 0-4000-clamped
+        user rating used as the default range. Returns
+        ``(srating, erating, hidden, tags, bantags)``."""
+        tags = cf_common.parse_tags(args, prefix='+')
+        bantags = cf_common.parse_tags(args, prefix='~')
         srating = erating = None
         hidden = False
         for arg in args:
-            if arg.startswith('+') or arg.startswith('~'):
-                raise CodeforcesCogError(
-                    'Tags and division filters are not supported for AtCoder '
-                    'gitgud.')
             if arg.startswith('-'):
                 raise CodeforcesCogError(
                     'Wrong rating requested. AtCoder gitgud uses rating '
@@ -53,14 +50,20 @@ class _AcBackend:
                     hidden = True
                 else:
                     erating = srating
+
         if srating is None:
-            srating = max(rating - 100, atcoder_api.RATING_MIN)
-            erating = min(rating + 100, atcoder_api.RATING_MAX)
+            srating = erating = rating
+
         if erating < atcoder_api.RATING_MIN or srating > atcoder_api.RATING_MAX:
             raise CodeforcesCogError(
                 'Wrong rating requested. AtCoder gitgud uses rating '
                 f'({atcoder_api.RATING_MIN}-{atcoder_api.RATING_MAX}).')
-        return srating, erating, hidden, None, None
+
+        if srating == erating: # adjust to compensate for lack of rounding in atcoder
+            srating = max(srating - 100, atcoder_api.RATING_MIN)
+            erating = min(erating + 100, atcoder_api.RATING_MAX)
+
+        return srating, erating, hidden, tags, bantags
 
     async def resolve_handle(self, ctx, converter=None):
         user_id = ctx.message.author.id
@@ -171,7 +174,10 @@ class _AcBackend:
         the caller raises 'No problem to assign'."""
         problems = [prob for prob in cf_common.cache2.atcoder_problem_cache.problems
                     if prob.difficulty >= srating and prob.difficulty <= erating
-                    and prob.id not in solved and prob.id not in noguds and ('abc' in prob.contestId or 'arc' in prob.contestId)]
+                    and prob.id not in solved and prob.id not in noguds
+                    and ('abc' in prob.contestId or 'arc' in prob.contestId)
+                    and set(prob.contest_type).issuperset(set(tags))
+                    and set(prob.contest_type).isdisjoint(set(bantags))]
         problems.sort(key=lambda problem: problem.contest_start)
         return problems
 

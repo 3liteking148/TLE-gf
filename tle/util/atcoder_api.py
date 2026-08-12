@@ -267,9 +267,12 @@ class AtCoderProblem(namedtuple('AtCoderProblem',
     def url(self):
         return f'{BASE_URL}/contests/{self.contest_id}/tasks/{self.id}'
 
+    @property
+    def contest_type(self):
+        return re.match(r"^([a-z]+)", self.contest_id).group(1)
+
     def has_difficulty(self):
         return self.difficulty is not None
-
 
 class AtCoderSubmission(namedtuple('AtCoderSubmission',
                                    'epoch_second problem_id result')):
