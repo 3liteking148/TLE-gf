@@ -176,8 +176,8 @@ class _AcBackend:
                     if prob.difficulty >= srating and prob.difficulty <= erating
                     and prob.id not in solved and prob.id not in noguds
                     and ('abc' in prob.contestId or 'arc' in prob.contestId)
-                    and set(prob.contest_type).issuperset(set(tags))
-                    and set(prob.contest_type).isdisjoint(set(bantags))]
+                    and set([prob.contest_type]).issuperset(set(tags))
+                    and set([prob.contest_type]).isdisjoint(set(bantags))]
         problems.sort(key=lambda problem: problem.contest_start)
         return problems
 
