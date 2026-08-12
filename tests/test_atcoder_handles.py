@@ -271,7 +271,7 @@ class TestIdentify:
 
         monkeypatch.setattr(atcoder_api, 'get_user', fake_get_user)
         _run(_invoke_identify(ctx, 'tourist'))
-        assert token['v'].startswith('tle-')
+        assert len(token['v']) == 8 and token['v'].isalnum()
         assert db.get_atcoder_handle(1, 2) == 'tourist'
         assert ctx.sent[-1][0] == 'You can now revert your affiliation.'
         assert embeds == ['AtCoder handle for <@1> successfully set to **tourist**']

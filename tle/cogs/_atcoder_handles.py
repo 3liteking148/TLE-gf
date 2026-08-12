@@ -78,7 +78,7 @@ class AtcoderHandlesMixin:
         _check_atcoder_identify_allowed(user_db, ctx.author.id, ctx.guild.id,
                                         handle, ctx.author.mention)
 
-        token = 'tle-' + ''.join(random.choices(
+        token = ''.join(random.choices(
             string.ascii_lowercase + string.digits, k=_TOKEN_LENGTH))
         await ctx.send(f'`{invoker}`, set your AtCoder profile affiliation to '
                        f'**`{token}`** '
