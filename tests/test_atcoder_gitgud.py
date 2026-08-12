@@ -41,19 +41,25 @@ class TestParseRating:
 
 class TestAtCoderProblem:
     def test_properties(self):
-        p = _ac_problem('abc383_a', title='A - Insert 1')
+        p = _ac_problem('abc383_a', title='A. Insert 1')
         assert p.name == 'Insert 1'
         assert p.index == 'A'
         assert p.url == 'https://atcoder.jp/contests/abc383/tasks/abc383_a'
         assert p.has_difficulty()
 
-    def test_title_with_contest_prefix(self):
+    def test_multi_letter_prefix(self):
+        p = atcoder_api.AtCoderProblem(
+            'apg4b_cj', 'apg4b', 'EX13', 'EX13. 三人兄弟へのプレゼント', 0)
+        assert p.name == '三人兄弟へのプレゼント'
+
+    def test_dash_prefix_still_stripped(self):
+        # Legacy datasets/titles used 'A - ' / 'AGC061 A - ' forms.
         p = atcoder_api.AtCoderProblem(
             'agc061_a', 'agc061', 'A', 'AGC061 A - Long Long Ago', 3000)
         assert p.name == 'Long Long Ago'
 
     def test_no_difficulty(self):
-        p = atcoder_api.AtCoderProblem('abc383_a', 'abc383', 'a', 'A - X')
+        p = atcoder_api.AtCoderProblem('abc383_a', 'abc383', 'a', 'A. X')
         assert not p.has_difficulty()
 
 
