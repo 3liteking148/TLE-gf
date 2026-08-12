@@ -41,16 +41,11 @@ class TestParseRating:
 
 class TestAtCoderProblem:
     def test_properties(self):
-        p = _ac_problem('abc383_a', title='A - Insert 1')
+        p = _ac_problem('abc383_a', name='Insert 1')
         assert p.name == 'Insert 1'
         assert p.index == 'A'
         assert p.url == 'https://atcoder.jp/contests/abc383/tasks/abc383_a'
         assert p.has_difficulty()
-
-    def test_title_with_contest_prefix(self):
-        p = atcoder_api.AtCoderProblem(
-            'agc061_a', 'agc061', 'A', 'AGC061 A - Long Long Ago', 3000)
-        assert p.name == 'Long Long Ago'
 
     def test_no_difficulty(self):
         p = atcoder_api.AtCoderProblem('abc383_a', 'abc383', 'a', 'A - X')
@@ -61,9 +56,9 @@ class TestGetProblems:
     def test_parses_list(self):
         payload = [
             {'id': 'abc383_a', 'contest_id': 'abc383', 'problem_index': 'a',
-             'title': 'A - Insert 1'},
+             'name': 'Insert 1'},
             {'id': 'abc383_b', 'contest_id': 'abc383', 'problem_index': 'b',
-             'title': 'B - Minimize Abs 1'},
+             'name': 'Minimize Abs 1'},
         ]
         session = FakeSession([_json_resp(payload)])
         problems = _run(atcoder_api.get_problems(session=session))

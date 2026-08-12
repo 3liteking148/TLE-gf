@@ -235,14 +235,8 @@ async def get_submission(url, *, session=None):
             await session.close()
 
 
-def _strip_title_prefix(title):
-    """Strip the leading ``'A - '`` / ``'AGC061 A - '`` prefix from a
-    problems.json title so the clean problem name remains."""
-    return re.sub(r'^.*? - ', '', title) if title else title
-
-
 class AtCoderProblem(namedtuple('AtCoderProblem',
-                                'id contest_id problem_index title difficulty '
+                                'id contest_id problem_index name difficulty '
                                 'contest_start contest_name')):
     """An AtCoder problem from kenkoooo's problems.json + problem-models.json.
 
@@ -250,14 +244,10 @@ class AtCoderProblem(namedtuple('AtCoderProblem',
     has no model — these are excluded from the gitgud pool)."""
     __slots__ = ()
 
-    def __new__(cls, id, contest_id, problem_index, title,
+    def __new__(cls, id, contest_id, problem_index, name,
                 difficulty=None, contest_start=None, contest_name=None):
-        return super().__new__(cls, id, contest_id, problem_index, title,
+        return super().__new__(cls, id, contest_id, problem_index, name,
                                difficulty, contest_start, contest_name)
-
-    @property
-    def name(self):
-        return _strip_title_prefix(self.title)
 
     @property
     def key(self):
@@ -345,7 +335,7 @@ async def get_problems(*, session=None):
     for entry in data:
         problems.append(AtCoderProblem(
             entry['id'], entry['contest_id'], entry['problem_index'],
-            entry['title']))
+            entry['name']))
     return problems
 
 

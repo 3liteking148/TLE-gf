@@ -129,7 +129,7 @@ class TestAtcoderGitgudFlow:
         self._set_pool(cog,
                        _ac_problem('abc383_a', difficulty=1200),
                        _ac_problem('abc383_b', difficulty=1200,
-                                   title='B - Keep it', index='b'))
+                                   name='Keep it', index='b'))
         ctx = self._ctx()
         _run(cog._gitgud_impl(ctx, ('+atcoder', '1200')))
         active = db.check_challenge(USER_A)
@@ -142,7 +142,7 @@ class TestAtcoderGitgudFlow:
         self._set_pool(cog,
                        _ac_problem('abc383_a', difficulty=1200),
                        _ac_problem('abc383_b', difficulty=1200,
-                                   title='B - Keep it', index='b'))
+                                   name='Keep it', index='b'))
         # Nogud abc383_a via a direct challenge row, then both are excluded.
         db.new_challenge(USER_A, 1, _ac_problem('abc383_a'), 0, platform='ac')
         cid = db.check_challenge(USER_A)[0]

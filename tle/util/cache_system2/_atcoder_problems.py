@@ -68,7 +68,7 @@ class AtcoderProblemCache:
                 continue
             pool.append(atcoder_api.AtCoderProblem(
                 problem.id, problem.contest_id, problem.problem_index,
-                problem.title, difficulty, contest.start_epoch_second,
+                problem.name, difficulty, contest.start_epoch_second,
                 contest.title))
         return pool
 
