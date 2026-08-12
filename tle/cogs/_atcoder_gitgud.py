@@ -54,7 +54,8 @@ class _AcBackend:
                 else:
                     erating = srating
         if srating is None:
-            srating = erating = rating
+            srating = max(rating - 100, atcoder_api.RATING_MIN)
+            erating = min(rating + 100, atcoder_api.RATING_MAX)
         if erating < atcoder_api.RATING_MIN or srating > atcoder_api.RATING_MAX:
             raise CodeforcesCogError(
                 'Wrong rating requested. AtCoder gitgud uses rating '
@@ -170,7 +171,7 @@ class _AcBackend:
         the caller raises 'No problem to assign'."""
         problems = [prob for prob in cf_common.cache2.atcoder_problem_cache.problems
                     if prob.difficulty >= srating and prob.difficulty <= erating
-                    and prob.id not in solved and prob.id not in noguds]
+                    and prob.id not in solved and prob.id not in noguds and ('abc' in prob.contestId or 'arc' in prob.contestId)]
         problems.sort(key=lambda problem: problem.contest_start)
         return problems
 
