@@ -236,11 +236,9 @@ async def get_submission(url, *, session=None):
 
 
 def _strip_title_prefix(title):
-    """Strip the leading ``'A. '`` / ``'EX13. '`` / ``'A - '`` prefix from a
-    problems.json title so the clean problem name remains. Real titles use
-    the period form (e.g. ``'A. Fizz'``); the dash form is kept for legacy
-    datasets and test fixtures."""
-    return re.sub(r'^(?:[A-Za-z0-9]+\.\s+|.*? - )', '', title) if title else title
+    """Strip the leading ``'A - '`` / ``'AGC061 A - '`` prefix from a
+    problems.json title so the clean problem name remains."""
+    return re.sub(r'^.*? - ', '', title) if title else title
 
 
 class AtCoderProblem(namedtuple('AtCoderProblem',

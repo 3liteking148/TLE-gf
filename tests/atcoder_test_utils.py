@@ -15,7 +15,7 @@ def _run(coro):
 
 
 def _ac_problem(pid, difficulty=1200, contest_id='abc383', index='a',
-                title='A. Test Task', start=1000, contest_name='AtCoder ABC 383'):
+                title='A - Test Task', start=1000, contest_name='AtCoder ABC 383'):
     return atcoder_api.AtCoderProblem(
         pid, contest_id, index, title, difficulty, start, contest_name)
 
