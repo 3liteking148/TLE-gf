@@ -3,6 +3,7 @@ import time
 from aiocache import cached
 
 from tle.util import codeforces_api as cf
+from tle.util.cache_system2._atcoder_problems import AtcoderProblemCache
 from tle.util.cache_system2._contest import ContestCache
 from tle.util.cache_system2._problems import ProblemCache, ProblemsetCache
 from tle.util.cache_system2._rating_changes import RatingChangesCache
@@ -19,6 +20,7 @@ class CacheSystem:
         self.rating_changes_cache = RatingChangesCache(self)
         self.ranklist_cache = RanklistCache(self)
         self.problemset_cache = ProblemsetCache(self)
+        self.atcoder_problem_cache = AtcoderProblemCache()
 
     async def run(self):
         run_start = time.time()
@@ -43,6 +45,10 @@ class CacheSystem:
         t = time.time()
         await self.problemset_cache.run()
         logger.info(f'problemset_cache.run() completed in {time.time()-t:.2f}s')
+
+        t = time.time()
+        await self.atcoder_problem_cache.run()
+        logger.info(f'atcoder_problem_cache.run() completed in {time.time()-t:.2f}s')
 
         logger.info(f'CacheSystem.run() completed in {time.time()-run_start:.2f}s')
 

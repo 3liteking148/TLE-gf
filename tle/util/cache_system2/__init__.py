@@ -4,6 +4,7 @@ Previously a single ``cache_system2.py`` module; split into sub-500-line
 modules under this package. Everything the rest of the codebase referenced as
 ``cache_system2.<name>`` is re-exported here so existing imports keep working.
 """
+from tle.util.cache_system2._atcoder_problems import AtcoderProblemCache
 from tle.util.cache_system2._common import (
     CONTEST_BLACKLIST,
     CacheError,
@@ -24,6 +25,7 @@ from tle.util.cache_system2._ranklist import RanklistCache
 from tle.util.cache_system2._system import CacheSystem
 
 __all__ = [
+    'AtcoderProblemCache',
     'CONTEST_BLACKLIST',
     'CacheError',
     'CacheSystem',

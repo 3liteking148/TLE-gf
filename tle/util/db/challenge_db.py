@@ -22,7 +22,8 @@ class ChallengeDbMixin:
                 "contest_id"	INTEGER NOT NULL,
                 "p_index"	INTEGER NOT NULL,
                 "rating_delta"	INTEGER NOT NULL,
-                "status"	INTEGER NOT NULL
+                "status"	INTEGER NOT NULL,
+                "platform"	TEXT NOT NULL DEFAULT 'cf'
             )
         ''')
         self.conn.execute('''
@@ -37,12 +38,12 @@ class ChallengeDbMixin:
             )
         ''')
 
-    def new_challenge(self, user_id, issue_time, prob, delta):
+    def new_challenge(self, user_id, issue_time, prob, delta, platform='cf'):
         query1 = '''
             INSERT INTO challenge
-            (user_id, issue_time, problem_name, contest_id, p_index, rating_delta, status)
+            (user_id, issue_time, problem_name, contest_id, p_index, rating_delta, status, platform)
             VALUES
-            (?, ?, ?, ?, ?, ?, 1)
+            (?, ?, ?, ?, ?, ?, 1, ?)
         '''
         query2 = '''
             INSERT OR IGNORE INTO user_challenge (user_id, score, num_completed, num_skipped)
@@ -53,7 +54,12 @@ class ChallengeDbMixin:
             WHERE user_id = ? AND active_challenge_id IS NULL
         '''
         cur = self.conn.cursor()
-        cur.execute(query1, (user_id, issue_time, prob.name, prob.contestId, prob.index, delta))
+        # prob.contestId / prob.key normalize both platforms: the challenge
+        # key is the problem *name* for Codeforces and the problem *id*
+        # (e.g. abc383_a) for AtCoder.
+        contest_id, problem_key = prob.contestId, prob.key
+        cur.execute(query1, (user_id, issue_time, problem_key, contest_id,
+                             prob.index, delta, platform))
         last_id, rc = cur.lastrowid, cur.rowcount
         if rc != 1:
             self.conn.rollback()
@@ -75,12 +81,15 @@ class ChallengeDbMixin:
         if res is None: return None
         c_id, issue_time = res
         query2 = '''
-            SELECT problem_name, contest_id, p_index, rating_delta FROM challenge
+            SELECT problem_name, contest_id, rating_delta, platform, p_index FROM challenge
             WHERE id = ?
         '''
         res = self.conn.execute(query2, (c_id,)).fetchone()
         if res is None: return None
-        return c_id, issue_time, res[0], res[1], res[2], res[3]
+        # (c_id, issue_time, problem_key, contest_id, rating_delta, platform,
+        #  p_index) — p_index appended last so the positional contract of the
+        # consumer unpacking stays stable as the schema evolved.
+        return c_id, issue_time, res[0], res[1], res[2], res[3], res[4]
 
     def get_gudgitters_last(self, timestamp):
         query = '''
@@ -122,18 +131,19 @@ class ChallengeDbMixin:
         '''
         return self.conn.execute(query, (user_id,)).fetchall()
 
-    def get_noguds(self, user_id):
+    def get_nogud_problem_keys(self, user_id):
         from tle.util.db.user_db_conn import Gitgud
         query = ('SELECT problem_name '
                  'FROM challenge '
                  f'WHERE user_id = ? AND status = {Gitgud.NOGUD}')
-        return {name for name, in self.conn.execute(query, (user_id,)).fetchall()}
+        return {key for key, in self.conn.execute(query, (user_id,)).fetchall()}
 
     def gitlog(self, user_id):
         from tle.util.db.user_db_conn import Gitgud
         query = f'''
-            SELECT issue_time, finish_time, problem_name, contest_id, p_index, rating_delta, status
-            FROM challenge WHERE user_id = ? AND status != {Gitgud.FORCED_NOGUD} ORDER BY issue_time DESC
+            SELECT issue_time, finish_time, problem_name, rating_delta, status, platform
+            FROM challenge WHERE user_id = ? AND status != {Gitgud.FORCED_NOGUD}
+            ORDER BY issue_time DESC
         '''
         return self.conn.execute(query, (user_id,)).fetchall()
 

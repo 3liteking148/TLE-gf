@@ -168,6 +168,12 @@ class Problem(NamedTuple):
     tags: List[str]
 
     @property
+    def key(self) -> str:
+        """Returns the canonical problem key (the name is the key on
+        Codeforces; AtCoder problems use their id via a matching alias)."""
+        return self.name
+
+    @property
     def contest_identifier(self) -> str:
         """Returns a string identifying the contest."""
         return f'{self.contestId}{self.index}'

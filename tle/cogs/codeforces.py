@@ -22,9 +22,11 @@ from tle.cogs._codeforces_helpers import (
 )
 from tle.cogs._codeforces_gitgud import CodeforcesGitgudMixin
 from tle.cogs._codeforces_problems import CodeforcesProblemsMixin
+from tle.cogs._atcoder_gitgud import AtcoderGitgudMixin
 
 
-class Codeforces(CodeforcesGitgudMixin, CodeforcesProblemsMixin, commands.Cog):
+class Codeforces(AtcoderGitgudMixin, CodeforcesGitgudMixin,
+                  CodeforcesProblemsMixin, commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.converter = commands.MemberConverter()
@@ -32,22 +34,24 @@ class Codeforces(CodeforcesGitgudMixin, CodeforcesProblemsMixin, commands.Cog):
 
     @commands.command(brief='Upsolve a problem')
     @cf_common.user_guard(group='gitgud')
-    async def upsolve(self, ctx, choice: int = -1):
+    async def upsolve(self, ctx, *args):
         """Upsolve: The command ;upsolve lists all problems that you haven't solved in contests you participated
         - Type ;upsolve for listing all available problems.
         - Type ;upsolve <nr> for choosing the problem <nr> as gitgud problem (only possible if you have no active gitgud challenge)
         - After solving the problem you can claim gitgud points for it with ;gotgud
+        - AtCoder challenges are claimed by pasting your submission link, e.g. ;gotgud <https://atcoder.jp/contests/abc383/submissions/12345678>
         - If you can't solve the problem or used external help you should skip it with ;nogud (Available after 2 hours)
         - The all-time ranklist can be found with ;gitgudders
         - A monthly ranklist is shown when you type ;monthlygitgudders
         - Another way to gather gitgud points is ;gitgud (only works if you have no active gitgud-Challenge)
         - For help with each of the commands you can type ;help <command> (e.g. ;help gitgudders)
+        - Add +atcoder to use an AtCoder problem (not implemented yet)
 
         Point distribution:
         delta  | <-300| -300 | -200 | -100 |  0  |  100 |  200 |>=300
         points |   1  |   2  |   3  |   5  |  8  |  12  |  17  |  23
         """
-        await self._upsolve_impl(ctx, choice)
+        await self._upsolve_impl(ctx, args)
 
     @commands.command(brief='Recommend a problem',
                       usage='[+tag..] [~tag..] [+divX] [~divX] [rating|rating1-rating2] [d>=[[dd]mm]yyyy] [d<[[dd]mm]yyyy]')
@@ -75,14 +79,16 @@ class Codeforces(CodeforcesGitgudMixin, CodeforcesProblemsMixin, commands.Cog):
         await self._mashup_impl(ctx, args)
 
     @commands.command(brief='Challenge', aliases=['gitbad'],
-                      usage='[rating|rating1-rating2] [+tags] [~tags] [+divX] [~divX]')
+                      usage='[+atcoder] [rating|rating1-rating2] [+tags] [~tags] [+divX] [~divX]')
     @cf_common.user_guard(group='gitgud')
     async def gitgud(self, ctx, *args):
         """Gitgud: Request a problem with a specific rating with ;gitgud <rating> or within a rating range with ;gitgud <rating1>-<rating2>
         - Points are assigned by difference between problem rating and your current rating (rounded to nearest 100)
+        - Add +atcoder to request an AtCoder problem instead (tags/division filters are not supported there)
         - Filter problems by division with [+divX] [~divX] possible values are div1, div2, div3, div4, edu
         - Filter problems by tags with [+tags] [~tags]
         - Claim gitgud points once problem is solved with ;gotgud
+        - AtCoder challenges are claimed by pasting your submission link after ;gotgud
         - If you can't solve the problem or used external help you should skip it with ;nogud (Available after 2 hours)
         - All-time ranklist: ;gitgudders
         - Monthly ranklist: ;monthlygitgudders
@@ -110,10 +116,16 @@ class Codeforces(CodeforcesGitgudMixin, CodeforcesProblemsMixin, commands.Cog):
         """
         await self._nogudlog_impl(ctx, member)
 
-    @commands.command(brief='Report challenge completion', aliases=['gotbad'])
+    @commands.command(brief='Report challenge completion', aliases=['gotbad'],
+                      usage='[submission link (AtCoder only)]')
     @cf_common.user_guard(group='gitgud')
-    async def gotgud(self, ctx):
-        await self._gotgud_impl(ctx)
+    async def gotgud(self, ctx, submission_url: str = None):
+        """Claim gitgud points for your active challenge once it is solved.
+        Codeforces claims check your submission history automatically.
+        AtCoder challenges require the URL of your accepted submission, e.g.
+        ;gotgud https://atcoder.jp/contests/abc383/submissions/12345678
+        """
+        await self._gotgud_impl(ctx, submission_url)
 
     @commands.command(brief='Skip challenge', aliases=['toobad'])
     @cf_common.user_guard(group='gitgud')

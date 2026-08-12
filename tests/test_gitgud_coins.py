@@ -114,7 +114,7 @@ class TestGotgudCoinReward:
         return asyncio.run(coro)
 
     def _issue_challenge(self, db, uid, name, delta=0):
-        prob = SimpleNamespace(name=name, contestId=1234, index='A')
+        prob = SimpleNamespace(name=name, contestId=1234, index='A', key=name)
         issue_time = int(datetime.datetime.now().timestamp()) - 3600
         assert db.new_challenge(uid, issue_time, prob, delta) == 1
         return name

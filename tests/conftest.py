@@ -122,6 +122,7 @@ _cf_api.RatingChange = _nt('RatingChange',
                             'contestId contestName handle rank '
                             'ratingUpdateTimeSeconds oldRating newRating')
 _cf_api.GYM_ID_THRESHOLD = 100000
+_cf_api.CONTEST_BASE_URL = 'https://codeforces.com/contest/'
 
 class _Contest(_NamedTuple):
     id: int
@@ -226,6 +227,12 @@ class _FakeTaskSpec:
 
     def stop(self):
         pass
+
+    def waiter(self, run_first=False):
+        return lambda func: func
+
+    def exception_handler(self):
+        return lambda func: func
 
 
 def _task_spec_decorator(*, name, waiter=None, exception_handler=None):
