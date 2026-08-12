@@ -84,7 +84,7 @@ class Codeforces(AtcoderGitgudMixin, CodeforcesGitgudMixin,
     async def gitgud(self, ctx, *args):
         """Gitgud: Request a problem with a specific rating with ;gitgud <rating> or within a rating range with ;gitgud <rating1>-<rating2>
         - Points are assigned by difference between problem rating and your current rating (rounded to nearest 100)
-        - Add +atcoder to request an AtCoder problem instead (tags/division filters are not supported there)
+        - Add +atcoder to request an AtCoder problem instead (problem tag filters are not supported there)
         - Filter problems by division with [+divX] [~divX] possible values are div1, div2, div3, div4, edu
         - Filter problems by tags with [+tags] [~tags]
         - Claim gitgud points once problem is solved with ;gotgud
