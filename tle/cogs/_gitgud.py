@@ -181,6 +181,9 @@ class GitgudMixin:
 
     async def _gitgud_impl(self, ctx, args):
         backend = self._backend_for_args(args)
+
+        args = [arg for arg in args if arg != "+atcoder"]
+        
         handle = await backend.resolve_handle(ctx, self.converter)
         user_rating, delta_base = backend.scale_rating(
             await backend.fetch_rating(handle))
