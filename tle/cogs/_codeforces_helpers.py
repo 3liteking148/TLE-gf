@@ -17,8 +17,8 @@ _GITGUD_MORE_POINTS_START_TIME = 1680300000
 # coins per base gitgud point. Always applied to the *base* score, never the
 # end-of-month-doubled monthly points — the coin rate is a flat 5x.
 _GITGUD_COIN_MULTIPLIER = 5
-_GITGUD_FREE_REQUIRED_TAGS = {'div1', 'arc', 'agc'}
-_GITGUD_FREE_BANNED_TAGS = {'div3', 'div4', 'edu', 'atcoder', 'abc'}
+_GITGUD_FREE_REQUIRED_TAGS = {'div1', 'atcoder', 'arc', 'agc'}
+_GITGUD_FREE_BANNED_TAGS = {'div3', 'div4', 'edu', 'abc'}
 
 
 def _gitgudEncodeExactScoreAsDelta(score):
