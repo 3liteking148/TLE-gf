@@ -1,9 +1,10 @@
 """Tests for the gitgud -> betting-coin reward.
 
 Completing a gitgud challenge (`;gotgud`) also credits the player's betting
-wallet with ``_GITGUD_COIN_MULTIPLIER`` (5) coins per *base* gitgud point. The
-rate is a flat 5x of the base score and is deliberately immune to the
-end-of-month "more points" doubling that the monthly ranklist points get.
+wallet with ``_GITGUD_COIN_MULTIPLIER`` coins per *base* gitgud point. The
+rate is the flat 5x base rate scaled by ``constants.GITGUD_COIN_EARN_MULTIPLIER``
+(default 10, i.e. 50x) and is deliberately immune to the end-of-month "more
+points" doubling that the monthly ranklist points get.
 
 Coins are always banked, but only announced to users who have already placed a
 bet -- the same bar as appearing on ``;bet leaderboard``. A coin-only wallet is
@@ -22,9 +23,11 @@ from tle import constants
 from tle.cogs._codeforces_helpers import _GITGUD_COIN_MULTIPLIER
 
 
-def test_multiplier_is_five():
-    # The coin rate is contractually 5x; pin it so a refactor can't drift it.
-    assert _GITGUD_COIN_MULTIPLIER == 5
+def test_multiplier_is_base_rate_times_earn_multiplier():
+    # The coin rate is contractually 5x base points scaled by the economy-wide
+    # earn multiplier; pin it so a refactor can't drift it.
+    assert _GITGUD_COIN_MULTIPLIER == 5 * constants.GITGUD_COIN_EARN_MULTIPLIER
+    assert _GITGUD_COIN_MULTIPLIER == 50  # default env config
 
 
 class TestBetHasWagered:
@@ -137,12 +140,12 @@ class TestGotgudCoinReward:
 
         msg = ctx.sent[0]
         # delta 0 -> base score 8; the monthly points double to 16, the coins
-        # are 5 x 8 = 40 and must NOT be 5 x 16 = 80.
+        # are 50 x 8 = 400 and must NOT be 50 x 16 = 800.
         assert '8 alltime' in msg
         assert '16 monthly' in msg
-        assert '40 \U0001fa99' in msg       # 5 x base
-        assert '80 \U0001fa99' not in msg   # not 5 x doubled monthly
-        assert db.bet_get_balance(GUILD, USER_A) == 900 + 40
+        assert '400 \U0001fa99' in msg      # 50 x base
+        assert '800 \U0001fa99' not in msg  # not 50 x doubled monthly
+        assert db.bet_get_balance(GUILD, USER_A) == 900 + 400
 
     def test_banks_coins_silently_for_non_bettor(self, db, cog, monkeypatch):
         name = self._issue_challenge(db, USER_B, 'Coin Problem B', delta=0)
@@ -155,7 +158,7 @@ class TestGotgudCoinReward:
         assert '8 alltime' in msg
         assert '\U0001fa99' not in msg  # never told about the coins
         # ...but the coins were still banked on top of the start balance.
-        assert db.bet_get_balance(GUILD, USER_B) == constants.BET_START_BALANCE + 40
+        assert db.bet_get_balance(GUILD, USER_B) == constants.BET_START_BALANCE + 400
         assert db.bet_has_wagered(GUILD, USER_B) is False
         # and the silent wallet stays off the leaderboard.
         ids = [row.user_id for row in db.bet_balance_leaderboard(GUILD)]

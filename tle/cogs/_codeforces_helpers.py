@@ -6,6 +6,8 @@ from typing import List
 
 from discord.ext import commands
 
+from tle import constants
+
 _GITGUD_NO_SKIP_TIME = 2 * 60 * 60
 _GITGUD_SCORE_DISTRIB = (1, 2, 3, 5, 8, 12, 17, 23)
 _GITGUD_SCORE_DISTRIB_MIN = -400
@@ -14,8 +16,10 @@ _ONE_WEEK_DURATION = 7 * 24 * 60 * 60
 _GITGUD_MORE_POINTS_START_TIME = 1680300000
 # Completing a gitgud challenge also credits the betting wallet with this many
 # coins per base gitgud point. Always applied to the *base* score, never the
-# end-of-month-doubled monthly points — the coin rate is a flat 5x.
-_GITGUD_COIN_MULTIPLIER = 5
+# end-of-month-doubled monthly points. The base rate is 5x; the economy-wide
+# GITGUD_COIN_EARN_MULTIPLIER (default 10) scales it so gitguds out-earn the
+# flat daily claim — migration 1.58.0 applied the same factor retroactively.
+_GITGUD_COIN_MULTIPLIER = 5 * constants.GITGUD_COIN_EARN_MULTIPLIER
 _GITGUD_FREE_REQUIRED_TAGS = {'div1', 'atcoder', 'arc', 'agc'}
 _GITGUD_FREE_BANNED_TAGS = {'div3', 'div4', 'edu', 'abc'}
 

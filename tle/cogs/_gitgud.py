@@ -69,10 +69,11 @@ class GitgudMixin:
 
     def _award_gitgud_coins(self, ctx, user_id, score):
         """Credit the betting wallet with ``_GITGUD_COIN_MULTIPLIER`` coins per
-        base gitgud point. The rate is a flat 5x of the *base* score and never
-        gets the end-of-month doubling the monthly ranklist points do. Returns
-        the coins awarded, or None when there's no guild (e.g. a DM) so the
-        caller can omit the wallet line."""
+        base gitgud point. The rate is the flat 5x base rate scaled by
+        ``constants.GITGUD_COIN_EARN_MULTIPLIER`` (default 10, i.e. 50x) of
+        the *base* score and never gets the end-of-month doubling the monthly
+        ranklist points do. Returns the coins awarded, or None when there's no
+        guild (e.g. a DM) so the caller can omit the wallet line."""
         guild = ctx.guild
         if guild is None:
             return None

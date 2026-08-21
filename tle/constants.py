@@ -103,6 +103,11 @@ FOOTBALL_DATA_API_KEY = os.environ.get('FOOTBALL_DATA_API_KEY')
 # you can wager up to your whole balance.
 BET_START_BALANCE = _int_env('BET_START_BALANCE', 1000)
 BET_DAILY_AMOUNT = _int_env('BET_DAILY_AMOUNT', 100)
+# Multiplier applied on top of the base gitgud coin rate (5 coins per base
+# gitgud point) so that solving gitguds out-earns the flat BET_DAILY_AMOUNT by
+# a wide margin — a top-tier 23-point gitgud pays 5 * 23 * this many coins.
+# Migration 1.58.0 retroactively applied the same x10 to historical earnings.
+GITGUD_COIN_EARN_MULTIPLIER = _int_env('GITGUD_COIN_EARN_MULTIPLIER', 10)
 BET_MIN_STAKE = 1
 # The bot auto-opens a betting market this long before kickoff, freezing the
 # odds it reads at that moment for the life of the market. 6h, to give members

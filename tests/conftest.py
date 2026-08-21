@@ -108,6 +108,7 @@ constants_mod.LLM_MAX_OUTPUT_TOKENS = 900
 constants_mod.LLM_MAX_IMAGES = 4
 constants_mod.LLM_MAX_IMAGE_BYTES = 4 * 1024 * 1024
 constants_mod.LLM_MAX_TOTAL_IMAGE_BYTES = 12 * 1024 * 1024
+constants_mod.GITGUD_COIN_EARN_MULTIPLIER = 10
 
 # tle.util.codeforces_common needs a user_db attribute and parse_date for starboard cog
 import time as _time
