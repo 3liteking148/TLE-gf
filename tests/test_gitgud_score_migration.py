@@ -166,39 +166,27 @@ class TestReconstructDeltas:
         warnings = []
         stats = cur.reconstruct_deltas(db, warnings.append, **src)
         assert db.execute('SELECT rating_delta FROM challenge').fetchone()[0] == 700
-        assert stats['sentinel'] == 1
+        assert stats['reconstructed'] == 1
         assert warnings == []
 
-    def test_untagged_row_reproduces_and_is_untouched(self, db, src):
+    def test_non_sentinel_rows_are_never_evaluated(self, db, src):
         _make_challenge_db(db, with_score=True)
-        # 1600 - 1800 would be -200, but issued before h1's rise -> base 1700.
+        # Untagged and legacy-tagged honest rows stay byte-identical; no
+        # API call, no lookup, no warning may fire for them.
         _insert(db, user_id='100', issue_time=200, name='Easy Problem',
                 delta=-100)
-        warnings = []
-        cur.reconstruct_deltas(db, warnings.append, **src)
-        assert db.execute('SELECT rating_delta FROM challenge').fetchone()[0] == -100
-        assert warnings == []
-
-    def test_legacy_tagged_row_normalized_by_exact_200(self, db, src):
-        _make_challenge_db(db, with_score=True)
-        # Untagged value would be 1600-1800 = -200; stored with flat penalty.
         _insert(db, user_id='100', issue_time=600, name='Easy Problem',
                 delta=-400)
+        calls = []
         warnings = []
-        stats = cur.reconstruct_deltas(db, warnings.append, **src)
-        assert db.execute('SELECT rating_delta FROM challenge').fetchone()[0] == -200
-        assert stats['normalized'] == 1
+        cur.reconstruct_deltas(
+            db, warnings.append,
+            api_fetch=lambda handle: calls.append(handle) or [(500, 1800)],
+            **src)
+        assert calls == []
         assert warnings == []
-
-    def test_unexpected_drift_keeps_stored_value(self, db, src):
-        _make_challenge_db(db, with_score=True)
-        _insert(db, user_id='100', issue_time=600, name='Easy Problem',
-                delta=-123)
-        warnings = []
-        cur.reconstruct_deltas(db, warnings.append, **src)
-        assert db.execute('SELECT rating_delta FROM challenge').fetchone()[0] == -123
-        assert len(warnings) == 1
-        assert 'unexpectedly' in warnings[0]
+        assert [row[0] for row in db.execute(
+            'SELECT rating_delta FROM challenge ORDER BY id')] == [-100, -400]
 
     def test_missing_problem_or_handle_skips_with_warning(self, db, src):
         _make_challenge_db(db, with_score=True)
@@ -225,33 +213,60 @@ class TestReconstructDeltas:
     def test_current_snapshot_approximates_when_history_short(self, db, src):
         _make_challenge_db(db, with_score=True)
         # h2 has no local history; current snapshot says 2100 -> base 2100.
+        # Synthetic score 17 is not derivable from the resulting unpenalised
+        # ladder value (delta 400 -> 23), so the snapshot provenance surfaces
+        # inside the cross-check warning.
         _insert(db, user_id='200', issue_time=600, name='Hard Problem',
                 delta=-(10**9) - 17)
         warnings = []
         stats = cur.reconstruct_deltas(db, warnings.append, **src)
         assert db.execute('SELECT rating_delta FROM challenge').fetchone()[0] == 400
-        assert stats['sentinel'] == 1
-        assert any('approximated' in w for w in warnings)
+        assert stats['reconstructed'] == 1
+        assert len(warnings) == 1
+        assert 'not derivable' in warnings[0]
+        assert 'snapshot' in warnings[0]
 
-    def test_api_fallback_only_for_coverage_gaps(self, db, src):
+    def test_api_is_the_primary_source_with_local_fallback(self, db, src):
         _make_challenge_db(db, with_score=True)
         _insert(db, user_id='100', issue_time=600, name='Hard Problem',
-                delta=-(10**9) - 12)          # covered locally
+                delta=-(10**9) - 12)          # answered by the API
         _insert(db, user_id='200', issue_time=600, name='Hard Problem',
-                delta=-(10**9) - 23)          # no local history -> API
+                delta=-(10**9) - 23)          # answered by the API
         calls = []
 
         def fake_api(handle):
             calls.append(handle)
+            if handle == 'h1':
+                return None   # API failure -> falls back to local history
             return [(100, 1900), (550, 2200)]
 
         warnings = []
         cur.reconstruct_deltas(db, warnings.append, api_fetch=fake_api, **src)
-        assert calls == ['h2']
+        assert calls == ['h1', 'h2']
         deltas = {row[0]: row[1] for row in db.execute(
             'SELECT id, rating_delta FROM challenge')}
-        assert 700 in deltas.values()     # h1: 2500-1800 from local history
-        assert 300 in deltas.values()     # h2: 2500-2200 from API history
+        # h1: API failed, local history base 1800 -> 2500-1800.
+        assert 700 in deltas.values()
+        # h2: API history base 2200 -> 2500-2200.
+        assert 300 in deltas.values()
+
+    def test_empty_api_history_proves_unrated_at_issue_time(self, db, src):
+        _make_challenge_db(db, with_score=True)
+        # Issued before any rated contest: live code used DEFAULT_RATING,
+        # clamped to a 1100 base -> 2500-1100 = 1400.
+        _insert(db, user_id='200', issue_time=50, name='Hard Problem',
+                delta=-(10**9) - 17)
+        warnings = []
+        stats = cur.reconstruct_deltas(
+            db, warnings.append, api_fetch=lambda handle: [], **src)
+        assert db.execute(
+            'SELECT rating_delta FROM challenge').fetchone()[0] == 1400
+        assert stats['reconstructed'] == 1
+        # Synthetic inconsistency: score 17 cannot arise from an
+        # unpenalised 23 (max reachable is 12 at one tag) -> loud warning,
+        # frozen score still authoritative.
+        assert len(warnings) == 1
+        assert 'not derivable' in warnings[0]
 
 
 class TestUpgradeEndToEnd:
@@ -280,6 +295,8 @@ class TestUpgradeEndToEnd:
         cache.execute("INSERT INTO rating_change VALUES ('h1', 500, 1800)")
 
         monkeypatch.setattr(cur, 'open_cache_db_readonly', lambda path: cache)
+        # Keep the API-first resolution deterministic (offline) in tests.
+        monkeypatch.setattr(cur, 'fetch_rating_history_api', lambda handle: None)
         log = tmp_path / 'migration_warnings.log'
         from tle.util.db._user_db_upgrades_part5 import upgrade_1_56_0
         upgrade_1_56_0(db, warning_log_path=str(log))
@@ -291,8 +308,9 @@ class TestUpgradeEndToEnd:
             'SELECT id, rating_delta, score FROM challenge')}
         # Sentinel row: exact score kept, honest delta reconstructed.
         assert rows[1] == (700, 12)
-        # Legacy -200 row: normalized, ladder score frozen at what was paid.
-        assert rows[2] == (-200, 1)
+        # Non-sentinel rows are never recalculated — the legacy tagged row
+        # keeps its stored geometry; its score is frozen at what was paid.
+        assert rows[2] == (-400, 1)
         assert not log.exists()   # nothing unresolvable here
 
     def test_upgrade_writes_warning_log_for_unresolvable_rows(self, db, tmp_path, monkeypatch):
@@ -300,6 +318,7 @@ class TestUpgradeEndToEnd:
         _insert(db, user_id='100', issue_time=600, name='Ghost Problem',
                 delta=-(10**9) - 3)
         monkeypatch.setattr(cur, 'open_cache_db_readonly', lambda path: None)
+        monkeypatch.setattr(cur, 'fetch_rating_history_api', lambda handle: None)
         log = tmp_path / 'migration_warnings.log'
         from tle.util.db._user_db_upgrades_part5 import upgrade_1_56_0
         upgrade_1_56_0(db, warning_log_path=str(log))

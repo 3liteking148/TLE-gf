@@ -1,19 +1,21 @@
-"""Offline-first repair helpers for upgrade 1.56.0 (challenge scores/deltas).
+"""Repair helpers for upgrade 1.56.0 (challenge scores/deltas).
 
 Between Jul 3 2026 and this migration, challenges issued with penalised tags
 stored ``rating_delta = -10**9 - score`` (a sentinel encoding) instead of the
-real rating difference, and older tagged challenges stored ``delta - 200``.
-This module restores honest data:
+real rating difference. This module restores honest data:
 
 * every row gets an explicit ``score`` column value (what was actually paid),
-* ``rating_delta`` is rewritten to ``problem_rating - clamped_rounded_base``
-  using the bot's own local caches (cache.db ``problem`` / ``rating_change``
-  tables, ``cf_user_cache`` snapshots), falling back to the Codeforces API
-  only for handles whose sentinel rows lack local history coverage.
+* sentinel ``rating_delta`` values are rewritten to
+  ``problem_rating - clamped_rounded_base`` using the Codeforces API
+  ``user.rating`` history as the authoritative point-in-time base (one call
+  per distinct handle owning sentinels), falling back to the bot's own local
+  caches (cache.db ``problem`` / ``rating_change`` tables, ``cf_user_cache``
+  snapshots) when the API cannot answer. Non-sentinel rows are never touched.
 
 Scores are never recomputed from repaired deltas — they are decoded from the
-stored values first, so nobody's points move. Rows that cannot be honestly
-reconstructed are left untouched and reported to a warning log; howgud
+stored values first, so nobody's points move; each reconstruction is instead
+cross-checked against the frozen score. Rows that cannot be honestly
+reconstructed stay untouched and are reported to a warning log; howgud
 filters implausible deltas defensively.
 """
 import datetime
@@ -31,12 +33,11 @@ logger = logging.getLogger(__name__)
 # bounded by the rating scale (roughly -2600..300), nothing comes near this.
 SENTINEL_THRESHOLD = -(10**8)
 _SENTINEL_BASE = -(10**9)
-# Flat shift tagged challenges carried between Aug 2021 and Jul 2026.
-LEGACY_TAG_PENALTY = 200
 DEFAULT_RATING = 800
-# CF anonymous API allows roughly one request per second.
+# CF anonymous API allows roughly one request per second. One call per
+# distinct handle covers every row that handle ever appeared in.
 _API_CALL_SLEEP_SECONDS = 1.0
-MAX_API_CALLS = 25
+MAX_API_CALLS = 200
 WARNING_LOG_FILENAME = 'migration_warnings.log'
 
 
@@ -186,28 +187,65 @@ def backfill_scores(db, warn):
 def reconstruct_deltas(db, warn, *, problems, histories, currents,
                        user_handles, api_fetch=None,
                        max_api_calls=MAX_API_CALLS):
-    """Pass B: rewrite cf-platform ``rating_delta`` values to honest ones.
+    """Pass B: rewrite sentinel ``rating_delta`` values to honest ones.
 
-    Per row, using the issue-time base replicated from the live code
-    (``max(1100, min(3000, round(rating, -2)))``):
+    Only sentinel rows are recalculated — every other row keeps its stored
+    delta exactly as issued (their geometry was never hacked, and bases
+    cannot be reproduced bit-for-bit later on). Per sentinel row, the
+    issue-time base is replicated from the live code
+    (``max(1100, min(3000, round(rating, -2)))``), with ``rating`` resolved
+    in priority order:
 
-    * sentinel rows always get the reconstructed delta (approximation noted
-      when only the current snapshot was available);
-    * untagged rows must reproduce their stored value exactly — mismatches
-      mean our reconstruction drifted (handle change, history gap), so the
-      original stays and a warning is written;
-    * legacy tagged rows are recognised by the exact ``+200`` offset and
-      normalised;
-    * anything else unexpected keeps its value and warns.
+    1. Codeforces API ``user.rating`` history at ``issue_time`` — one call
+       per distinct handle; an empty history proves the user was unrated,
+       which reproduces the live ``DEFAULT_RATING`` base exactly;
+    2. local ``rating_change`` history (cache.db);
+    3. current snapshot ratings (``cf_user_cache``, fresher cache.db rows).
+
+    Each reconstruction is cross-checked against the sentinel-extracted
+    score: the paid score must not exceed the unpenalised ladder value of
+    the repaired delta, and must be reachable by dividing that ladder value
+    by some tag count. Violations still rewrite (the sentinel must go) but
+    are reported loudly; the frozen ``score`` column always wins.
     """
     rows = db.execute(
         "SELECT id, user_id, issue_time, problem_name, rating_delta "
-        "FROM challenge WHERE platform = 'cf'").fetchall()
-    api_budget = max_api_calls
-    fetched_histories = {}
-    stats = {'sentinel': 0, 'normalized': 0, 'skipped': 0}
+        "FROM challenge WHERE platform = 'cf' "
+        "AND rating_delta <= ?",
+        (SENTINEL_THRESHOLD,)).fetchall()
+    budget = {'used': 0}
+    api_histories = {}
+    api_failures = set()
+    stats = {'reconstructed': 0, 'skipped': 0}
+
+    def api_history_for(handle):
+        if handle in api_histories:
+            return api_histories[handle]
+        if (api_fetch is None or handle in api_failures
+                or budget['used'] >= max_api_calls):
+            return None
+        if budget['used']:
+            time.sleep(_API_CALL_SLEEP_SECONDS)
+        budget['used'] += 1
+        try:
+            history = api_fetch(handle)
+        except Exception as error:
+            logger.warning('1.56.0: user.rating(%r) raised: %s',
+                           handle, error)
+            history = None
+        if history is None:
+            api_failures.add(handle)
+            return None
+        api_histories[handle] = history
+        return history
 
     for row_id, user_id, issue_time, problem_name, old_delta in rows:
+        extracted_score = decode_sentinel_score(old_delta)
+        if extracted_score is None:
+            warn(f'challenge {row_id}: sentinel delta {old_delta} does not '
+                 f'decode to a valid score; delta left unchanged')
+            stats['skipped'] += 1
+            continue
         problem_rating = problems.get(problem_name)
         if problem_rating is None:
             warn(f'challenge {row_id}: problem {problem_name!r} has no '
@@ -221,26 +259,28 @@ def reconstruct_deltas(db, warn, *, problems, histories, currents,
             stats['skipped'] += 1
             continue
 
-        history = histories.get(handle)
-        rating = rating_at(history, issue_time) if history else None
-        approximated = False
-        if rating is None and is_sentinel_delta(old_delta):
-            if api_fetch is not None and api_budget > 0:
-                if handle not in fetched_histories:
-                    if api_budget < max_api_calls:
-                        time.sleep(_API_CALL_SLEEP_SECONDS)
-                    api_budget -= 1
-                    fetched_histories[handle] = api_fetch(handle)
-                fetched = fetched_histories[handle]
-                if fetched:
-                    rating = rating_at(fetched, issue_time)
-                    if rating is not None:
-                        histories.setdefault(handle, []).extend(
-                            (t, r) for t, r in fetched
-                            if (t, r) not in histories.get(handle, []))
+        rating, source = None, None
+        api_history = api_history_for(handle)
+        if api_history is not None:
+            # An authoritative answer: either the rating after the last
+            # contest before issue_time, or proof the user was unrated then
+            # (the live code used DEFAULT_RATING for that case too).
+            rating = rating_at(api_history, issue_time)
+            if rating is None:
+                rating = DEFAULT_RATING
+            source = 'api'
         if rating is None:
-            rating = currents.get(handle)
-            approximated = True
+            # Only reachable when the API could not answer for this handle.
+            local = histories.get(handle)
+            rating = rating_at(local, issue_time) if local else None
+            if rating is not None:
+                source = 'local-history'
+        approximated = False
+        if rating is None:
+            current = currents.get(handle)
+            if current is not None:
+                rating, source, approximated = current, 'snapshot', True
+
         if rating is None:
             warn(f'challenge {row_id}: no rating known for handle '
                  f'{handle!r}; delta left unchanged')
@@ -248,23 +288,28 @@ def reconstruct_deltas(db, warn, *, problems, histories, currents,
             continue
 
         new_delta = problem_rating - clamp_base(rating)
-        if is_sentinel_delta(old_delta):
-            db.execute('UPDATE challenge SET rating_delta = ? WHERE id = ?',
-                       (new_delta, row_id))
-            stats['sentinel'] += 1
-            if approximated:
-                warn(f'challenge {row_id}: sentinel delta approximated as '
-                     f'{new_delta} from the current rating of {handle!r}')
-        elif new_delta == old_delta:
-            pass
-        elif new_delta == old_delta + LEGACY_TAG_PENALTY:
-            db.execute('UPDATE challenge SET rating_delta = ? WHERE id = ?',
-                       (new_delta, row_id))
-            stats['normalized'] += 1
+        db.execute('UPDATE challenge SET rating_delta = ? WHERE id = ?',
+                   (new_delta, row_id))
+        stats['reconstructed'] += 1
+
+        # Cross-check the frozen payout against the repaired geometry: a
+        # penalised score can never exceed the unpenalised ladder value and
+        # must be reachable by some tag-count division of it.
+        from tle.cogs._codeforces_helpers import _calculateGitgudScoreForDelta
+        base_score = _calculateGitgudScoreForDelta(new_delta)
+        achievable = any(
+            max(1, (base_score + t) // (t + 1)) == extracted_score
+            for t in range(1, base_score + 1))
+        note = f'(via {source}' + (
+            ', approximated from the current snapshot)' if approximated else ')')
+        if extracted_score > base_score or not achievable:
+            warn(f'challenge {row_id}: sentinel score {extracted_score} is '
+                 f'not derivable from the reconstructed delta {new_delta} '
+                 f'(unpenalised score {base_score}) {note}; keeping the '
+                 f'frozen score')
         else:
-            warn(f'challenge {row_id}: reconstructed delta {new_delta} '
-                 f'differs unexpectedly from stored {old_delta}; kept the '
-                 f'stored value')
-            stats['skipped'] += 1
+            logger.info('1.56.0: challenge %d: sentinel %d -> delta %d, '
+                        'score %d consistent %s',
+                        row_id, old_delta, new_delta, extracted_score, note)
     db.commit()
     return stats
