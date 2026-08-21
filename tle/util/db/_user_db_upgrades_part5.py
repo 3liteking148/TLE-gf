@@ -6,6 +6,7 @@ Split from ``_user_db_upgrades_part4.py`` to keep every module under the
 """
 import logging
 import os
+import time
 
 from tle.util.db._user_db_upgrade_registry import registry
 from tle.util.db import _challenge_upgrade_reconstruct as _cur
@@ -125,3 +126,119 @@ def _cache_db_path():
         return constants.CACHE_DB_FILE_PATH
     except Exception:
         return None
+
+
+@registry.register('1.57.0', 'Double AtCoder gitgud scores (early adopter reward)')
+def upgrade_1_57_0(db):
+    """Double the ranklist points of every completed AtCoder gitgud.
+
+    Early AtCoder adopters earned points under the same ladder as
+    Codeforces; this one-time reward doubles ``challenge.score`` for every
+    completed (``status = 0``) ``platform = 'ac'`` row and rebuilds each
+    affected user's all-time ``user_challenge.score`` aggregate from the
+    completed-row sum so the two stay consistent.
+
+    Deliberately untouched: ``rating_delta`` (howgud histograms keep their
+    honest rating meaning), ``num_completed`` / ``num_skipped``, skipped and
+    still-active rows, and every Codeforces row. Monthly leaderboards and
+    rpoll weights read ``challenge.score`` directly, so past months show the
+    doubled values too — that is inherent to a retroactive reward.
+
+    Runs exactly once via version stamping; fresh databases are stamped at
+    the latest version and never replay it.
+    """
+    logger.info('1.57.0: Doubling completed AtCoder challenge scores')
+    tables = {row[0] for row in db.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
+    if not {'challenge', 'user_challenge'} <= tables:
+        logger.info('1.57.0: challenge tables absent; nothing to migrate')
+        return
+    columns = {
+        row[1] for row in db.execute(
+            'PRAGMA table_info(challenge)').fetchall()}
+    if not {'platform', 'score'} <= columns:
+        logger.info(
+            '1.57.0: challenge table lacks platform/score; nothing to migrate')
+        return
+
+    doubled = db.execute(
+        "UPDATE challenge SET score = score * 2 "
+        "WHERE platform = 'ac' AND status = 0 AND score IS NOT NULL"
+    ).rowcount
+    rebuilt = db.execute('''
+        UPDATE user_challenge SET score = (
+            SELECT COALESCE(SUM(c.score), 0) FROM challenge c
+            WHERE c.user_id = user_challenge.user_id AND c.status = 0)
+        WHERE user_id IN (
+            SELECT DISTINCT user_id FROM challenge
+            WHERE platform = 'ac' AND status = 0)
+    ''').rowcount
+    db.commit()
+    logger.info('1.57.0: doubled %d solve(s), rebuilt %d aggregate(s)',
+                doubled, rebuilt)
+    logger.info('1.57.0: Upgrade complete')
+
+
+@registry.register('1.58.0', 'Retroactively multiply gitgud coin earnings x10')
+def upgrade_1_58_0(db):
+    """Top up every wallet by 9x its historical gitgud coin income.
+
+    Gitgud completions credit the betting wallet through
+    ``bet_adjust_balance(..., action='gitgud')``, so ``bet_wallet_txn`` is the
+    exact ledger of coins ever earned from gitguds. This migration credits
+    each wallet an extra ``9x`` that total — lifetime gitgud coin earnings
+    become an effective x10 — and writes one audit transaction per wallet so
+    the adjustment stays visible in wallet history.
+
+    Platform-agnostic by design: AtCoder-origin grants get the same x10 as
+    Codeforces ones and never compound with 1.57.0's score doubling (that
+    migration touches only the challenge tables). The flat daily claim is not
+    affected. Guarded against re-application: any existing
+    ``gitgud_retro_10x`` transaction skips the whole pass.
+    """
+    logger.info('1.58.0: Retroactively topping up gitgud coin earnings')
+    tables = {row[0] for row in db.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
+    if not {'bet_wallet', 'bet_wallet_txn'} <= tables:
+        logger.info('1.58.0: betting tables absent; nothing to migrate')
+        return
+    already = db.execute(
+        "SELECT 1 FROM bet_wallet_txn WHERE action = 'gitgud_retro_10x' "
+        'LIMIT 1').fetchone()
+    if already:
+        logger.info('1.58.0: retro top-up already applied; skipping')
+        return
+
+    db.execute('''
+        CREATE TEMP TABLE _gitgud_retro_earned AS
+        SELECT guild_id, user_id, SUM(amount) AS earned
+        FROM bet_wallet_txn
+        WHERE action = 'gitgud'
+        GROUP BY guild_id, user_id
+    ''')
+    topped = db.execute('''
+        UPDATE bet_wallet SET balance = balance + (
+            SELECT CAST(9 * e.earned AS INTEGER)
+            FROM _gitgud_retro_earned e
+            WHERE e.guild_id = bet_wallet.guild_id
+              AND e.user_id = bet_wallet.user_id)
+        WHERE EXISTS (
+            SELECT 1 FROM _gitgud_retro_earned e2
+            WHERE e2.guild_id = bet_wallet.guild_id
+              AND e2.user_id = bet_wallet.user_id)
+    ''').rowcount
+    db.execute('''
+        INSERT INTO bet_wallet_txn
+            (guild_id, user_id, actor_id, action, amount, balance_after,
+             market_id, note, created_at)
+        SELECT e.guild_id, e.user_id, NULL, 'gitgud_retro_10x',
+               CAST(9 * e.earned AS INTEGER), w.balance, NULL,
+               'retroactive x10 gitgud earnings', ?
+        FROM _gitgud_retro_earned e
+        JOIN bet_wallet w
+          ON w.guild_id = e.guild_id AND w.user_id = e.user_id
+    ''', (time.time(),))
+    db.execute('DROP TABLE _gitgud_retro_earned')
+    db.commit()
+    logger.info('1.58.0: topped up %d wallet(s)', topped)
+    logger.info('1.58.0: Upgrade complete')

@@ -209,7 +209,7 @@ class TestMigration1550:
             'SELECT problem_name, p_index, platform FROM challenge'
         ).fetchone()
         assert row == ('Old Problem', 'A', 'cf')
-        assert registry.get_current_version(conn) == '1.56.0'
+        assert registry.get_current_version(conn) == '1.58.0'
         registry.run(conn)  # idempotent
         conn.close()
 
@@ -242,7 +242,7 @@ class TestMigration1550:
         conn.close()
 
         db = UserDbConn(dbfile)
-        assert registry.get_current_version(db.conn) == '1.56.0'
+        assert registry.get_current_version(db.conn) == '1.58.0'
         row = db.conn.execute(
             'SELECT problem_name, p_index, platform FROM challenge'
         ).fetchone()
