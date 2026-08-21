@@ -209,7 +209,7 @@ class TestMigration1550:
             'SELECT problem_name, p_index, platform FROM challenge'
         ).fetchone()
         assert row == ('Old Problem', 'A', 'cf')
-        assert registry.get_current_version(conn) == '1.55.0'
+        assert registry.get_current_version(conn) == '1.56.0'
         registry.run(conn)  # idempotent
         conn.close()
 
@@ -217,6 +217,7 @@ class TestMigration1550:
         columns = {row[1] for row in db.conn.execute(
             'PRAGMA table_info(challenge)').fetchall()}
         assert 'platform' in columns
+        assert 'score' in columns
         # Fresh DBs use the same layout as migrated legacy DBs.
         assert 'problem_name' in columns
         assert 'p_index' in columns
@@ -241,7 +242,7 @@ class TestMigration1550:
         conn.close()
 
         db = UserDbConn(dbfile)
-        assert registry.get_current_version(db.conn) == '1.55.0'
+        assert registry.get_current_version(db.conn) == '1.56.0'
         row = db.conn.execute(
             'SELECT problem_name, p_index, platform FROM challenge'
         ).fetchone()

@@ -12,7 +12,7 @@ from tle.util import codeforces_api as cf
 from tle.util import codeforces_common as cf_common
 from tle.cogs._gitgud import GitgudMixin
 from tle.cogs._codeforces_helpers import (
-    _gitgudTagPenaltyDelta,
+    _gitgudTagPenaltyScore,
     _gitgudPenalisedTagCount,
     CodeforcesCogError,
 )
@@ -110,8 +110,14 @@ class _CfBackend:
         return problems
 
     def delta(self, problem, base, tags=(), bantags=()):
+        """Return ``(rating_delta, score)`` for the challenge.
+
+        ``rating_delta`` stays raw (``problem.rating - base``) — the penalty
+        only affects the score, which is stored in the ``score`` column.
+        """
         delta = problem.rating - base
-        return _gitgudTagPenaltyDelta(delta, _gitgudPenalisedTagCount(tags, bantags))
+        return delta, _gitgudTagPenaltyScore(
+            delta, _gitgudPenalisedTagCount(tags, bantags))
 
     async def fetch_participated(self, handle):
         resp = await cf.user.rating(handle=handle)

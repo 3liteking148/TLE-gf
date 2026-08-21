@@ -76,7 +76,9 @@ class FakeRpollDb:
                 contest_id    INTEGER NOT NULL,
                 p_index       INTEGER NOT NULL,
                 rating_delta  INTEGER NOT NULL,
-                status        INTEGER NOT NULL
+                status        INTEGER NOT NULL,
+                platform      TEXT NOT NULL DEFAULT 'cf',
+                score         INTEGER
             )
         ''')
         self.conn.execute('''
@@ -293,12 +295,16 @@ class FakeRpollDb:
         )
         self.conn.commit()
 
-    def _seed_monthly_gitgud_entry(self, user_id, issue_time, finish_time, rating_delta, problem_name='P'):
+    def _seed_monthly_gitgud_entry(self, user_id, issue_time, finish_time,
+                                   rating_delta, problem_name='P', score=None):
+        if score is None:
+            from tle.cogs._codeforces_helpers import _calculateGitgudScoreForDelta
+            score = _calculateGitgudScoreForDelta(rating_delta)
         self.conn.execute(
             'INSERT INTO challenge '
-            '(user_id, issue_time, finish_time, problem_name, contest_id, p_index, rating_delta, status) '
-            'VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-            (str(user_id), issue_time, finish_time, problem_name, 1, 0, rating_delta, 0)
+            '(user_id, issue_time, finish_time, problem_name, contest_id, p_index, rating_delta, status, platform, score) '
+            'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            (str(user_id), issue_time, finish_time, problem_name, 1, 0, rating_delta, 0, 'cf', score)
         )
         self.conn.commit()
 

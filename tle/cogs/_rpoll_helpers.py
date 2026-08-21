@@ -130,8 +130,8 @@ def _get_monthly_gitgud_score(user_id, created_at):
     entries = cf_common.user_db.get_gudgitters_timerange_for_user(user_id, start_time, end_time)
 
     score = 0
-    for rating_delta, issue_time in entries:
-        entry_score = _calculate_gitgud_score_for_delta(int(rating_delta))
+    for entry_score, issue_time in entries:
+        entry_score = int(entry_score)
         if more_points_active and int(issue_time) >= more_points_time:
             score += 2 * entry_score
         else:

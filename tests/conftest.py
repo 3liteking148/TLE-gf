@@ -11,8 +11,14 @@ import importlib
 import sys
 import types
 import os
+import tempfile
 
 _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# Migration 1.56.0 appends unresolvable-row warnings to a log file; keep test
+# runs from dropping that file into the repo root.
+os.environ.setdefault('TLE_MIGRATION_WARNING_LOG', os.path.join(
+    tempfile.gettempdir(), 'tle_migration_warnings_test.log'))
 
 # ── Step 1: Stub external dependencies (discord.py, aiohttp, matplotlib, ...) ──
 # Importing this module performs the sys.modules stubbing as a side effect; it

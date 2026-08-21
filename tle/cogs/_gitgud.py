@@ -25,7 +25,6 @@ from tle.util import discord_common
 from tle.util.db.user_db_conn import Gitgud
 from tle.util import paginator
 from tle.cogs._codeforces_helpers import (
-    _calculateGitgudScoreForDelta,
     CodeforcesCogError,
     _GITGUD_NO_SKIP_TIME,
     _ONE_WEEK_DURATION,
@@ -104,19 +103,19 @@ class GitgudMixin:
         user_id = ctx.message.author.id
         active = cf_common.user_db.check_challenge(user_id)
         if active is not None:
-            _, _, problem_key, contest_id, _, platform, p_index = active
+            _, _, problem_key, contest_id, _, platform, p_index, _ = active
             backend = self._backend_for_platform(platform)
             name = self._active_problem_name(backend, problem_key)
             url = backend.active_url(contest_id, problem_key, p_index)
             raise CodeforcesCogError(f'You have an active challenge {name} at {url}')
 
-    async def _gitgud(self, ctx, handle, problem, delta, hidden, backend):
+    async def _gitgud(self, ctx, handle, problem, delta, score, hidden, backend):
         # The caller of this function is responsible for calling `_validate_gitgud_status` first.
         user_id = ctx.author.id
 
         issue_time = datetime.datetime.now().timestamp()
         rc = cf_common.user_db.new_challenge(
-            user_id, issue_time, problem, delta, backend.platform)
+            user_id, issue_time, problem, delta, score, backend.platform)
         if rc != 1:
             raise CodeforcesCogError('Your challenge has already been added to the database!')
 
@@ -127,7 +126,7 @@ class GitgudMixin:
         # more points seasons start at April 1st 2023 (timestamp: 1680300000) and is only active in the last 7 days of the month
         morePointsActive = self._check_more_points_active(now_time, start_time, end_time)
 
-        points = _calculateGitgudScoreForDelta(delta)
+        points = score
         monthlypoints = 2 * points if morePointsActive else points
 
         title = f'{problem.index}. {problem.name}'
@@ -146,8 +145,8 @@ class GitgudMixin:
         """Shared completion tail for both platforms: complete the challenge,
         credit points (with month-end doubling) and award betting coins."""
         user_id = ctx.message.author.id
-        challenge_id, issue_time, _, _, delta, _, _ = active
-        score = _calculateGitgudScoreForDelta(delta)
+        challenge_id, issue_time = active[0], active[1]
+        score = active[7]
         finish_time = int(datetime.datetime.now().timestamp())
         rc = cf_common.user_db.complete_challenge(user_id, challenge_id, finish_time, score)
 
@@ -205,11 +204,12 @@ class GitgudMixin:
         # Penalised tags divide points by (tag count + 1), rounded up.
         # Hardening division filters such as +div1 and ~div3/~div4/~edu are
         # exempt; other requested tags and bans count (see
-        # _gitgudPenalisedTagCount). AtCoder has no tags, so its delta stays
-        # raw.
+        # _gitgudPenalisedTagCount). The raw delta is stored untouched; the
+        # (possibly off-ladder) score goes into its own column. AtCoder has no
+        # tags, so its delta stays raw too.
         problem = problems[choice]
-        delta = backend.delta(problem, delta_base, tags, bantags)
-        await self._gitgud(ctx, handle, problem, delta, hidden, backend)
+        delta, score = backend.delta(problem, delta_base, tags, bantags)
+        await self._gitgud(ctx, handle, problem, delta, score, hidden, backend)
 
     async def _gotgud_impl(self, ctx, submission_url=None):
         user_id = ctx.message.author.id
@@ -232,7 +232,7 @@ class GitgudMixin:
         backend = self._backend_for_platform(active[5])
         await backend.validate_handle(ctx, self.converter)
 
-        challenge_id, issue_time, _, _, delta, _, _ = active
+        challenge_id, issue_time = active[0], active[1]
         finish_time = int(datetime.datetime.now().timestamp())
         if finish_time - issue_time < _GITGUD_NO_SKIP_TIME:
             skip_time = cf_common.pretty_time_format(issue_time + _GITGUD_NO_SKIP_TIME - finish_time)
@@ -254,13 +254,13 @@ class GitgudMixin:
 
     async def _gitlog_impl(self, ctx, member):
         def make_line(entry):
-            issue, finish, problem_key, delta, _, platform = entry
+            issue, finish, problem_key, _, _, platform, score = entry
             name, rating, url = self._problem_ref(
                 self._backend_for_platform(platform), problem_key)
             line = f'[{name}]({url})\N{EN SPACE}[{rating}]' if url else f'`{name}`\N{EN SPACE}[{rating}]'
             if finish:
                 time_str = cf_common.days_ago(finish)
-                points = f'{_calculateGitgudScoreForDelta(delta):+}'
+                points = f'{int(score):+}'
                 line += f'\N{EN SPACE}{time_str}\N{EN SPACE}[{points}]'
             return line
 
@@ -276,9 +276,8 @@ class GitgudMixin:
             raise CodeforcesCogError(f'{member.mention} has no gitgud history.')
         score = 0
         for entry in data:
-            issue, finish, problem_key, delta, status, platform = entry
-            if finish:
-                score+=_calculateGitgudScoreForDelta(delta)
+            if entry[1]:
+                score += int(entry[6])
 
 
         pages = [make_page(chunk, score) for chunk in paginator.chunkify(data, 10)]
@@ -286,13 +285,13 @@ class GitgudMixin:
 
     async def _nogudlog_impl(self, ctx, member):
         def make_line(entry):
-            issue, finish, problem_key, delta, _, platform = entry
+            issue, finish, problem_key, _, _, platform, _ = entry
             name, rating, url = self._problem_ref(
                 self._backend_for_platform(platform), problem_key)
             line = f'[{name}]({url})\N{EN SPACE}[{rating}]' if url else f'`{name}`\N{EN SPACE}[{rating}]'
             if finish:
                 time_str = cf_common.days_ago(finish)
-                points = f'{_calculateGitgudScoreForDelta(delta):+}'
+                points = f'{int(entry[6]):+}'
                 line += f'\N{EN SPACE}{time_str}\N{EN SPACE}[{points}]'
             return line
 
@@ -337,8 +336,9 @@ class GitgudMixin:
         if choice > 0 and choice <= len(problems):
             await self._validate_gitgud_status(ctx)
             problem = problems[choice - 1]
-            await self._gitgud(ctx, handle, problem,
-                               backend.delta(problem, delta_base, (), ()), False, backend)
+            delta, score = backend.delta(problem, delta_base, (), ())
+            await self._gitgud(ctx, handle, problem, delta, score,
+                               False, backend)
         else:
             problems = problems[:500]
 

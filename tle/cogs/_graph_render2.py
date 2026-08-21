@@ -7,6 +7,7 @@ Split out of ``tle/cogs/graphs.py`` to keep the cog file under 500 lines.
 """
 
 import bisect
+import logging
 import time
 
 import discord
@@ -21,6 +22,8 @@ from tle.util import discord_common
 from tle.util import graph_common as gc
 
 from tle.cogs._graph_helpers import GraphCogError, _rating_at_percentile
+
+logger = logging.getLogger(__name__)
 
 # A user is considered active if the duration since his last contest is not more than this
 CONTEST_ACTIVE_TIME_CUTOFF = 90 * 24 * 60 * 60  # 90 days
@@ -245,6 +248,15 @@ async def howgud(cog, ctx, *members: discord.Member):
     deltas = [[x[0] for x in cf_common.user_db.howgud(member.id)] for member in members]
     labels = [gc.StrWrap(f'{member.display_name}: {len(delta)}')
               for member, delta in zip(members, deltas)]
+
+    # Real deltas are bounded by the rating scale (roughly -2600..300). Anything
+    # beyond this is unreconstructed legacy data — exclude it so the dynamic
+    # binning below cannot explode, and say how many points were dropped.
+    _MAX_PLOTTABLE = 10**6
+    dropped = sum(1 for delta in deltas for d in delta if abs(d) > _MAX_PLOTTABLE)
+    if dropped:
+        logger.warning('howgud: %d challenge(s) with implausible rating_delta excluded from plot', dropped)
+    deltas = [[d for d in delta if abs(d) <= _MAX_PLOTTABLE] for delta in deltas]
 
     #get bins dynamically
     min_delta = min([min(delta, default=0) for delta in deltas])

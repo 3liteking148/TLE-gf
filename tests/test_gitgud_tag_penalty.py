@@ -2,14 +2,16 @@
 
 ``;gitgud`` divides normal challenge points by ``penalised_tag_count + 1``,
 rounded up and never below 1. The numeric rating argument is not a tag; only
-parsed ``+`` and ``~`` filters can affect the tag count.
+parsed ``+`` and ``~`` filters can affect the tag count. The penalty touches
+only the stored ``score`` — ``rating_delta`` keeps its raw meaning
+(``problem rating - base``) so howgud plots stay honest.
 """
 import pytest
 
 from tle.cogs._codeforces_helpers import (
     _calculateGitgudScoreForDelta,
     _gitgudPenalisedTagCount,
-    _gitgudTagPenaltyDelta,
+    _gitgudTagPenaltyScore,
     _GITGUD_SCORE_DISTRIB,
 )
 from tle.util import cf_format
@@ -18,8 +20,7 @@ from tle.util import cf_format
 def _score(base_delta, num_tags):
     """Score actually awarded for a challenge at ``base_delta`` requested with
     ``num_tags`` penalised tags -- the composition the live code performs."""
-    return _calculateGitgudScoreForDelta(
-        _gitgudTagPenaltyDelta(base_delta, num_tags))
+    return _gitgudTagPenaltyScore(base_delta, num_tags)
 
 
 # Deltas that land squarely on each rung of the score ladder.
@@ -30,13 +31,13 @@ _LOW_DELTA = -100       # -> 5
 
 
 class TestNoTagsIsUntouched:
-    def test_zero_tags_returns_base_delta_unchanged(self):
-        assert _gitgudTagPenaltyDelta(_MAX_DELTA, 0) == _MAX_DELTA
-        assert _gitgudTagPenaltyDelta(-1234, 0) == -1234
-
     def test_zero_tags_keeps_full_score(self):
         assert _score(_MAX_DELTA, 0) == 23
         assert _score(_MID_DELTA, 0) == 8
+
+    def test_score_matches_plain_ladder_without_tags(self):
+        for delta in (-5000, -400, -100, 0, 200, 300, 9000):
+            assert _score(delta, 0) == _calculateGitgudScoreForDelta(delta)
 
 
 class TestTagPenalty:
@@ -85,6 +86,37 @@ class TestTagPenalty:
             _gitgudPenalisedTagCount([], ['div3', 'div4'])) == 17
         assert _score(2400 - 2200, _gitgudPenalisedTagCount(['dp'], [])) == 9
         assert _score(2500 - 2200, _gitgudPenalisedTagCount(['div1'], [])) == 23
+
+
+class TestDeltaStaysRaw:
+    """The penalty must never distort ``rating_delta`` again."""
+
+    def test_sentinel_encoding_is_gone(self):
+        import tle.cogs._codeforces_helpers as helpers
+        assert not hasattr(helpers, '_GITGUD_EXACT_SCORE_DELTA_BASE')
+        assert not hasattr(helpers, '_gitgudEncodeExactScoreAsDelta')
+        assert not hasattr(helpers, '_gitgudDecodeExactScoreDelta')
+        assert not hasattr(helpers, '_gitgudTagPenaltyDelta')
+
+    def test_cf_backend_returns_raw_delta_and_exact_score(self):
+        from tle.cogs._codeforces_gitgud import _CfBackend
+
+        class _Problem:
+            rating = 2500
+
+        delta, score = _CfBackend().delta(_Problem(), 2200, ['dp'], [])
+        assert delta == 300
+        assert score == 12   # ceil(23 / 2): off-ladder, stored in score column
+
+    def test_ac_backend_returns_raw_delta_and_ladder_score(self):
+        from tle.cogs._atcoder_gitgud import _AcBackend
+
+        class _Problem:
+            difficulty = 1800
+
+        delta, score = _AcBackend().delta(_Problem(), 1600, [], [])
+        assert delta == 200
+        assert score == 17
 
 
 class TestPenalisedTagCount:

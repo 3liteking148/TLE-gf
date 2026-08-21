@@ -14,7 +14,10 @@ AtCoder and raise explicitly.
 from tle.util import atcoder_api
 from tle.util import codeforces_common as cf_common
 from tle.cogs._gitgud import GitgudMixin
-from tle.cogs._codeforces_helpers import CodeforcesCogError
+from tle.cogs._codeforces_helpers import (
+    CodeforcesCogError,
+    _calculateGitgudScoreForDelta,
+)
 
 
 class AtcoderGitgudMixin(GitgudMixin):
@@ -182,7 +185,10 @@ class _AcBackend:
         return problems
 
     def delta(self, problem, base, tags=(), bantags=()):
-        return problem.difficulty - base
+        """Return ``(rating_delta, score)``; AtCoder has no tag penalty, so
+        the score is the plain ladder value of the raw delta."""
+        delta = problem.difficulty - base
+        return delta, _calculateGitgudScoreForDelta(delta)
 
     async def fetch_participated(self, handle):
         raise CodeforcesCogError(

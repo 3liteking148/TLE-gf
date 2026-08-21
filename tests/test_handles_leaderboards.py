@@ -167,7 +167,8 @@ def test_monthlygudgitters_uses_paginator_and_month_start_rating(monkeypatch):
     guild = _FakeGuild(1, members)
     ctx = SimpleNamespace(author=members[0], guild=guild, channel=object())
     user_db = _FakeUserDb(
-        monthly_entries=[('1', 0, 1741000000), ('2', 0, 1741000000)],
+        # (user_id, score, issue_time) — the challenge row's explicit score column
+        monthly_entries=[('1', 8, 1741000000), ('2', 8, 1741000000)],
         handles={'1': 'h1', '2': 'h2'},
         users={'h1': User(2000), 'h2': User(2200)},
     )
@@ -257,7 +258,8 @@ def test_monthlygitgudders_sends_monthly_image_rankings(monkeypatch):
         send=fake_send,
     )
     user_db = _FakeUserDb(
-        monthly_entries=[('1', 0, 1741000000), ('2', 0, 1741000000)],
+        # (user_id, score, issue_time) — the challenge row's explicit score column
+        monthly_entries=[('1', 8, 1741000000), ('2', 8, 1741000000)],
         handles={'1': 'h1', '2': 'h2'},
         users={'h1': User(2000), 'h2': User(2200)},
     )

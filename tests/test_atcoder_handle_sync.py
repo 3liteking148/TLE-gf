@@ -87,7 +87,7 @@ def test_sync_migration_is_registered_after_atcoder_table():
     assert '1.53.0' in versions
     assert '1.54.0' in versions
     assert versions.index('1.54.0') > versions.index('1.53.0')
-    assert registry.latest_version == '1.55.0'
+    assert registry.latest_version == '1.56.0'
 
 
 def test_fresh_db_schema_has_sync_column():

@@ -23,7 +23,8 @@ class ChallengeDbMixin:
                 "p_index"	INTEGER NOT NULL,
                 "rating_delta"	INTEGER NOT NULL,
                 "status"	INTEGER NOT NULL,
-                "platform"	TEXT NOT NULL DEFAULT 'cf'
+                "platform"	TEXT NOT NULL DEFAULT 'cf',
+                "score"	INTEGER
             )
         ''')
         self.conn.execute('''
@@ -38,12 +39,20 @@ class ChallengeDbMixin:
             )
         ''')
 
-    def new_challenge(self, user_id, issue_time, prob, delta, platform='cf'):
+    def new_challenge(self, user_id, issue_time, prob, delta, score=None,
+                      platform='cf'):
+        """Insert a challenge. ``rating_delta`` keeps its raw meaning
+        (``problem rating - base``); ``score`` is the exact awarded points
+        (possibly off-ladder for tag penalties). When ``score`` is omitted it
+        defaults to the plain ladder value of ``delta``."""
+        if score is None:
+            from tle.cogs._codeforces_helpers import _calculateGitgudScoreForDelta
+            score = _calculateGitgudScoreForDelta(delta)
         query1 = '''
             INSERT INTO challenge
-            (user_id, issue_time, problem_name, contest_id, p_index, rating_delta, status, platform)
+            (user_id, issue_time, problem_name, contest_id, p_index, rating_delta, status, platform, score)
             VALUES
-            (?, ?, ?, ?, ?, ?, 1, ?)
+            (?, ?, ?, ?, ?, ?, 1, ?, ?)
         '''
         query2 = '''
             INSERT OR IGNORE INTO user_challenge (user_id, score, num_completed, num_skipped)
@@ -59,7 +68,7 @@ class ChallengeDbMixin:
         # (e.g. abc383_a) for AtCoder.
         contest_id, problem_key = prob.contestId, prob.key
         cur.execute(query1, (user_id, issue_time, problem_key, contest_id,
-                             prob.index, delta, platform))
+                             prob.index, delta, platform, score))
         last_id, rc = cur.lastrowid, cur.rowcount
         if rc != 1:
             self.conn.rollback()
@@ -81,25 +90,20 @@ class ChallengeDbMixin:
         if res is None: return None
         c_id, issue_time = res
         query2 = '''
-            SELECT problem_name, contest_id, rating_delta, platform, p_index FROM challenge
+            SELECT problem_name, contest_id, rating_delta, platform, p_index, score FROM challenge
             WHERE id = ?
         '''
         res = self.conn.execute(query2, (c_id,)).fetchone()
         if res is None: return None
         # (c_id, issue_time, problem_key, contest_id, rating_delta, platform,
-        #  p_index) — p_index appended last so the positional contract of the
-        # consumer unpacking stays stable as the schema evolved.
-        return c_id, issue_time, res[0], res[1], res[2], res[3], res[4]
-
-    def get_gudgitters_last(self, timestamp):
-        query = '''
-            SELECT user_id, rating_delta FROM challenge WHERE finish_time >= ? ORDER BY user_id
-        '''
-        return self.conn.execute(query, (timestamp,)).fetchall()
+        #  p_index, score) — p_index appended last so the positional contract of the
+        # consumer unpacking stays stable as the schema evolved; score appended
+        # after that (migration 1.56.0).
+        return c_id, issue_time, res[0], res[1], res[2], res[3], res[4], res[5]
 
     def get_gudgitters_timerange(self, timestampStart, timestampEnd):
         query = '''
-            SELECT user_id, rating_delta, issue_time FROM challenge WHERE finish_time >= ? AND finish_time <= ? ORDER BY user_id
+            SELECT user_id, score, issue_time FROM challenge WHERE finish_time >= ? AND finish_time <= ? ORDER BY user_id
         '''
         return self.conn.execute(query, (timestampStart,timestampEnd)).fetchall()
 
@@ -118,7 +122,7 @@ class ChallengeDbMixin:
 
     def get_gudgitters_timerange_for_user(self, user_id, timestamp_start, timestamp_end):
         query = '''
-            SELECT rating_delta, issue_time
+            SELECT score, issue_time
             FROM challenge
             WHERE user_id = ? AND finish_time >= ? AND finish_time <= ?
             ORDER BY issue_time
@@ -141,13 +145,13 @@ class ChallengeDbMixin:
     def gitlog(self, user_id):
         from tle.util.db.user_db_conn import Gitgud
         query = f'''
-            SELECT issue_time, finish_time, problem_name, rating_delta, status, platform
+            SELECT issue_time, finish_time, problem_name, rating_delta, status, platform, score
             FROM challenge WHERE user_id = ? AND status != {Gitgud.FORCED_NOGUD}
             ORDER BY issue_time DESC
         '''
         return self.conn.execute(query, (user_id,)).fetchall()
 
-    def complete_challenge(self, user_id, challenge_id, finish_time, delta):
+    def complete_challenge(self, user_id, challenge_id, finish_time, score):
         from tle.util.db.user_db_conn import Gitgud
         query1 = f'''
             UPDATE challenge SET finish_time = ?, status = {Gitgud.GOTGUD}
@@ -162,7 +166,7 @@ class ChallengeDbMixin:
         if rc != 1:
             self.conn.rollback()
             return 0
-        rc = self.conn.execute(query2, (delta, user_id, challenge_id)).rowcount
+        rc = self.conn.execute(query2, (score, user_id, challenge_id)).rowcount
         if rc != 1:
             self.conn.rollback()
             return 0

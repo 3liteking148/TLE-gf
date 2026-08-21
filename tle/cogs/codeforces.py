@@ -9,7 +9,6 @@ from tle import constants
 from tle.util import codeforces_common as cf_common
 from tle.util import discord_common
 from tle.cogs._codeforces_helpers import (
-    _calculateGitgudScoreForDelta,
     CodeforcesCogError,
     getEloWinProbability as _getEloWinProbability,
     composeRatings as _composeRatings,
