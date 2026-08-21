@@ -131,6 +131,39 @@ class Codeforces(AtcoderGitgudMixin, CodeforcesGitgudMixin,
     async def nogud(self, ctx):
         await self._nogud_impl(ctx)
 
+    # Undocumented easter-egg aliases for ;gotgud / ;gitgud. Deliberately
+    # hidden and absent from every help listing; each mirrors its canonical
+    # command's signature so parsing and the gitgud user guard stay identical.
+    @commands.command(hidden=True)
+    @cf_common.user_guard(group='gitgud')
+    async def gotshit(self, ctx, submission_url: str = None):
+        await self._gotgud_impl(ctx, submission_url)
+
+    @commands.command(hidden=True)
+    @cf_common.user_guard(group='gitgud')
+    async def gotfucked(self, ctx, submission_url: str = None):
+        await self._gotgud_impl(ctx, submission_url)
+
+    @commands.command(hidden=True)
+    @cf_common.user_guard(group='gitgud')
+    async def gotfkd(self, ctx, submission_url: str = None):
+        await self._gotgud_impl(ctx, submission_url)
+
+    @commands.command(hidden=True)
+    @cf_common.user_guard(group='gitgud')
+    async def gitshit(self, ctx, *args):
+        await self._gitgud_impl(ctx, args)
+
+    @commands.command(hidden=True)
+    @cf_common.user_guard(group='gitgud')
+    async def gitfucked(self, ctx, *args):
+        await self._gitgud_impl(ctx, args)
+
+    @commands.command(hidden=True)
+    @cf_common.user_guard(group='gitgud')
+    async def gitfkd(self, ctx, *args):
+        await self._gitgud_impl(ctx, args)
+
     @commands.command(brief='Force skip a challenge')
     @cf_common.user_guard(group='gitgud')
     @commands.has_any_role(*constants.TLE_ADMIN, *constants.TLE_MODERATOR)
