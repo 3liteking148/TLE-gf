@@ -102,6 +102,19 @@ class TestAtcoderGitgudFlow:
         _, embed = ctx.sent[0]
         assert embed.fields[0]['value'] == '||1200||'
 
+    def test_gitgud_atcoder_accepts_low_range(self, db, cog, monkeypatch):
+        # '0-1800' used to be silently discarded by an arg[0:3].isdigit()
+        # slice check; it must actually constrain the pool now.
+        self._set_handle(db)
+        self._set_pool(cog, _ac_problem('abc383_a', difficulty=100))
+        self._patch_atcoder(monkeypatch)
+
+        ctx = self._ctx()
+        _run(cog._gitgud_impl(ctx, ('+atcoder', '0-1800')))
+
+        _, embed = ctx.sent[0]
+        assert embed.fields[0]['value'] == '||100||'
+
     def test_gitgud_atcoder_rejects_tags(self, db, cog, monkeypatch):
         self._set_handle(db)
         self._patch_atcoder(monkeypatch)

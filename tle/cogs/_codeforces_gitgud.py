@@ -14,6 +14,9 @@ from tle.cogs._gitgud import GitgudMixin
 from tle.cogs._codeforces_helpers import (
     _gitgudTagPenaltyScore,
     _gitgudPenalisedTagCount,
+    _checkGitgudTags,
+    _MULTIWORD_TAG_HINT,
+    _parseGitgudRatingArgs,
     CodeforcesCogError,
 )
 
@@ -22,6 +25,13 @@ class CodeforcesGitgudMixin(GitgudMixin):
     """Marker subclass so the ``Codeforces`` cog and the gitgud tests can
     inherit the generic implementation under the original Codeforces name."""
     pass
+
+
+def _cfTagVocabulary():
+    """Every tag string on any cached Codeforces problem, including the
+    division tags the cache synthesizes (div1..div4, edu)."""
+    return {tag for prob in cf_common.cache2.problem_cache.problems
+            for tag in prob.tags}
 
 
 class _CfBackend:
@@ -36,23 +46,12 @@ class _CfBackend:
         ``(srating, erating, hidden, tags, bantags)``."""
         tags = cf_common.parse_tags(args, prefix='+')
         bantags = cf_common.parse_tags(args, prefix='~')
-        srating = rating
-        erating = rating
-        hidden = False
-        for arg in args:
-            if arg[0] == '-':
-                raise CodeforcesCogError('Wrong rating requested. Remember gitgud now uses rating (800-3500) instead of delta.')
-            if arg[0:3].isdigit():
-                ratings = arg.split("-")
-                srating = int(ratings[0])
-                if (len(ratings) > 1):
-                    erating = int(ratings[1])
-                    hidden = True
-                else:
-                    erating = srating
-
-        if erating < 800 or srating > 3500:
-            raise CodeforcesCogError('Wrong rating requested. Remember gitgud now uses rating (800-3500) instead of delta.')
+        error = ('Wrong rating requested. Remember gitgud now uses rating '
+                 '(800-3500) instead of delta.')
+        srating, erating, hidden = _parseGitgudRatingArgs(
+            args, rating, error, bounds=(800, 3500),
+            junk_hint=_MULTIWORD_TAG_HINT)
+        _checkGitgudTags(tags, bantags, _cfTagVocabulary())
         return srating, erating, hidden, tags, bantags
 
     async def resolve_handle(self, ctx, converter):
@@ -140,17 +139,11 @@ class _CfBackend:
         tags = cf_common.parse_tags(args, prefix='+')
         bantags = cf_common.parse_tags(args, prefix='~')
 
-        srating = rating
-        erating = rating
+        srating, erating, _ = _parseGitgudRatingArgs(
+            args, rating, 'Wrong rating requested.',
+            junk_hint=_MULTIWORD_TAG_HINT)
+        _checkGitgudTags(tags, bantags, _cfTagVocabulary())
         dlo, dhi = cf_common.parse_daterange(args)
-        for arg in args:
-            if arg[0:3].isdigit():
-                ratings = arg.split("-")
-                srating = int(ratings[0])
-                if (len(ratings) > 1):
-                    erating = int(ratings[1])
-                else:
-                    erating = srating
 
         problems = [prob for prob in cf_common.cache2.problem_cache.problems
                     if prob.rating >= srating and prob.rating <= erating and prob.name not in solved

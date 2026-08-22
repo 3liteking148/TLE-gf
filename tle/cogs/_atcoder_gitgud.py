@@ -17,6 +17,8 @@ from tle.cogs._gitgud import GitgudMixin
 from tle.cogs._codeforces_helpers import (
     CodeforcesCogError,
     _calculateGitgudScoreForDelta,
+    _checkGitgudTags,
+    _parseGitgudRatingArgs,
 )
 
 
@@ -33,34 +35,20 @@ class _AcBackend:
 
     def parse_args(self, args, rating):
         """Parse gitgud args: an optional rating or range plus optional
-        ``+``/``~`` tag and division filters. ``rating`` is the 0-4000-clamped
+        ``+``/``~`` contest-type filters. ``rating`` is the 0-4000-clamped
         user rating used as the default range. Returns
         ``(srating, erating, hidden, tags, bantags)``."""
         tags = cf_common.parse_tags(args, prefix='+')
         bantags = cf_common.parse_tags(args, prefix='~')
-        srating = erating = None
-        hidden = False
-        for arg in args:
-            if arg.startswith('-'):
-                raise CodeforcesCogError(
-                    'Wrong rating requested. AtCoder gitgud uses rating '
-                    f'({atcoder_api.RATING_MIN}-{atcoder_api.RATING_MAX}).')
-            if arg[0:3].isdigit():
-                ratings = arg.split('-')
-                srating = int(ratings[0])
-                if len(ratings) > 1:
-                    erating = int(ratings[1])
-                    hidden = True
-                else:
-                    erating = srating
+        error = ('Wrong rating requested. AtCoder gitgud uses rating '
+                 f'({atcoder_api.RATING_MIN}-{atcoder_api.RATING_MAX}).')
+        srating, erating, hidden = _parseGitgudRatingArgs(
+            args, rating, error,
+            bounds=(atcoder_api.RATING_MIN, atcoder_api.RATING_MAX))
 
-        if srating is None:
-            srating = erating = rating
-
-        if erating < atcoder_api.RATING_MIN or srating > atcoder_api.RATING_MAX:
-            raise CodeforcesCogError(
-                'Wrong rating requested. AtCoder gitgud uses rating '
-                f'({atcoder_api.RATING_MIN}-{atcoder_api.RATING_MAX}).')
+        contest_types = {prob.contest_type for prob
+                         in cf_common.cache2.atcoder_problem_cache.problems}
+        _checkGitgudTags(tags, bantags, contest_types, exact=True)
 
         if srating == erating: # adjust to compensate for lack of rounding in atcoder
             srating = max(srating - 100, atcoder_api.RATING_MIN)
