@@ -44,10 +44,11 @@ class ChallengeDbMixin:
         """Insert a challenge. ``rating_delta`` keeps its raw meaning
         (``problem rating - base``); ``score`` is the exact awarded points
         (possibly off-ladder for tag penalties). When ``score`` is omitted it
-        defaults to the plain ladder value of ``delta``."""
+        defaults to the plain ladder value of ``delta`` (platform-specific)."""
         if score is None:
-            from tle.cogs._codeforces_helpers import _calculateGitgudScoreForDelta
-            score = _calculateGitgudScoreForDelta(delta)
+            from tle.cogs._gitgud_scoring import AC_SCORE_MODEL, CF_SCORE_MODEL
+            model = AC_SCORE_MODEL if platform == 'ac' else CF_SCORE_MODEL
+            score = model.raw_score(delta)
         query1 = '''
             INSERT INTO challenge
             (user_id, issue_time, problem_name, contest_id, p_index, rating_delta, status, platform, score)

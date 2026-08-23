@@ -16,10 +16,10 @@ from tle.util import codeforces_common as cf_common
 from tle.cogs._gitgud import GitgudMixin
 from tle.cogs._codeforces_helpers import (
     CodeforcesCogError,
-    _calculateGitgudScoreForDelta,
     _checkGitgudTags,
     _parseGitgudRatingArgs,
 )
+from tle.cogs._gitgud_scoring import AC_SCORE_MODEL
 
 
 class AtcoderGitgudMixin(GitgudMixin):
@@ -32,6 +32,7 @@ class _AcBackend:
     """AtCoder-flavoured problem acquisition and selection."""
 
     platform = 'ac'
+    score_model = AC_SCORE_MODEL
 
     def parse_args(self, args, rating):
         """Parse gitgud args: an optional rating or range plus optional
@@ -163,20 +164,17 @@ class _AcBackend:
         """Filter the AtCoder problem cache by difficulty range and the
         solved/nogud sets; sorted by contest start. Empty when nothing fits —
         the caller raises 'No problem to assign'."""
+        # ``prob.rating`` is forced uniform API (aliases ``difficulty`` on
+        # AtCoder).  Filtering uses rating so both platforms share the same
+        # attribute name.
         problems = [prob for prob in cf_common.cache2.atcoder_problem_cache.problems
-                    if prob.difficulty >= srating and prob.difficulty <= erating
+                    if prob.rating >= srating and prob.rating <= erating
                     and prob.id not in solved and prob.id not in noguds
                     and ('abc' in prob.contestId or 'arc' in prob.contestId)
                     and set([prob.contest_type]).issuperset(set(tags))
                     and set([prob.contest_type]).isdisjoint(set(bantags))]
         problems.sort(key=lambda problem: problem.contest_start)
         return problems
-
-    def delta(self, problem, base, tags=(), bantags=()):
-        """Return ``(rating_delta, score)``; AtCoder has no tag penalty, so
-        the score is the plain ladder value of the raw delta."""
-        delta = problem.difficulty - base
-        return delta, _calculateGitgudScoreForDelta(delta)
 
     async def fetch_participated(self, handle):
         raise CodeforcesCogError(
@@ -199,9 +197,6 @@ class _AcBackend:
         # with no cache access. p_index (the letter after the underscore) is
         # unused here — AtCoder task URLs need the full problem id.
         return f'{atcoder_api.BASE_URL}/contests/{contest_id}/tasks/{problem_key}'
-
-    def rating_of(self, problem):
-        return problem.difficulty
 
     def contest_name_of(self, problem):
         return problem.contest_name

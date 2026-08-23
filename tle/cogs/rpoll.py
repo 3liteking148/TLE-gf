@@ -20,7 +20,6 @@ from tle.cogs._rpoll_helpers import (
     _get_elo_win_probability,
     _compose_team_rating,
     _compose_osu_score,
-    _calculate_gitgud_score_for_delta,
     _get_monthly_gitgud_score,
     _get_vote_weight,
     _refresh_poll_ratings,

@@ -164,7 +164,7 @@ def backfill_scores(db, warn):
     other rows take the plain ladder value of their stored delta. Purely
     offline and idempotent.
     """
-    from tle.cogs._codeforces_helpers import _calculateGitgudScoreForDelta
+    from tle.cogs._gitgud_scoring import CF_SCORE_MODEL
     rows = db.execute(
         'SELECT id, rating_delta FROM challenge').fetchall()
     fixed = 0
@@ -172,11 +172,11 @@ def backfill_scores(db, warn):
         if is_sentinel_delta(rating_delta):
             score = decode_sentinel_score(rating_delta)
             if score is None:
-                score = _calculateGitgudScoreForDelta(rating_delta)
+                score = CF_SCORE_MODEL.raw_score(rating_delta)
                 warn(f'challenge {row_id}: sentinel delta {rating_delta} '
                      f'does not decode; scored {score} from ladder')
         else:
-            score = _calculateGitgudScoreForDelta(rating_delta)
+            score = CF_SCORE_MODEL.raw_score(rating_delta)
         db.execute('UPDATE challenge SET score = ? WHERE id = ?',
                    (score, row_id))
         fixed += 1
@@ -295,8 +295,8 @@ def reconstruct_deltas(db, warn, *, problems, histories, currents,
         # Cross-check the frozen payout against the repaired geometry: a
         # penalised score can never exceed the unpenalised ladder value and
         # must be reachable by some tag-count division of it.
-        from tle.cogs._codeforces_helpers import _calculateGitgudScoreForDelta
-        base_score = _calculateGitgudScoreForDelta(new_delta)
+        from tle.cogs._gitgud_scoring import CF_SCORE_MODEL
+        base_score = CF_SCORE_MODEL.raw_score(new_delta)
         achievable = any(
             max(1, (base_score + t) // (t + 1)) == extracted_score
             for t in range(1, base_score + 1))

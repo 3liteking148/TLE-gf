@@ -8,13 +8,12 @@ only the stored ``score`` — ``rating_delta`` keeps its raw meaning
 """
 import pytest
 
-from tle.cogs._codeforces_helpers import (
-    _calculateGitgudScoreForDelta,
-    _gitgudPenalisedTagCount,
-    _gitgudTagPenaltyScore,
-    _GITGUD_SCORE_DISTRIB,
-)
+from tle.cogs._gitgud_scoring import CF_SCORE_MODEL, DISTRIB as _GITGUD_SCORE_DISTRIB
 from tle.util import cf_format
+
+_calculateGitgudScoreForDelta = CF_SCORE_MODEL.raw_score
+_gitgudPenalisedTagCount = CF_SCORE_MODEL.penalised_count
+_gitgudTagPenaltyScore = CF_SCORE_MODEL.penalty_score
 
 
 def _score(base_delta, num_tags):
@@ -104,7 +103,8 @@ class TestDeltaStaysRaw:
         class _Problem:
             rating = 2500
 
-        delta, score = _CfBackend().delta(_Problem(), 2200, ['dp'], [])
+        backend = _CfBackend()
+        delta, score = backend.score_model.delta_and_score(_Problem().rating, 2200, ['dp'], [])
         assert delta == 300
         assert score == 12   # ceil(23 / 2): off-ladder, stored in score column
 
@@ -112,9 +112,11 @@ class TestDeltaStaysRaw:
         from tle.cogs._atcoder_gitgud import _AcBackend
 
         class _Problem:
+            rating = 1800
             difficulty = 1800
 
-        delta, score = _AcBackend().delta(_Problem(), 1600, [], [])
+        backend = _AcBackend()
+        delta, score = backend.score_model.delta_and_score(_Problem().rating, 1600, [], [])
         assert delta == 200
         assert score == 17
 

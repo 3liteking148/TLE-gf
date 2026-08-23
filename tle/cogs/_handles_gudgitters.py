@@ -7,7 +7,10 @@ from tle.util import codeforces_common as cf_common
 from tle.util import discord_common
 from tle.util import paginator
 from tle.util import ranking
-from tle.cogs import codeforces as cfc
+from tle.cogs._codeforces_helpers import (
+    _GITGUD_MORE_POINTS_START_TIME,
+    _ONE_WEEK_DURATION,
+)
 
 from tle.cogs._handles_helpers import (
     HandleCogError,
@@ -146,8 +149,8 @@ class GudgittersMixin:
 
         # more points seasons start at April 1st 2023 (timestamp: 1680300000) and is only active in the last 7 days of the month
         morePointsActive = False
-        morePointsTime = end_time - cfc._ONE_WEEK_DURATION
-        if start_time >= cfc._GITGUD_MORE_POINTS_START_TIME:
+        morePointsTime = end_time - _ONE_WEEK_DURATION
+        if start_time >= _GITGUD_MORE_POINTS_START_TIME:
             morePointsActive = True
 
         division, showall = _parse_gudgitter_args(args)
@@ -205,8 +208,8 @@ class GudgittersMixin:
         start_time, end_time = cf_common.get_start_and_end_of_month(now)
 
         morePointsActive = False
-        morePointsTime = end_time - cfc._ONE_WEEK_DURATION
-        if start_time >= cfc._GITGUD_MORE_POINTS_START_TIME:
+        morePointsTime = end_time - _ONE_WEEK_DURATION
+        if start_time >= _GITGUD_MORE_POINTS_START_TIME:
             morePointsActive = True
 
         division, showall = _parse_gudgitter_args(args)

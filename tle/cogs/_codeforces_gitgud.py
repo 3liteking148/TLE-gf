@@ -12,13 +12,12 @@ from tle.util import codeforces_api as cf
 from tle.util import codeforces_common as cf_common
 from tle.cogs._gitgud import GitgudMixin
 from tle.cogs._codeforces_helpers import (
-    _gitgudTagPenaltyScore,
-    _gitgudPenalisedTagCount,
     _checkGitgudTags,
     _MULTIWORD_TAG_HINT,
     _parseGitgudRatingArgs,
     CodeforcesCogError,
 )
+from tle.cogs._gitgud_scoring import CF_SCORE_MODEL
 
 
 class CodeforcesGitgudMixin(GitgudMixin):
@@ -33,11 +32,11 @@ def _cfTagVocabulary():
     return {tag for prob in cf_common.cache2.problem_cache.problems
             for tag in prob.tags}
 
-
 class _CfBackend:
     """Codeforces-flavoured problem acquisition and selection."""
 
     platform = 'cf'
+    score_model = CF_SCORE_MODEL
 
     def parse_args(self, args, rating):
         """Parse gitgud args: an optional rating or range plus optional
@@ -108,16 +107,6 @@ class _CfBackend:
             problem.contestId).startTimeSeconds)
         return problems
 
-    def delta(self, problem, base, tags=(), bantags=()):
-        """Return ``(rating_delta, score)`` for the challenge.
-
-        ``rating_delta`` stays raw (``problem.rating - base``) — the penalty
-        only affects the score, which is stored in the ``score`` column.
-        """
-        delta = problem.rating - base
-        return delta, _gitgudTagPenaltyScore(
-            delta, _gitgudPenalisedTagCount(tags, bantags))
-
     async def fetch_participated(self, handle):
         resp = await cf.user.rating(handle=handle)
         return {change.contestId for change in resp}
@@ -166,9 +155,6 @@ class _CfBackend:
         # access — a challenge stays linkable even if the cache misses the
         # problem.
         return f'{cf.CONTEST_BASE_URL}{contest_id}/problem/{p_index}'
-
-    def rating_of(self, problem):
-        return problem.rating
 
     def contest_name_of(self, problem):
         return cf_common.cache2.contest_cache.get_contest(problem.contestId).name

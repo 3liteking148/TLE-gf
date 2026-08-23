@@ -274,6 +274,10 @@ class AtCoderProblem(namedtuple('AtCoderProblem',
     def has_difficulty(self):
         return self.difficulty is not None
 
+    @property
+    def rating(self):
+        return self.difficulty
+
 class AtCoderSubmission(namedtuple('AtCoderSubmission',
                                    'epoch_second problem_id result')):
     """One entry from kenkoooo's per-user submission API."""

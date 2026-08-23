@@ -12,12 +12,9 @@ from tle.cogs._codeforces_helpers import (
     CodeforcesCogError,
     getEloWinProbability as _getEloWinProbability,
     composeRatings as _composeRatings,
-    _GITGUD_NO_SKIP_TIME,
-    _GITGUD_SCORE_DISTRIB,
-    _GITGUD_SCORE_DISTRIB_MIN,
-    _GITGUD_SCORE_DISTRIB_MAX,
-    _ONE_WEEK_DURATION,
     _GITGUD_MORE_POINTS_START_TIME,
+    _ONE_WEEK_DURATION,
+    _GITGUD_NO_SKIP_TIME,
 )
 from tle.cogs._codeforces_gitgud import CodeforcesGitgudMixin
 from tle.cogs._codeforces_problems import CodeforcesProblemsMixin

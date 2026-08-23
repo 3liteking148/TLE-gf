@@ -193,7 +193,8 @@ class TestGitgudScores:
         db._seed_monthly_gitgud_entry('user2', 1000, 2000, 250)
         rows = db.get_gudgitters_timerange_for_user('user1', 1500, 2500)
         assert len(rows) == 1
-        assert rows[0].score == 12      # ladder(150): (150+400)//100 -> DISTRIB[5]
+        # ladder(150): round((150+400)/100)=6 -> DISTRIB[6]=17 (bankers round)
+        assert rows[0].score == 17
         assert rows[0].issue_time == 1000
 
 

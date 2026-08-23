@@ -20,11 +20,7 @@ from tle.cogs._codeforces_helpers import (  # noqa: F401  (re-exported names)
     composeRatings,
     getEloWinProbability,
     _GITGUD_MORE_POINTS_START_TIME,
-    _GITGUD_SCORE_DISTRIB,
-    _GITGUD_SCORE_DISTRIB_MAX,
-    _GITGUD_SCORE_DISTRIB_MIN,
     _ONE_WEEK_DURATION,
-    _calculateGitgudScoreForDelta,
 )
 
 # Number emojis for options 0-4
@@ -114,11 +110,6 @@ def _compose_osu_score(ratings, decay=0.67):
     sorted_ratings = sorted(ratings, reverse=True)
     total = sum(rating * (decay ** index) for index, rating in enumerate(sorted_ratings))
     return round(total)
-
-
-def _calculate_gitgud_score_for_delta(delta):
-    """Match the gg/mgg point distribution (single source: ;gitgud)."""
-    return _calculateGitgudScoreForDelta(delta)
 
 
 def _get_monthly_gitgud_score(user_id, created_at):

@@ -4,7 +4,7 @@ from collections import namedtuple
 
 import pytest
 
-from tle.cogs.rpoll import (_apply_formula, _calculate_gitgud_score_for_delta,
+from tle.cogs.rpoll import (_apply_formula,
                             _get_monthly_gitgud_score, _get_vote_weight,
                             _refresh_poll_ratings)
 from tle.util import codeforces_common as cf_common
@@ -103,15 +103,6 @@ class TestApplyFormula:
 
 
 class TestGitgudFormulaHelpers:
-    def test_gitgud_score_for_delta_midrange(self):
-        assert _calculate_gitgud_score_for_delta(0) == 8
-
-    def test_gitgud_score_for_delta_low_cap(self):
-        assert _calculate_gitgud_score_for_delta(-500) == 1
-
-    def test_gitgud_score_for_delta_high_cap(self):
-        assert _calculate_gitgud_score_for_delta(500) == 23
-
     @pytest.fixture
     def fake_db(self):
         database = FakeRpollDb()

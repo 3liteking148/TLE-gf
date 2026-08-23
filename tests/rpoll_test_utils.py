@@ -298,8 +298,8 @@ class FakeRpollDb:
     def _seed_monthly_gitgud_entry(self, user_id, issue_time, finish_time,
                                    rating_delta, problem_name='P', score=None):
         if score is None:
-            from tle.cogs._codeforces_helpers import _calculateGitgudScoreForDelta
-            score = _calculateGitgudScoreForDelta(rating_delta)
+            from tle.cogs._gitgud_scoring import CF_SCORE_MODEL
+            score = CF_SCORE_MODEL.raw_score(rating_delta)
         self.conn.execute(
             'INSERT INTO challenge '
             '(user_id, issue_time, finish_time, problem_name, contest_id, p_index, rating_delta, status, platform, score) '

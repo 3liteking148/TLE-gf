@@ -91,7 +91,7 @@ class GitgudMixin:
         problem that dropped out of kenkoooo's datasets."""
         try:
             problem = backend.lookup_problem(problem_key)
-            return problem.name, backend.rating_of(problem), problem.url
+            return problem.name, problem.rating, problem.url
         except (KeyError, AttributeError):
             return problem_key, '?', None
 
@@ -132,7 +132,7 @@ class GitgudMixin:
 
         title = f'{problem.index}. {problem.name}'
         desc = backend.contest_name_of(problem)
-        rating = backend.rating_of(problem)
+        rating = problem.rating
         ratingStr = rating if not hidden else '||' + str(rating) + '||'
         pointsStr = points if not hidden else '||' + str(points) + '||'
         monthlyPointsStr = monthlypoints if not hidden else '||' + str(monthlypoints) + '||'
@@ -204,12 +204,11 @@ class GitgudMixin:
 
         # Penalised tags divide points by (tag count + 1), rounded up.
         # Hardening division filters such as +div1 and ~div3/~div4/~edu are
-        # exempt; other requested tags and bans count (see
-        # _gitgudPenalisedTagCount). The raw delta is stored untouched; the
-        # (possibly off-ladder) score goes into its own column. AtCoder has no
-        # tags, so its delta stays raw too.
+        # exempt on CF; on AtCoder the hard/easy contest types (arc/agc vs
+        # abc) are the free filters. The raw delta is stored untouched; the
+        # (possibly off-ladder) score goes into its own column.
         problem = problems[choice]
-        delta, score = backend.delta(problem, delta_base, tags, bantags)
+        delta, score = backend.score_model.delta_and_score(problem.rating, delta_base, tags, bantags)
         await self._gitgud(ctx, handle, problem, delta, score, hidden, backend)
 
     async def _gotgud_impl(self, ctx, submission_url=None):
@@ -337,14 +336,14 @@ class GitgudMixin:
         if choice > 0 and choice <= len(problems):
             await self._validate_gitgud_status(ctx)
             problem = problems[choice - 1]
-            delta, score = backend.delta(problem, delta_base, (), ())
+            delta, score = backend.score_model.delta_and_score(problem.rating, delta_base, (), ())
             await self._gitgud(ctx, handle, problem, delta, score,
                                False, backend)
         else:
             problems = problems[:500]
 
             def make_line(i, prob):
-                data = (f'{i + 1}: [{prob.name}]({prob.url}) [{backend.rating_of(prob)}]')
+                data = (f'{i + 1}: [{prob.name}]({prob.url}) [{prob.rating}]')
                 return data
 
             def make_page(chunk, pi, num):
@@ -374,8 +373,8 @@ class GitgudMixin:
         title = f'{problem.index}. {problem.name}'
         desc = backend.contest_name_of(problem)
         embed = discord.Embed(title=title, url=problem.url, description=desc)
-        rating_of = backend.rating_of(problem)
-        ratingStr = rating_of if not hidden else '||'+str(rating_of)+'||'
+        rating = problem.rating
+        ratingStr = rating if not hidden else '||' + str(rating) + '||'
         embed.add_field(name='Rating', value=ratingStr)
         if tags:
             tagslist = ', '.join(problem.get_matched_tags(tags))
