@@ -170,7 +170,7 @@ class _AcBackend:
         problems = [prob for prob in cf_common.cache2.atcoder_problem_cache.problems
                     if prob.rating >= srating and prob.rating <= erating
                     and prob.id not in solved and prob.id not in noguds
-                    and ('abc' in prob.contestId or 'arc' in prob.contestId)
+                    and ('abc' in prob.contestId or 'arc' in prob.contestId or 'agc' in prob.contestId)
                     and set([prob.contest_type]).issuperset(set(tags))
                     and set([prob.contest_type]).isdisjoint(set(bantags))]
         problems.sort(key=lambda problem: problem.contest_start)
