@@ -1,7 +1,8 @@
 """Complaint DB methods — extracted from user_db_conn.py.
 
-Owns the ``complaint`` table. The ``active`` column is added by a migration
-(it is not part of the fresh-DB CREATE here, matching the original behavior).
+Owns the ``complaint`` table. The ``active`` column must be part of the
+fresh-DB CREATE below because fresh databases are stamped at the latest
+version and never run the migrations that add it (1.19.0/1.59.0).
 """
 import logging
 import time
@@ -20,7 +21,8 @@ class ComplaintDbMixin:
                 user_id      TEXT NOT NULL,
                 text         TEXT NOT NULL,
                 created_at   REAL NOT NULL,
-                message_link TEXT
+                message_link TEXT,
+                active       INTEGER NOT NULL DEFAULT 1
             )
         ''')
         self.conn.execute('''

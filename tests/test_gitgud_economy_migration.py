@@ -291,8 +291,8 @@ class TestRegistration:
     def test_new_versions_registered_last_in_order(self):
         from tle.util.db.user_db_upgrades import registry
         versions = [v for v, _, _ in registry.upgrades]
-        assert versions[-2:] == ['1.57.0', '1.58.0']
+        assert versions[-3:] == ['1.57.0', '1.58.0', '1.59.0']
 
-    def test_latest_version_is_1_58_0(self):
+    def test_latest_version_is_1_59_0(self):
         from tle.util.db.user_db_upgrades import registry
-        assert registry.latest_version == '1.58.0'
+        assert registry.latest_version == '1.59.0'

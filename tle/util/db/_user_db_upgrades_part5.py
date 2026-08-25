@@ -242,3 +242,25 @@ def upgrade_1_58_0(db):
     db.commit()
     logger.info('1.58.0: topped up %d wallet(s)', topped)
     logger.info('1.58.0: Upgrade complete')
+
+
+@registry.register('1.59.0', 'Repair missing active column on complaint table')
+def upgrade_1_59_0(db):
+    """Heal databases whose ``complaint`` table predates the fresh-schema fix.
+
+    Fresh databases are stamped at the latest version and never run 1.19.0,
+    so any DB created while ``create_tables()`` omitted ``active`` (fresh or
+    migrated) has a ``complaint`` table without it and every
+    ``WHERE active = 1`` query fails with OperationalError. The guard keeps
+    this idempotent for healthy DBs where 1.19.0 already added the column.
+    """
+    logger.info('1.59.0: Repairing complaint.active column')
+    columns = {
+        row[1] for row in db.execute('PRAGMA table_info(complaint)').fetchall()
+    }
+    if columns and 'active' not in columns:
+        db.execute(
+            'ALTER TABLE complaint ADD COLUMN active INTEGER NOT NULL DEFAULT 1')
+        logger.info('1.59.0: Added missing active column to complaint')
+    db.commit()
+    logger.info('1.59.0: Upgrade complete')

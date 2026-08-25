@@ -341,6 +341,48 @@ class TestUserDbConnUpgradeEndToEnd:
         finally:
             conn.conn.close()
 
+    def test_opening_drifted_complaint_db_repairs_active_column(self, tmp_path):
+        """Regression: DBs created while the fresh complaint schema omitted
+        ``active`` crash on every ``WHERE active = 1`` query. 1.59.0 must add
+        the column back on open."""
+        from tle.util.db.user_db_conn import UserDbConn
+        from tle.util.db.user_db_upgrades import registry
+
+        dbfile = tmp_path / 'user.db'
+        raw = sqlite3.connect(dbfile)
+        # Exact shape create_tables() produced while the drift existed.
+        raw.execute('''
+            CREATE TABLE complaint (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id     TEXT NOT NULL,
+                user_id      TEXT NOT NULL,
+                text         TEXT NOT NULL,
+                created_at   REAL NOT NULL,
+                message_link TEXT
+            )
+        ''')
+        raw.execute(
+            "INSERT INTO complaint (guild_id, user_id, text, created_at) "
+            "VALUES ('1', '9', 'broken era', 100.0)")
+        raw.execute('CREATE TABLE db_version (version TEXT NOT NULL)')
+        raw.execute("INSERT INTO db_version (version) VALUES ('1.58.0')")
+        raw.commit()
+        raw.close()
+
+        conn = UserDbConn(str(dbfile))
+        try:
+            assert registry.get_current_version(conn.conn) == registry.latest_version
+            complaint = conn.get_complaint(1)
+            assert complaint is not None
+            assert complaint.text == 'broken era'
+            assert len(conn.get_complaints('1')) == 1
+            assert conn.delete_complaint(1) is True
+            assert conn.get_complaint(1) is None
+            # Soft-deleted filings still count toward the rate limit.
+            assert conn.count_recent_complaints('1', '9', 0) == 1
+        finally:
+            conn.conn.close()
+
 
 class TestUpgrade127:
     def test_creates_ban_table(self, db):
@@ -408,6 +450,24 @@ class TestFreshDbSchema:
                 "SELECT name FROM sqlite_master WHERE type='table' "
                 "AND name='minigame_registrant'").fetchone()
             assert legacy is None
+            assert registry.get_current_version(conn.conn) == registry.latest_version
+        finally:
+            conn.conn.close()
+
+    def test_fresh_userdbconn_complaint_active(self):
+        from tle.util.db.user_db_conn import UserDbConn
+        from tle.util.db.user_db_upgrades import registry
+
+        conn = UserDbConn(':memory:')
+        try:
+            # Fresh DBs never run 1.19.0/1.59.0, so the fresh CREATE must own
+            # the column or every "WHERE active = 1" query fails.
+            columns = {row[1] for row in conn.conn.execute(
+                'PRAGMA table_info(complaint)').fetchall()}
+            assert 'active' in columns
+            assert conn.conn.execute(
+                'SELECT id FROM complaint WHERE active = 1').fetchall() == []
+            assert conn.get_complaints('1') == []
             assert registry.get_current_version(conn.conn) == registry.latest_version
         finally:
             conn.conn.close()
