@@ -156,6 +156,16 @@ class Party(NamedTuple):
 
     PARTICIPANT_TYPES = ('CONTESTANT', 'PRACTICE', 'VIRTUAL', 'MANAGER', 'OUT_OF_COMPETITION')
 
+def cf_tag_matches(filt: str, tag: str) -> bool:
+    """Case-insensitive word-prefix match: every whitespace-separated word
+    of ``filt`` must be a prefix of some word of ``tag``. ``+data`` matches
+    'data structures', ``+arc`` does not match 'binary search'. An empty
+    filter matches everything."""
+    tag_words = tag.lower().split()
+    return all(any(word.startswith(fw) for word in tag_words)
+               for fw in filt.lower().split())
+
+
 class Problem(NamedTuple):
     """Codeforces problem."""
     contestId: Optional[int]
@@ -196,7 +206,7 @@ class Problem(NamedTuple):
         tags = defaultdict(list)
         for match_tag in match_tags:
             for tag in self.tags:
-                if match_tag in tag:
+                if cf_tag_matches(match_tag, tag):
                     tags[match_tag].append(tag)
         return dict(tags)
 

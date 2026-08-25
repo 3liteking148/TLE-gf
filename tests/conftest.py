@@ -121,6 +121,8 @@ cf_common.ResolveHandleError = type('ResolveHandleError', (_commands_mod.Command
 # Stub cf.User (codeforces_api) as a namedtuple so _make() works
 from collections import namedtuple as _nt
 from typing import NamedTuple as _NamedTuple, Optional as _Optional, List as _List, Iterable as _Iterable
+# The real matcher keeps tag semantics identical between prod code and fakes.
+from tle.util._cf_api_types import cf_tag_matches as _cf_tag_matches
 _cf_api = sys.modules['tle.util.codeforces_api']
 _cf_api.User = _nt('User', 'handle firstName lastName country city organization '
                     'contribution rating maxRating lastOnlineTimeSeconds '
@@ -167,10 +169,10 @@ class _Problem(_NamedTuple):
     tags: _List[str] = []
     def matches_all_tags(self, match_tags):
         match_tags = set(match_tags)
-        return all(any(mt in t for t in self.tags) for mt in match_tags) if match_tags else True
+        return all(any(_cf_tag_matches(mt, t) for t in self.tags) for mt in match_tags) if match_tags else True
     def matches_any_tag(self, match_tags):
         match_tags = set(match_tags)
-        return any(any(mt in t for t in self.tags) for mt in match_tags) if match_tags else False
+        return any(any(_cf_tag_matches(mt, t) for t in self.tags) for mt in match_tags) if match_tags else False
 
 class _Submission(_NamedTuple):
     id: int = 0

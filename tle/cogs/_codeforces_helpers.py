@@ -8,6 +8,7 @@ from typing import List
 from discord.ext import commands
 
 from tle import constants
+from tle.util._cf_api_types import cf_tag_matches
 
 _GITGUD_NO_SKIP_TIME = 2 * 60 * 60
 
@@ -90,10 +91,11 @@ def _unknownTagFilters(filters, vocabulary, *, exact=False):
     """Return the filter tokens that match nothing in ``vocabulary``.
 
     Mirrors how each platform matches tags so detection agrees with
-    selection: Codeforces compares by substring against every cached problem
-    tag (including the synthesized division tags), AtCoder compares exactly
-    against contest types. An empty vocabulary (cache not loaded yet)
-    disables the check — every filter would otherwise be a false positive.
+    selection: Codeforces compares case-insensitively by word prefix against
+    every cached problem tag (including the synthesized division tags),
+    AtCoder compares exactly against contest types. An empty vocabulary
+    (cache not loaded yet) disables the check — every filter would otherwise
+    be a false positive.
     """
     if not vocabulary:
         return []
@@ -103,7 +105,7 @@ def _unknownTagFilters(filters, vocabulary, *, exact=False):
         if exact:
             found = tag in known
         else:
-            found = any(tag in v for v in known)
+            found = any(cf_tag_matches(tag, v) for v in known)
         if not found:
             unknown.append(tag)
     return unknown
