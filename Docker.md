@@ -1,4 +1,7 @@
 # How to run the bot inside a docker container
+
+> :warning: **The Docker setup is outdated and currently unusable.** The `Dockerfile` is based on Ubuntu 20.04 with Python 3.8, which conflicts with the Python versions TLE now requires (>=3.9,<3.13) and its locked dependencies. Until the image is refreshed, follow the venv/pip installation in the [README](/README.md#dependencies) instead.
+
 ## Motivation
 Docker is a service that helps in creating isolation in the local environment. For example, if your machine runs on Windows with Python 2, you won't have to worry about running the bot that has been developed on Linux with Python 3.7  or 3.8.
 
