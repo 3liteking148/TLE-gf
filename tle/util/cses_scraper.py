@@ -14,7 +14,7 @@ session = aiohttp.ClientSession()
 async def _fetch(url):
     async with session.get(url) as response:
         if response.status != 200:
-            raise CSESError(f"Bad response from CSES, status code {status}")
+            raise CSESError(f"Bad response from CSES, status code {response.status}")
         tree = html.fromstring(await response.read())
     return tree
 
