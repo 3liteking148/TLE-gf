@@ -6,9 +6,14 @@ the bot polls the public profile page until the token appears. Commands are
 provided as a mixin inherited by the ``Handles`` cog so errors route through
 its ``HandleCogError`` handling.
 """
+
+# pyright: reportCallIssue=false, reportArgumentType=false, reportFunctionMemberAccess=false
+from __future__ import annotations
+
 import asyncio
 import random
 import string
+from typing import Optional, cast
 
 import discord
 from discord.ext import commands
@@ -20,7 +25,6 @@ from tle.util import db
 from tle.util import discord_common
 
 from tle.cogs._handles_helpers import HandleCogError
-
 _POLL_INTERVAL = 15
 _POLL_ATTEMPTS = 4
 _TOKEN_LENGTH = 8
@@ -49,11 +53,13 @@ def _check_atcoder_identify_allowed(user_db, author_id, guild_id, handle,
                              'in case of an inconsistency.')
 
 
-class AtcoderHandlesMixin:
+from tle.cogs._cog_protocol import HasBot
+
+class AtcoderHandlesMixin(HasBot):
     """``;atcoder`` group: link and look up AtCoder handles."""
 
     @commands.group(brief='Link or look up AtCoder handles',
-                    invoke_without_command=True)
+                     invoke_without_command=True)
     async def atcoder(self, ctx):
         """AtCoder handles are verified by setting your profile affiliation
         to a random token. Run `;atcoder identify <handle>` to start."""
@@ -64,9 +70,10 @@ class AtcoderHandlesMixin:
         group=_IDENTIFY_GROUP,
         get_exception=lambda: HandleCogError(
             'AtCoder identification is already running for you'))
-    async def atcoder_identify(self, ctx, handle: str):
+    async def atcoder_identify(self, ctx: commands.Context, handle: str):
         """Link an AtCoder account to your Discord account by setting your
         AtCoder profile affiliation to a random token within 60 seconds."""
+        assert ctx.guild is not None
         invoker = str(ctx.author)
         user_db = cf_common.user_db
 
@@ -104,9 +111,11 @@ class AtcoderHandlesMixin:
 
     @atcoder.command(name='get', brief='Show AtCoder handle of a user',
                      usage='[member]')
-    async def atcoder_get(self, ctx, member: discord.Member = None):
+    async def atcoder_get(self, ctx: commands.Context, _member: Optional[discord.Member] = None):
         """Show the AtCoder handle (and live profile info) of a user."""
-        member = member or ctx.author
+        assert ctx.guild is not None
+        member = _member or ctx.author
+
         handle = cf_common.user_db.get_atcoder_handle(member.id, ctx.guild.id)
         if not handle:
             raise HandleCogError(f'AtCoder handle for {member.mention} not '
@@ -127,6 +136,7 @@ class AtcoderHandlesMixin:
     @commands.has_any_role(*constants.TLE_ADMIN, *constants.TLE_MODERATOR)
     async def atcoder_remove(self, ctx, handle: str):
         """Remove an AtCoder handle from the database."""
+        assert cf_common.user_db is not None
         user_id = cf_common.user_db.get_atcoder_user_id(handle, ctx.guild.id)
         if user_id is None:
             raise HandleCogError(f'`{handle}` not found in database')

@@ -170,7 +170,7 @@ class Problem(NamedTuple):
     """Codeforces problem."""
     contestId: Optional[int]
     problemsetName: Optional[str]
-    index: str
+    index: str  # type: ignore[reportIncompatibleMethodOverride]
     name: str
     type: str
     points: Optional[float]
@@ -201,6 +201,15 @@ class Problem(NamedTuple):
         """Returns whether the problem has metadata."""
         return self.contestId is not None and self.rating is not None
 
+    @property
+    def contest_name(self) -> str:
+        from tle.util import codeforces_common as cf_common
+        if self.contestId is None:
+            return ''
+        if cf_common.cache2 is None:
+            return ''
+        return cf_common.cache2.contest_cache.get_contest(self.contestId).name
+
     def _matching_tags_dict(self, match_tags: Iterable[str]) -> Dict[str, List[str]]:
         """Returns a dict with matching tags."""
         tags = defaultdict(list)
@@ -230,7 +239,7 @@ class Problem(NamedTuple):
 class ProblemStatistics(NamedTuple):
     """Codeforces problem statistics."""
     contestId: Optional[int]
-    index: str
+    index: str  # type: ignore[reportIncompatibleMethodOverride]
     solvedCount: int
 
 class Submission(NamedTuple):

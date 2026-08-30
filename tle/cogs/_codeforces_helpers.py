@@ -3,7 +3,7 @@
 Split out of ``codeforces.py`` to keep each module under the line limit.
 """
 import re
-from typing import List
+from typing import List, Tuple
 
 from discord.ext import commands
 
@@ -127,7 +127,7 @@ def getEloWinProbability(ra: float, rb: float) -> float:
     return 1.0 / (1 + 10**((rb - ra) / 400.0))
 
 
-def composeRatings(left: float, right: float, ratings: List[float]) -> int:
+def composeRatings(left: float, right: float, ratings: List[Tuple[float, int]]) -> int:
     for tt in range(20):
         r = (left + right) / 2.0
 

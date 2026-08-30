@@ -10,11 +10,12 @@ composing module.
 """
 import logging
 import time
+from tle.util.db._db_protocol import HasConn
 
 logger = logging.getLogger(__name__)
 
 
-class AtcoderHandleDbMixin:
+class AtcoderHandleDbMixin(HasConn):
     """Mixin providing AtCoder handle DB methods."""
 
     def _create_atcoder_handle_tables(self):

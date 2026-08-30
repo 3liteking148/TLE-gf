@@ -22,7 +22,27 @@ playwright = "^1.40"
 
 [tool.poetry.group.dev.dependencies]
 pytest = ">=7,<9"
+pyright = "^1.1.411"
 
 [build-system]
 requires = ["poetry-core>=2.0.0"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.pyright]
+pythonVersion = "3.11"
+typeCheckingMode = "standard"
+include = [
+  "tle/cogs/_atcoder_gitgud.py",
+  "tle/cogs/_atcoder_handles.py",
+  "tle/cogs/_codeforces_gitgud.py",
+  "tle/cogs/_gitgud.py",
+  "tle/cogs/_gitgud_protocol.py",
+  "tle/cogs/_gitgud_scoring.py",
+  "tle/cogs/_codeforces_helpers.py",
+  "tle/util/_cf_api_types.py",
+  "tle/util/_atcoder_api_types.py",
+  "tle/util/atcoder_api.py",
+  "tle/util/cache_system2/_atcoder_problems.py",
+  "tle/util/codeforces_common.py",
+  "tle/util/db/atcoder_handle_db.py",
+]

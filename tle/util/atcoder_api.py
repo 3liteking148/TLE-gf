@@ -14,20 +14,37 @@ Requests are serialized per event loop (AtCoder rate-limits aggressive
 scrapers) and the parser imports lxml lazily because the test harness stubs
 ``lxml``/``lxml.html`` in ``sys.modules`` with empty modules.
 """
+from __future__ import annotations
+
 import asyncio
 import json
 import logging
 import re
 import weakref
-from collections import namedtuple
+from typing import Dict, List, Optional, Tuple, Union
 
 import aiohttp
+
+from tle.util._atcoder_api_types import (  # noqa: F401 — re-exported
+    BASE_URL,
+    AtCoderContest,
+    AtCoderProblem,
+    AtCoderSubmission,
+    AtCoderSubmissionPage,
+    AtCoderUser,
+)
+
+# JSON as returned by kenkoooo / fallback for generic payloads
+JsonValue = Union[Dict[str, "JsonValue"], List["JsonValue"], str, int, float, bool, None]
+JsonDict = Dict[str, JsonValue]
+JsonList = List[JsonValue]
 
 _AIOHTTP_CLIENT_ERROR = getattr(aiohttp, 'ClientError', OSError)
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = 'https://atcoder.jp'
+# Re-export BASE_URL from types so `atcoder_api.BASE_URL` keeps working;
+# the canonical definition lives in _atcoder_api_types.
 KENKOOO_BASE_URL = 'https://kenkoooo.com/atcoder'
 _PROBLEMS_URL = f'{KENKOOO_BASE_URL}/resources/problems.json'
 _PROBLEM_MODELS_URL = f'{KENKOOO_BASE_URL}/resources/problem-models.json'
@@ -50,12 +67,10 @@ _MAX_RETRIES = 1
 _RETRY_DELAY_SECONDS = 2
 _REQUEST_TIMEOUT_SECONDS = 15
 
-AtCoderUser = namedtuple('AtCoderUser', 'handle affiliation country rating')
-
-_fetch_locks = weakref.WeakKeyDictionary()
+_fetch_locks: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock] = weakref.WeakKeyDictionary()
 
 
-def _fetch_lock():
+def _fetch_lock() -> asyncio.Lock:
     """Return the per-event-loop request lock (AtCoder throttles scrapers).
 
     Created lazily per running loop: a module-level ``asyncio.Lock`` would be
@@ -70,11 +85,11 @@ def _fetch_lock():
     return lock
 
 
-def _clean(value):
+def _clean(value: Optional[str]) -> str:
     return re.sub(r'\s+', ' ', value).strip() if value else ''
 
 
-def _parse_profile(raw):
+def _parse_profile(raw: bytes) -> AtCoderUser:
     """Parse an AtCoder user page into an ``AtCoderUser``.
 
     Imports lxml lazily so the module loads in the test harness, which
@@ -83,23 +98,27 @@ def _parse_profile(raw):
     from lxml import html
     tree = html.fromstring(raw)
 
-    def cell(label):
+    def cell(label: str) -> str:
         nodes = tree.xpath(
             f'//th[normalize-space()="{label}"]/following-sibling::td[1]')
         return _clean(nodes[0].text_content()) if nodes else ''
 
     titles = tree.xpath('//title/text()')
     handle = titles[0].split(' - ')[0].strip() if titles else ''
-    return AtCoderUser(handle, cell('Affiliation'), cell('Country/Region'),
+    return AtCoderUser(str(handle), cell('Affiliation'), cell('Country/Region'),
                        cell('Rating'))
 
 
-async def _fetch_page(session, url):
+async def _fetch_page(session: aiohttp.ClientSession, url: str) -> Tuple[int, bytes]:
     async with session.get(url, headers={'User-Agent': _USER_AGENT}) as resp:
         return resp.status, await resp.read()
 
 
-async def get_user(handle, *, session=None):
+async def get_user(
+    handle: str,
+    *,
+    session: Optional[aiohttp.ClientSession] = None,
+) -> Optional[AtCoderUser]:
     """Fetch the public profile of ``handle``.
 
     Returns an ``AtCoderUser``, or ``None`` when the handle does not exist
@@ -109,6 +128,7 @@ async def get_user(handle, *, session=None):
     own_session = session is None
     if own_session:
         session = aiohttp.ClientSession()
+    assert session is not None
     try:
         async with _fetch_lock():
             for attempt in range(_MAX_RETRIES + 1):
@@ -129,9 +149,10 @@ async def get_user(handle, *, session=None):
     finally:
         if own_session:
             await session.close()
+    return None
 
 
-def parse_rating(value):
+def parse_rating(value: Optional[str]) -> Optional[int]:
     """Parse the leading integer from a rating string like ``'3797'`` or
     ``'683 (Provisional)'``; returns None for unrated/empty values."""
     if not value:
@@ -144,7 +165,7 @@ _SUBMISSION_URL_RE = re.compile(
     r'https?://(?:www\.)?atcoder\.jp/contests/([^/?#]+)/submissions/(\d+)')
 
 
-def parse_submission_url(url):
+def parse_submission_url(url: str) -> Optional[Tuple[str, str]]:
     """Extract ``(contest_id, submission_id)`` from an AtCoder submission
     link like ``https://atcoder.jp/contests/abc470/submissions/78313913``.
 
@@ -157,17 +178,7 @@ def parse_submission_url(url):
     return match.group(1), match.group(2)
 
 
-class AtCoderSubmissionPage(namedtuple('AtCoderSubmissionPage',
-                                       'handle problem_id verdict')):
-    """One parsed submission detail page from atcoder.jp."""
-    __slots__ = ()
-
-    @property
-    def is_ac(self):
-        return self.verdict == 'AC'
-
-
-def _parse_submission_page(raw):
+def _parse_submission_page(raw: bytes) -> Optional[AtCoderSubmissionPage]:
     """Parse an AtCoder submission detail page into an
     ``AtCoderSubmissionPage``.
 
@@ -201,7 +212,11 @@ def _parse_submission_page(raw):
     return AtCoderSubmissionPage(handle, problem_id, verdict)
 
 
-async def get_submission(url, *, session=None):
+async def get_submission(
+    url: str,
+    *,
+    session: Optional[aiohttp.ClientSession] = None,
+) -> Optional[AtCoderSubmissionPage]:
     """Fetch and parse a single AtCoder submission detail page.
 
     Returns an ``AtCoderSubmissionPage``, or None when the page is not
@@ -213,6 +228,7 @@ async def get_submission(url, *, session=None):
     if own_session:
         session = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=_REQUEST_TIMEOUT_SECONDS))
+    assert session is not None
     try:
         async with _fetch_lock():
             for attempt in range(_MAX_RETRIES + 1):
@@ -233,68 +249,13 @@ async def get_submission(url, *, session=None):
     finally:
         if own_session:
             await session.close()
+    return None
 
 
-class AtCoderProblem(namedtuple('AtCoderProblem',
-                                'id contest_id problem_index name difficulty '
-                                'contest_start contest_name')):
-    """An AtCoder problem from kenkoooo's problems.json + problem-models.json.
-
-    ``difficulty`` is the clipped estimated difficulty (None when the problem
-    has no model — these are excluded from the gitgud pool)."""
-    __slots__ = ()
-
-    def __new__(cls, id, contest_id, problem_index, name,
-                difficulty=None, contest_start=None, contest_name=None):
-        return super().__new__(cls, id, contest_id, problem_index, name,
-                               difficulty, contest_start, contest_name)
-
-    @property
-    def key(self):
-        # The canonical challenge key, mirroring Problem.key on Codeforces.
-        return self.id
-
-    @property
-    def contestId(self):
-        # CF-vocabulary alias so uniform accessors work across platforms.
-        return self.contest_id
-
-    @property
-    def index(self):
-        return self.problem_index.upper()
-
-    @property
-    def url(self):
-        return f'{BASE_URL}/contests/{self.contest_id}/tasks/{self.id}'
-
-    @property
-    def contest_type(self):
-        return re.match(r"^([a-z]+)", self.contest_id).group(1)
-
-    def has_difficulty(self):
-        return self.difficulty is not None
-
-    @property
-    def rating(self):
-        return self.difficulty
-
-class AtCoderSubmission(namedtuple('AtCoderSubmission',
-                                   'epoch_second problem_id result')):
-    """One entry from kenkoooo's per-user submission API."""
-    __slots__ = ()
-
-    @property
-    def is_ac(self):
-        return self.result == 'AC'
-
-
-class AtCoderContest(namedtuple('AtCoderContest',
-                                'id start_epoch_second title')):
-    """One entry from kenkoooo's contests.json."""
-    __slots__ = ()
-
-
-async def _fetch_json(session, url):
+async def _fetch_json(
+    session: Optional[aiohttp.ClientSession],
+    url: str,
+) -> Optional[JsonValue]:
     """GET ``url`` and return parsed JSON, or None on failure.
 
     Retries 403/429 once, like ``get_user``. Callers own the request lock.
@@ -306,6 +267,7 @@ async def _fetch_json(session, url):
     if own_session:
         session = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=_REQUEST_TIMEOUT_SECONDS))
+    assert session is not None
     try:
         for attempt in range(_MAX_RETRIES + 1):
             status, raw = await _fetch_page(session, url)
@@ -327,9 +289,13 @@ async def _fetch_json(session, url):
     finally:
         if own_session:
             await session.close()
+    return None
 
 
-async def get_problems(*, session=None):
+async def get_problems(
+    *,
+    session: Optional[aiohttp.ClientSession] = None,
+) -> Optional[List[AtCoderProblem]]:
     """Fetch the full AtCoder problem list from kenkoooo's static dataset.
 
     Returns a list of ``AtCoderProblem`` (without difficulty ratings), or
@@ -338,15 +304,21 @@ async def get_problems(*, session=None):
     data = await _fetch_json(session, _PROBLEMS_URL)
     if not data:
         return None
-    problems = []
+    assert isinstance(data, list)
+    problems: List[AtCoderProblem] = []
     for entry in data:
+        assert isinstance(entry, dict)
         problems.append(AtCoderProblem(
-            entry['id'], entry['contest_id'], entry['problem_index'],
-            entry['name']))
+            str(entry['id']), str(entry['contest_id']), '', str(entry['problem_index']),
+            str(entry['name']),
+            ))
     return problems
 
 
-async def get_problem_models(*, session=None):
+async def get_problem_models(
+    *,
+    session: Optional[aiohttp.ClientSession] = None,
+) -> Optional[Dict[str, int]]:
     """Fetch kenkoooo's difficulty model map.
 
     Returns a dict mapping problem id -> clipped difficulty (int). Models
@@ -356,7 +328,8 @@ async def get_problem_models(*, session=None):
     data = await _fetch_json(session, _PROBLEM_MODELS_URL)
     if not data:
         return None
-    models = {}
+    assert isinstance(data, dict)
+    models: Dict[str, int] = {}
     for problem_id, model in data.items():
         if not isinstance(model, dict) or model.get('is_experimental'):
             continue
@@ -368,7 +341,10 @@ async def get_problem_models(*, session=None):
     return models
 
 
-async def get_contests(*, session=None):
+async def get_contests(
+    *,
+    session: Optional[aiohttp.ClientSession] = None,
+) -> Optional[Dict[str, AtCoderContest]]:
     """Fetch kenkoooo's contest list.
 
     Returns a dict mapping contest id -> ``AtCoderContest``, or None when the
@@ -377,14 +353,27 @@ async def get_contests(*, session=None):
     data = await _fetch_json(session, _CONTESTS_URL)
     if not data:
         return None
-    contests = {}
+    assert isinstance(data, list)
+    contests: Dict[str, AtCoderContest] = {}
     for entry in data:
-        contests[entry['id']] = AtCoderContest(
-            entry['id'], entry['start_epoch_second'], entry['title'])
+        assert isinstance(entry, dict)
+        contest_id = entry['id']
+        start_time = entry['start_epoch_second']
+        title = entry['title']
+        assert isinstance(contest_id, (int, str))
+        assert isinstance(start_time, (int, float))
+        assert isinstance(title, str)
+        contests[str(contest_id)] = AtCoderContest(
+            str(contest_id), int(start_time), title)
     return contests
 
 
-async def get_user_submissions(handle, *, session=None, max_pages=_MAX_SUBMISSION_PAGES):
+async def get_user_submissions(
+    handle: str,
+    *,
+    session: Optional[aiohttp.ClientSession] = None,
+    max_pages: int = _MAX_SUBMISSION_PAGES,
+) -> Optional[List[AtCoderSubmission]]:
     """Fetch every submission of ``handle`` from kenkoooo's v3 API.
 
     The API returns at most 500 submissions after a given timestamp, so the
@@ -399,7 +388,7 @@ async def get_user_submissions(handle, *, session=None, max_pages=_MAX_SUBMISSIO
     same exact second of a full page; verdict-keyed solved sets make a
     re-issue the only consequence.
     """
-    submissions = []
+    submissions: List[AtCoderSubmission] = []
     from_second = 0
     for _ in range(max_pages):
         url = f'{_SUBMISSIONS_URL}?user={handle}&from_second={from_second}'
@@ -407,11 +396,20 @@ async def get_user_submissions(handle, *, session=None, max_pages=_MAX_SUBMISSIO
             page = await _fetch_json(session, url)
         if page is None:
             return None if not submissions else submissions
-        page = [AtCoderSubmission(s['epoch_second'],
-                                  s['problem_id'], s['result'])
-                for s in page if isinstance(s, dict)]
-        submissions.extend(page)
-        if len(page) < 500:
+        assert isinstance(page, list)
+        page_subs = []
+        for s in page:
+            if not isinstance(s, dict):
+                continue
+            epoch = s['epoch_second']
+            problem_id = s['problem_id']
+            result = s['result']
+            assert isinstance(epoch, (int, float))
+            assert isinstance(problem_id, str)
+            assert isinstance(result, str)
+            page_subs.append(AtCoderSubmission(int(epoch), problem_id, result))
+        submissions.extend(page_subs)
+        if len(page_subs) < 500:
             break
-        from_second = max(s.epoch_second for s in page) + 1
+        from_second = max(s.epoch_second for s in page_subs) + 1
     return submissions

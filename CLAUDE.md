@@ -132,6 +132,7 @@ The Gemini system instruction advertises **only** URL reading, never web search.
 ## Running tests
 
 ```bash
+pyright  # island only — see [tool.pyright] include; full-repo coverage planned later
 python3 -m pytest tests/ -v
 ```
 

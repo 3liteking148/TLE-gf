@@ -8,6 +8,8 @@ import itertools
 from discord.ext import commands
 import discord
 
+from typing import Dict, List, Optional
+
 from tle import constants
 from tle.util import cache_system2
 from tle.util import codeforces_api as cf
@@ -41,7 +43,7 @@ cache2 = None
 # Event system
 event_sys = events.EventSystem()
 
-_contest_id_to_writers_map = None
+_contest_id_to_writers_map: Optional[Dict[int, List[str]]] = None
 
 _initialize_done = False
 
@@ -118,11 +120,13 @@ def user_guard(*, group, get_exception=None):
     return guard
 
 
-def is_contest_writer(contest_id, handle):
+def is_contest_writer(contest_id: int | str | None, handle: str) -> bool:
     if _contest_id_to_writers_map is None:
         return False
+    if not isinstance(contest_id, int):
+        return False
     writers = _contest_id_to_writers_map.get(contest_id)
-    return writers and handle.lower() in writers
+    return bool(writers and handle.lower() in writers)
 
 
 _NONSTANDARD_CONTEST_INDICATORS = [
@@ -133,15 +137,20 @@ _NONSTANDARD_CONTEST_INDICATORS = [
 def is_nonstandard_contest(contest):
     return any(string in contest.name.lower() for string in _NONSTANDARD_CONTEST_INDICATORS)
 
-def is_nonstandard_problem(problem):
-    return (is_nonstandard_contest(cache2.contest_cache.get_contest(problem.contestId)) or
+def is_nonstandard_problem(problem) -> bool:
+    if cache2 is None:
+        return False
+    if not isinstance(problem.contestId, int):
+        return bool(problem.matches_all_tags(['*special']))
+    return bool(is_nonstandard_contest(cache2.contest_cache.get_contest(problem.contestId)) or
             problem.matches_all_tags(['*special']))
 
 
-async def get_visited_contests(handles : [str]):
+async def get_visited_contests(handles : List[str]):
     """ Returns a set of contest ids of contests that any of the given handles
         has at least one non-CE submission.
     """
+    assert cache2 is not None  # initialized in initialize()
     user_submissions = [await cf.user.status(handle=handle) for handle in handles]
     problem_to_contests = cache2.problemset_cache.problem_to_contests
 
@@ -205,10 +214,11 @@ async def resolve_handles(ctx, converter, handles, *, mincnt=1, maxcnt=5, defaul
     Resolution rules:
       !<digits>   — Discord user by ID (internal, used for self-lookup)
       !<name>     — Discord user by name via converter (user-facing, e.g. ;versus !user)
-      <@id>       — Discord mention
-      -c<handle>  — Force raw Codeforces handle (skip Discord lookup)
-      plain text  — Try Discord username → display name → raw CF handle
+       <@id>       — Discord mention
+       -c<handle>  — Force raw Codeforces handle (skip Discord lookup)
+       plain text  — Try Discord username → display name → raw CF handle
     """
+    assert user_db is not None  # initialized in initialize()
     handles = set(handles)
     if default_to_all_server and not handles:
         handles.add('+server')
@@ -276,7 +286,8 @@ def _resolve_member_by_name(guild, name):
             return m
     return None
 
-def members_to_handles(members: [discord.Member], guild_id):
+def members_to_handles(members: List[discord.Member], guild_id):
+    assert user_db is not None  # initialized in initialize()
     handles = []
     for member in members:
         handle = user_db.get_handle(member.id, guild_id)
@@ -362,6 +373,7 @@ class SubFilter:
         """Filters and keeps only solved submissions. If a problem is solved multiple times the first
         accepted submission is kept. The unique id for a problem is (problem name, contest start time).
         """
+        assert cache2 is not None  # initialized in initialize()
         submissions.sort(key=lambda sub: sub.creationTimeSeconds)
         problems = set()
         solved_subs = []
@@ -378,6 +390,7 @@ class SubFilter:
         return solved_subs
 
     def filter_subs(self, submissions):
+        assert cache2 is not None  # initialized in initialize()
         submissions = SubFilter.filter_solved(submissions)
         filtered_subs = []
         for submission in submissions:

@@ -11,15 +11,30 @@ AtCoder and raise explicitly.
 ``AtcoderGitgudMixin`` is re-exported here (from ``_gitgud.py``) so the
 ``Codeforces`` cog and the gitgud tests keep their existing imports.
 """
+from __future__ import annotations
+
+from typing import Any, List, Optional, Sequence, Set, Tuple, TYPE_CHECKING
+
 from tle.util import atcoder_api
 from tle.util import codeforces_common as cf_common
 from tle.cogs._gitgud import GitgudMixin
+from tle.cogs._gitgud_protocol import ActiveChallenge, ContestId, GitgudProblem, PIndex
 from tle.cogs._codeforces_helpers import (
     CodeforcesCogError,
     _checkGitgudTags,
     _parseGitgudRatingArgs,
 )
 from tle.cogs._gitgud_scoring import AC_SCORE_MODEL
+from tle.util._atcoder_api_types import AtCoderProblem
+
+if TYPE_CHECKING:
+    from discord.ext.commands import Context as DiscordContext
+    from discord.ext.commands import Converter as DiscordConverter
+    GitgudCtx = DiscordContext
+    GitgudConverter = DiscordConverter
+else:
+    GitgudCtx = Any
+    GitgudConverter = Any
 
 
 class AtcoderGitgudMixin(GitgudMixin):
@@ -31,64 +46,66 @@ class AtcoderGitgudMixin(GitgudMixin):
 class _AcBackend:
     """AtCoder-flavoured problem acquisition and selection."""
 
-    platform = 'ac'
+    platform: str = 'ac'
     score_model = AC_SCORE_MODEL
 
-    def parse_args(self, args, rating):
+    def parse_args(
+        self, args: Sequence[str], rating: int
+    ) -> Tuple[int, int, bool, List[str], List[str]]:
         """Parse gitgud args: an optional rating or range plus optional
         ``+``/``~`` contest-type filters. ``rating`` is the 0-4000-clamped
         user rating used as the default range. Returns
         ``(srating, erating, hidden, tags, bantags)``."""
-        tags = cf_common.parse_tags(args, prefix='+')
-        bantags = cf_common.parse_tags(args, prefix='~')
+        tags: List[str] = cf_common.parse_tags(args, prefix='+')
+        bantags: List[str] = cf_common.parse_tags(args, prefix='~')
         error = ('Wrong rating requested. AtCoder gitgud uses rating '
                  f'({atcoder_api.RATING_MIN}-{atcoder_api.RATING_MAX}).')
         srating, erating, hidden = _parseGitgudRatingArgs(
             args, rating, error,
             bounds=(atcoder_api.RATING_MIN, atcoder_api.RATING_MAX))
 
-        contest_types = {prob.contest_type for prob
-                         in cf_common.cache2.atcoder_problem_cache.problems}
+        contest_types: Set[str] = {prob.contest_type for prob
+                                   in cf_common.cache2.atcoder_problem_cache.problems}
         _checkGitgudTags(tags, bantags, contest_types, exact=True)
 
-        if srating == erating: # adjust to compensate for lack of rounding in atcoder
+        if srating == erating:  # adjust to compensate for lack of rounding in atcoder
             srating = max(srating - 100, atcoder_api.RATING_MIN)
             erating = min(erating + 100, atcoder_api.RATING_MAX)
 
         return srating, erating, hidden, tags, bantags
 
-    async def resolve_handle(self, ctx, converter=None):
-        user_id = ctx.message.author.id
+    async def resolve_handle(self, ctx: GitgudCtx, converter: Optional[GitgudConverter] = None) -> str:
+        user_id: int = ctx.message.author.id
         if ctx.guild is None:
             raise CodeforcesCogError(
                 'AtCoder handles are per-server; run `;atcoder identify '
                 '<handle>` in a server first.')
-        handle = cf_common.user_db.get_atcoder_handle(user_id, ctx.guild.id)
+        handle: Optional[str] = cf_common.user_db.get_atcoder_handle(user_id, ctx.guild.id)
         if handle is None:
             raise CodeforcesCogError(
                 f'No AtCoder handle found for you. Link one with '
                 '`;atcoder identify <handle>`.')
         return handle
 
-    async def validate_handle(self, ctx, converter=None):
+    async def validate_handle(self, ctx: GitgudCtx, converter: Optional[GitgudConverter] = None) -> None:
         # AtCoder skips need no handle re-validation.
         return None
 
-    async def fetch_rating(self, handle):
+    async def fetch_rating(self, handle: str) -> int:
         user = await atcoder_api.get_user(handle)
         if user is None:
             raise CodeforcesCogError(f'AtCoder user `{handle}` not found')
-        rating = atcoder_api.parse_rating(user.rating)
+        rating: Optional[int] = atcoder_api.parse_rating(user.rating)
         if rating is None:
             return atcoder_api.RATING_MIN
         return rating
 
-    def scale_rating(self, rating):
+    def scale_rating(self, rating: int) -> Tuple[int, int]:
         scaled = max(atcoder_api.RATING_MIN,
                      min(atcoder_api.RATING_MAX, rating))
         return scaled, scaled
 
-    async def fetch_solved(self, handle, *, only_ac=True):
+    async def fetch_solved(self, handle: str, *, only_ac: bool = True) -> Set[str]:
         submissions = await atcoder_api.get_user_submissions(handle)
         if submissions is None:
             raise CodeforcesCogError(
@@ -98,7 +115,9 @@ class _AcBackend:
             return {s.problem_id for s in submissions}
         return {s.problem_id for s in submissions if s.is_ac}
 
-    async def verify_claim(self, ctx, handle, active, submission_url=None):
+    async def verify_claim(
+        self, ctx: GitgudCtx, handle: str, active: ActiveChallenge, submission_url: Optional[str] = None
+    ) -> None:
         """Verify the invoker's pasted submission link proves the challenge
         is solved.
 
@@ -157,46 +176,57 @@ class _AcBackend:
                 'That submission is for a different problem than your '
                 'challenge.')
 
-    def nogud_set(self, user_id):
+    def nogud_set(self, user_id: int) -> Set[str]:
         return cf_common.user_db.get_nogud_problem_keys(user_id)
 
-    def select_pool(self, srating, erating, solved, noguds, tags, bantags, handle):
+    def select_pool(
+        self,
+        srating: int,
+        erating: int,
+        solved: Set[str],
+        noguds: Set[str],
+        tags: List[str],
+        bantags: List[str],
+        handle: str,
+    ) -> Sequence[GitgudProblem]:
         """Filter the AtCoder problem cache by difficulty range and the
         solved/nogud sets; sorted by contest start. Empty when nothing fits —
         the caller raises 'No problem to assign'."""
         # ``prob.rating`` is forced uniform API (aliases ``difficulty`` on
         # AtCoder).  Filtering uses rating so both platforms share the same
         # attribute name.
-        problems = [prob for prob in cf_common.cache2.atcoder_problem_cache.problems
-                    if prob.rating >= srating and prob.rating <= erating
-                    and prob.id not in solved and prob.id not in noguds
-                    and ('abc' in prob.contestId or 'arc' in prob.contestId or 'agc' in prob.contestId)
-                    and set([prob.contest_type]).issuperset(set(tags))
-                    and set([prob.contest_type]).isdisjoint(set(bantags))]
-        problems.sort(key=lambda problem: problem.contest_start)
+        problems: List[AtCoderProblem] = [prob for prob in cf_common.cache2.atcoder_problem_cache.problems
+                                         if prob.rating is not None
+                                         and prob.rating >= srating and prob.rating <= erating
+                                         and prob.id not in solved and prob.id not in noguds
+                                         and ('abc' in prob.contestId or 'arc' in prob.contestId or 'agc' in prob.contestId)
+                                         and set([prob.contest_type]).issuperset(set(tags))
+                                         and set([prob.contest_type]).isdisjoint(set(bantags))]
+        problems.sort(key=lambda problem: problem.contest_start or 0)
         return problems
 
-    async def fetch_participated(self, handle):
+    async def fetch_participated(self, handle: str) -> Set[int]:
         raise CodeforcesCogError(
             ';upsolve is not implemented for AtCoder yet')
 
-    def select_upsolve_pool(self, solved, participated):
+    def select_upsolve_pool(
+        self, solved: Set[str], participated: Set[int]
+    ) -> List[GitgudProblem]:
         raise CodeforcesCogError(
             ';upsolve is not implemented for AtCoder yet')
 
-    def select_gimme_pool(self, args, handle, solved, rating):
+    def select_gimme_pool(
+        self, args: Sequence[str], handle: str, solved: Set[str], rating: int
+    ) -> Tuple[List[GitgudProblem], List[str], bool]:
         raise CodeforcesCogError(
             ';gimme is not implemented for AtCoder yet')
 
-    def lookup_problem(self, problem_key):
+    def lookup_problem(self, problem_key: str) -> GitgudProblem:
         # Challenge rows are keyed by problem id on AtCoder.
         return cf_common.cache2.atcoder_problem_cache.problem_by_id[problem_key]
 
-    def active_url(self, contest_id, problem_key, p_index=None):
+    def active_url(self, contest_id: ContestId, problem_key: str, p_index: PIndex = None) -> str:
         # The key is the problem id, so the URL is built from row data alone
         # with no cache access. p_index (the letter after the underscore) is
         # unused here — AtCoder task URLs need the full problem id.
         return f'{atcoder_api.BASE_URL}/contests/{contest_id}/tasks/{problem_key}'
-
-    def contest_name_of(self, problem):
-        return problem.contest_name

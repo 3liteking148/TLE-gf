@@ -1,5 +1,8 @@
+from __future__ import annotations
+
 import asyncio
 import logging
+from typing import Any
 
 from discord.ext import commands
 
@@ -203,7 +206,7 @@ class TaskSpec:
 
         return decorator
 
-    def __get__(self, instance, owner):
+    def __get__(self, instance: Any, owner: type[Any] | None) -> Any:
         if instance is None:
             return self
         try:

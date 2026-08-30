@@ -48,7 +48,7 @@ class TestAtCoderProblem:
         assert p.has_difficulty()
 
     def test_no_difficulty(self):
-        p = atcoder_api.AtCoderProblem('abc383_a', 'abc383', 'a', 'A - X')
+        p = atcoder_api.AtCoderProblem('abc383_a', 'abc383', '', 'a', 'A - X')
         assert not p.has_difficulty()
 
 
@@ -134,11 +134,11 @@ class TestGetUserSubmissions:
 class TestAtcoderProblemCache:
     def _datasets(self):
         problems = [
-            atcoder_api.AtCoderProblem('abc383_a', 'abc383', 'a', 'A - P1'),
-            atcoder_api.AtCoderProblem('abc383_b', 'abc383', 'b', 'B - P2'),
-            atcoder_api.AtCoderProblem('ahc041_a', 'ahc041', 'a', 'A - Heur'),
-            atcoder_api.AtCoderProblem('arc184_a', 'arc184', 'a', 'A - P3'),
-            atcoder_api.AtCoderProblem('ghost_a', 'ghost', 'a', 'A - Ghost'),
+            atcoder_api.AtCoderProblem('abc383_a', 'abc383', '', 'a', 'A - P1'),
+            atcoder_api.AtCoderProblem('abc383_b', 'abc383', '', 'b', 'B - P2'),
+            atcoder_api.AtCoderProblem('ahc041_a', 'ahc041', '', 'a', 'A - Heur'),
+            atcoder_api.AtCoderProblem('arc184_a', 'arc184', '', 'a', 'A - P3'),
+            atcoder_api.AtCoderProblem('ghost_a', 'ghost', '', 'a', 'A - Ghost'),
         ]
         models = {'abc383_a': 1200, 'abc383_b': 1500, 'arc184_a': 2000}
         contests = {

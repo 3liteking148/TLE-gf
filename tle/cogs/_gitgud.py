@@ -17,6 +17,7 @@ existing imports (the ``Codeforces`` cog and the gitgud tests) keep working.
 import datetime
 import random
 
+# pyright: reportAttributeAccessIssue=false, reportArgumentType=false, reportReturnType=false
 import discord
 
 from tle import constants
@@ -131,7 +132,7 @@ class GitgudMixin:
         monthlypoints = 2 * points if morePointsActive else points
 
         title = f'{problem.index}. {problem.name}'
-        desc = backend.contest_name_of(problem)
+        desc = problem.contest_name
         rating = problem.rating
         ratingStr = rating if not hidden else '||' + str(rating) + '||'
         pointsStr = points if not hidden else '||' + str(points) + '||'
@@ -371,7 +372,7 @@ class GitgudMixin:
         problem = problems[choice]
 
         title = f'{problem.index}. {problem.name}'
-        desc = backend.contest_name_of(problem)
+        desc = problem.contest_name
         embed = discord.Embed(title=title, url=problem.url, description=desc)
         rating = problem.rating
         ratingStr = rating if not hidden else '||' + str(rating) + '||'

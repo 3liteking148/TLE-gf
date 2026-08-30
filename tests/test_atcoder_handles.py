@@ -183,9 +183,10 @@ class TestMigration:
 # ;atcoder identify flow
 # =====================================================================
 
-class FakeMember:
+class FakeMember():
     def __init__(self, uid):
         self.id = uid
+        self.guild = FakeGuild(0)
 
     @property
     def mention(self):
