@@ -1,5 +1,6 @@
 import datetime
 import logging
+import re
 import time
 
 import discord
@@ -54,6 +55,12 @@ class Complain(commands.Cog):
                     'Please wait before filing another.'
                 ))
                 return
+
+        if not re.search(r'\S', text):
+            await ctx.send(embed=discord_common.embed_alert(
+                'Complaint text must not be empty or whitespace.'
+            ))
+            return
 
         if len(text) > _MAX_COMPLAINT_LENGTH:
             await ctx.send(embed=discord_common.embed_alert(

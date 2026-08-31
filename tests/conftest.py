@@ -330,6 +330,7 @@ _load_module('tle.cogs.migrate', os.path.join(_cogs_path, 'migrate.py'))
 _load_module('tle.cogs.rpoll', os.path.join(_cogs_path, 'rpoll.py'))
 _load_module('tle.cogs.codeforces', os.path.join(_cogs_path, 'codeforces.py'))
 _load_module('tle.cogs.handles', os.path.join(_cogs_path, 'handles.py'))
+_load_module('tle.cogs.complain', os.path.join(_cogs_path, 'complain.py'))
 
 # graph_common stubs for versus.py
 _gc = sys.modules['tle.util.graph_common']

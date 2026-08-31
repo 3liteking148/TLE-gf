@@ -1,9 +1,13 @@
-"""Tests for the complaint feature — DB layer and upgrade."""
+"""Tests for the complaint feature — DB layer, upgrade, and cog validation."""
+import asyncio
 import sqlite3
 import time
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from tle.cogs.complain import Complain
+from tle.util import codeforces_common as cf_common
 from tle.util.db.user_db_conn import UserDbConn, namedtuple_factory
 
 
@@ -342,3 +346,60 @@ class TestUpgrade1190:
         upgrade_1_19_0(conn)  # already has active from fresh schema
         upgrade_1_19_0(conn)  # should not raise
         conn.close()
+
+
+# =====================================================================
+# Cog-level: whitespace / empty-text rejection
+# =====================================================================
+
+
+def _make_ctx(text):
+    """Build a minimal async-mock context for the complain command."""
+    ctx = AsyncMock()
+    ctx.author = MagicMock()
+    ctx.author.id = '42'
+    ctx.author.roles = []
+    ctx.guild = MagicMock()
+    ctx.guild.id = '111'
+    ctx.message = MagicMock()
+    ctx.message.jump_url = 'https://discord.com/channels/1/2/3'
+    return ctx
+
+
+class _SpyComplainDb(FakeComplainDb):
+    """Spy subclass that records add_complaint calls."""
+    def __init__(self):
+        super().__init__()
+        self.added = []
+
+    def add_complaint(self, guild_id, user_id, text, message_link=None):
+        self.added.append((guild_id, user_id, text))
+        return len(self.added)
+
+    def count_recent_complaints(self, guild_id, user_id, since):
+        return 0
+
+
+@pytest.fixture
+def cog():
+    return Complain(bot=MagicMock())
+
+
+class TestComplainWhitespaceRejects:
+    @pytest.mark.parametrize('text', ['', ' ', '\t', '\n', '\r\n', '   \t\n  '])
+    def test_rejected(self, cog, monkeypatch, text):
+        fake_db = _SpyComplainDb()
+        ctx = _make_ctx(text)
+        monkeypatch.setattr(cf_common, 'user_db', fake_db)
+        asyncio.run(cog.complain.__wrapped__(cog, ctx, text=text))
+        ctx.send.assert_called_once()
+        assert fake_db.added == []
+
+    @pytest.mark.parametrize('text', ['hello', '  hello  ', 'a\nb'])
+    def test_accepted(self, cog, monkeypatch, text):
+        fake_db = _SpyComplainDb()
+        ctx = _make_ctx(text)
+        monkeypatch.setattr(cf_common, 'user_db', fake_db)
+        asyncio.run(cog.complain.__wrapped__(cog, ctx, text=text))
+        assert len(fake_db.added) == 1
+        assert fake_db.added[0][2] == text
