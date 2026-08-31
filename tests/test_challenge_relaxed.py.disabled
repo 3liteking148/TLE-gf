@@ -1,0 +1,316 @@
+"""Relaxed partial resolves for batch-aware gitgud.
+
+Verifies the ``relaxed`` opt-in for ``resolve_challenges``: ``relaxed=False``
+(default) stays strict batch-atomic; ``relaxed=True`` allows subset resolves
+for progression while keeping safety checks (empty/duplicate/cross-batch/
+current_batch_id/wrong user/non-GITGUD/unknown id) and clearing
+``current_batch_id`` only when no actives remain. Legacy counters
+``num_completed``/``num_skipped`` are asserted to stay 0; only ``score``
+aggregates. Every test has an inline description comment + docstring.
+"""
+from types import SimpleNamespace
+
+from tle.util.db.user_db_conn import Gitgud, UserDbConn
+
+
+def _prob(name, contest=1000, idx='A'):
+    # Minimal GitgudProblem shape for new_challenge/new_challenges.
+    return SimpleNamespace(name=name, contestId=contest, index=idx, key=name)
+
+
+def _items(n=4, prefix='Q'):
+    # n distinct problems with delta 0, score None (defaults via ladder).
+    return [(_prob(f'{prefix}{i}'), 0, None, 'cf') for i in range(n)]
+
+
+def _nums(db, uid):
+    # Legacy counters must stay 0; score is sole aggregate.
+    row = db.conn.execute(
+        'SELECT num_completed, num_skipped FROM user_challenge WHERE user_id=?', (uid,)
+    ).fetchone()
+    return (row[0], row[1]) if row else (None, None)
+
+
+UID = 'U1'
+OTHER = 'U2'
+BATCH_A = '111111'
+BATCH_B = '222222'
+T = 1000.0
+
+
+# ---------------------------------------------------------------------------
+# Relaxed mode — default is strict; relaxed=True allows partials
+# ---------------------------------------------------------------------------
+
+class TestRelaxedDefaultIsStrict:
+    # Description: default (relaxed=False) is strict; same partial succeeds
+    # only when relaxed=True. Verifies the new opt-in flag.
+    def test_default_strict_partial_fails_relaxed_succeeds(self):
+        """Partial 1/4 fails strict, succeeds relaxed; strict keeps state."""
+        db = UserDbConn(':memory:')
+        assert db.new_challenges(UID, BATCH_A, T, _items()) == 4
+        cids = [r[0] for r in db.list_active_challenges(UID)]
+        # strict (default) partial must fail
+        assert db.resolve_challenges(UID, completions=[(cids[0], T + 10, 5)]) == 0
+        assert db.count_active_challenges(UID) == 4
+        assert db.get_current_batch_id(UID) == BATCH_A
+        # same subset with relaxed=True commits one row
+        assert db.resolve_challenges(UID, completions=[(cids[0], T + 10, 5)], relaxed=True) == 1
+        assert db.count_active_challenges(UID) == 3
+        assert db.get_current_batch_id(UID) == BATCH_A  # not cleared until 0 remain
+        assert db.get_gudgitter_score(UID) == 5
+        assert _nums(db, UID) == (0, 0)
+
+
+class TestRelaxedPartialFlow:
+    # Description: relaxed allows 1-complete partial; remaining count and
+    # current_batch_id are preserved, blocking new batch issues.
+    def test_relaxed_single_complete_from_four_keeps_batch_alive(self):
+        """Relaxed 1/4 complete keeps batch alive and blocks new batch."""
+        db = UserDbConn(':memory:')
+        assert db.new_challenges(UID, BATCH_A, T, _items()) == 4
+        cids = [r[0] for r in db.list_active_challenges(UID)]
+        assert db.resolve_challenges(UID, completions=[(cids[0], T + 10, 7)], relaxed=True) == 1
+        assert db.count_active_challenges(UID) == 3
+        assert db.get_current_batch_id(UID) == BATCH_A
+        # new batch still blocked while actives remain
+        assert db.new_challenges(UID, BATCH_B, T + 20, _items()) == 0
+        assert db.new_challenge(UID, T + 20, _prob('P9'), 0, batch_id='') == 0
+        assert db.get_gudgitter_score(UID) == 7
+
+    # Description: relaxed mixed 1 complete + 1 skip subset.
+    def test_relaxed_mixed_partial_1complete_1skip(self):
+        """Relaxed 1 complete+1 skip (2/4) aggregates score, keeps batch."""
+        db = UserDbConn(':memory:')
+        assert db.new_challenges(UID, BATCH_A, T, _items()) == 4
+        cids = [r[0] for r in db.list_active_challenges(UID)]
+        assert db.resolve_challenges(
+            UID, completions=[(cids[0], T + 10, 6)], skips=[(cids[1], Gitgud.NOGUD)], relaxed=True
+        ) == 2
+        assert db.count_active_challenges(UID) == 2
+        assert db.get_gudgitter_score(UID) == 6
+        assert _nums(db, UID) == (0, 0)
+        assert db.get_current_batch_id(UID) == BATCH_A
+
+    # Description: sequential relaxed partials 1→1→2 finally clear the batch
+    # and only then allow a new batch.
+    def test_relaxed_sequential_until_clear_allows_new_batch(self):
+        """Sequential relaxed partials clear only when 0 remain, then allow B."""
+        db = UserDbConn(':memory:')
+        assert db.new_challenges(UID, BATCH_A, T, _items(prefix='S')) == 4
+        cids = [r[0] for r in db.list_active_challenges(UID)]
+        # 1/4
+        assert db.resolve_challenges(UID, completions=[(cids[0], T + 10, 5)], relaxed=True) == 1
+        assert db.count_active_challenges(UID) == 3
+        assert db.get_current_batch_id(UID) == BATCH_A
+        # 1/3
+        assert db.resolve_challenges(UID, completions=[(cids[1], T + 11, 8)], relaxed=True) == 1
+        assert db.count_active_challenges(UID) == 2
+        assert db.get_gudgitter_score(UID) == 13
+        # final 2/2 with skips
+        assert db.resolve_challenges(
+            UID, skips=[(cids[2], Gitgud.NOGUD), (cids[3], Gitgud.FORCED_NOGUD)], relaxed=True
+        ) == 2
+        assert db.count_active_challenges(UID) == 0
+        assert db.get_current_batch_id(UID) == ''
+        # now new batch allowed
+        assert db.new_challenges(UID, BATCH_B, T + 40, _items()) == 4
+
+    # Description: relaxed handles score=None as 0 without error.
+    def test_relaxed_score_none_counts_as_zero(self):
+        """score=None contributes 0 and still resolves."""
+        db = UserDbConn(':memory:')
+        assert db.new_challenges(UID, BATCH_A, T, _items()) == 4
+        cids = [r[0] for r in db.list_active_challenges(UID)]
+        assert db.resolve_challenges(UID, completions=[(cids[0], T + 10, None)], relaxed=True) == 1
+        assert db.get_gudgitter_score(UID) == 0
+        assert _nums(db, UID) == (0, 0)
+
+    # Description: classic single '' works under relaxed too (subset == whole).
+    def test_relaxed_single_classic_still_completes(self):
+        """Single '' with relaxed=True still resolves and clears."""
+        db = UserDbConn(':memory:')
+        assert db.new_challenge(UID, T, _prob('Solo'), 0, batch_id='') == 1
+        cid = db.list_active_challenges(UID)[0][0]
+        assert db.resolve_challenges(UID, completions=[(cid, T + 10, 9)], relaxed=True) == 1
+        assert db.count_active_challenges(UID) == 0
+        assert db.get_current_batch_id(UID) == ''
+
+
+# ---------------------------------------------------------------------------
+# Guards — relaxed still enforces empty/duplicate/cross-batch/batch_id checks
+# ---------------------------------------------------------------------------
+
+class TestRelaxedGuards:
+    # Description: empty completions+skips is still 0 even relaxed.
+    def test_relaxed_empty_still_zero(self):
+        """Empty call remains 0 even with relaxed=True."""
+        db = UserDbConn(':memory:')
+        assert db.new_challenges(UID, BATCH_A, T, _items()) == 4
+        assert db.resolve_challenges(UID, relaxed=True) == 0
+        assert db.count_active_challenges(UID) == 4
+
+    # Description: duplicate id within completions fails relaxed.
+    def test_relaxed_duplicate_within_completions(self):
+        """Duplicate id in completions → 0 relaxed."""
+        db = UserDbConn(':memory:')
+        assert db.new_challenges(UID, BATCH_A, T, _items()) == 4
+        cid = db.list_active_challenges(UID)[0][0]
+        assert db.resolve_challenges(
+            UID, completions=[(cid, T + 10, 5), (cid, T + 11, 6)], relaxed=True
+        ) == 0
+        assert db.count_active_challenges(UID) == 4
+
+    # Description: same id in both completions and skips fails relaxed.
+    def test_relaxed_duplicate_across_comps_and_skips(self):
+        """Same id in completions and skips → 0 relaxed."""
+        db = UserDbConn(':memory:')
+        assert db.new_challenges(UID, BATCH_A, T, _items()) == 4
+        cid = db.list_active_challenges(UID)[0][0]
+        assert db.resolve_challenges(
+            UID, completions=[(cid, T + 10, 5)], skips=[(cid, Gitgud.NOGUD)], relaxed=True
+        ) == 0
+        assert db.count_active_challenges(UID) == 4
+
+    # Description: cross-batch spoof still rejected under relaxed.
+    def test_relaxed_cross_batch_still_rejected(self):
+        """Cross-batch (BATCH_A+BATCH_B) still 0 relaxed, no partial."""
+        db = UserDbConn(':memory:')
+        assert db.new_challenges(UID, BATCH_A, T, _items()) == 4
+        db.conn.execute(
+            'INSERT INTO challenge (user_id, issue_time, problem_name, contest_id, p_index, rating_delta, status, platform, score, batch_id) '
+            'VALUES (?,?,?,?,?,?,?,?,?,?)',
+            (UID, T, 'SPOOF', 9999, 'Z', 0, 1, 'cf', 5, BATCH_B),
+        )
+        db.conn.commit()
+        cid_a = db.conn.execute('SELECT id FROM challenge WHERE problem_name="Q0"').fetchone()[0]
+        spoof_id = db.conn.execute('SELECT id FROM challenge WHERE problem_name="SPOOF"').fetchone()[0]
+        assert db.resolve_challenges(UID, completions=[(cid_a, T + 10, 5)], skips=[(spoof_id, Gitgud.NOGUD)], relaxed=True) == 0
+        assert db.count_active_challenges(UID) == 5
+
+    # Description: '' mixed with BATCH_A distinct batch_ids still rejected relaxed.
+    def test_relaxed_mixed_null_and_str_rejected(self):
+        """'' + BATCH_A distinct → 0 relaxed."""
+        db = UserDbConn(':memory:')
+        db.conn.execute(
+            'INSERT INTO challenge (user_id, issue_time, problem_name, contest_id, p_index, rating_delta, status, platform, score, batch_id) '
+            'VALUES (?,?,?,?,?,?,?,?,?,?)',
+            (UID, T, 'A', 1, 'A', 0, 1, 'cf', 5, ''),
+        )
+        db.conn.execute(
+            'INSERT INTO challenge (user_id, issue_time, problem_name, contest_id, p_index, rating_delta, status, platform, score, batch_id) '
+            'VALUES (?,?,?,?,?,?,?,?,?,?)',
+            (UID, T, 'B', 1, 'B', 0, 1, 'cf', 5, BATCH_A),
+        )
+        db.conn.execute(
+            'INSERT OR IGNORE INTO user_challenge (user_id, score, num_completed, num_skipped, current_batch_id) VALUES (?,?,?,?,?)',
+            (UID, 0, 0, 0, BATCH_A),
+        )
+        db.conn.commit()
+        cids = [r[0] for r in db.conn.execute('SELECT id FROM challenge WHERE user_id=? ORDER BY id', (UID,)).fetchall()]
+        assert db.resolve_challenges(UID, completions=[(cids[0], T + 10, 5)], skips=[(cids[1], Gitgud.NOGUD)], relaxed=True) == 0
+
+    # Description: tampered current_batch_id mismatch still rejected relaxed.
+    def test_relaxed_mismatched_current_batch_still_rejected(self):
+        """current_batch_id mismatch → 0 relaxed."""
+        db = UserDbConn(':memory:')
+        assert db.new_challenges(UID, BATCH_A, T, _items()) == 4
+        db.conn.execute('UPDATE user_challenge SET current_batch_id=? WHERE user_id=?', ('spoof', UID))
+        db.conn.commit()
+        cid = db.list_active_challenges(UID)[0][0]
+        assert db.resolve_challenges(UID, completions=[(cid, T + 10, 5)], relaxed=True) == 0
+
+    # Description: non-GITGUD or wrong-user id still fails relaxed.
+    def test_relaxed_non_gitgud_and_wrong_user_rejected(self):
+        """Wrong user or already GOTGUD status → 0 relaxed."""
+        db = UserDbConn(':memory:')
+        assert db.new_challenges(UID, BATCH_A, T, _items()) == 4
+        cids = [r[0] for r in db.list_active_challenges(UID)]
+        # wrong user
+        assert db.resolve_challenges(OTHER, completions=[(cids[0], T + 10, 5)], relaxed=True) == 0
+        # complete one relaxed, then try to complete it again
+        assert db.resolve_challenges(UID, completions=[(cids[0], T + 10, 5)], relaxed=True) == 1
+        assert db.resolve_challenges(UID, completions=[(cids[0], T + 12, 5)], relaxed=True) == 0
+        assert db.count_active_challenges(UID) == 3
+
+    # Description: unknown challenge id fails relaxed.
+    def test_relaxed_unknown_id_rejected(self):
+        """Unknown id 99999 → 0 relaxed."""
+        db = UserDbConn(':memory:')
+        assert db.new_challenges(UID, BATCH_A, T, _items()) == 4
+        assert db.resolve_challenges(UID, completions=[(99999, T + 10, 5)], relaxed=True) == 0
+
+    # Description: half-invalid call (one good, one bad) must roll back with no
+    # partial commit in relaxed mode.
+    def test_relaxed_no_partial_commit_on_half_invalid(self):
+        """Good+bad ids in one relaxed call → 0 and no row touched."""
+        db = UserDbConn(':memory:')
+        assert db.new_challenges(UID, BATCH_A, T, _items()) == 4
+        cids = [r[0] for r in db.list_active_challenges(UID)]
+        good = cids[0]
+        bad = 99999
+        assert db.resolve_challenges(UID, completions=[(good, T + 10, 5), (bad, T + 11, 6)], relaxed=True) == 0
+        # both counts and score unchanged, good still GITGUD
+        assert db.count_active_challenges(UID) == 4
+        assert db.get_gudgitter_score(UID) == 0
+        assert db.conn.execute('SELECT status FROM challenge WHERE id=?', (good,)).fetchone()[0] == Gitgud.GITGUD
+
+    # Description: relaxed partial keeps batch alive, blocking new challenges
+    # until the last row is resolved.
+    def test_relaxed_blocks_new_until_fully_cleared(self):
+        """After relaxed partial, new_challenge/new_challenges blocked; after final, allowed."""
+        db = UserDbConn(':memory:')
+        assert db.new_challenges(UID, BATCH_A, T, _items()) == 4
+        cids = [r[0] for r in db.list_active_challenges(UID)]
+        assert db.resolve_challenges(UID, completions=[(cids[0], T + 10, 5)], relaxed=True) == 1
+        assert db.new_challenge(UID, T + 20, _prob('P9'), 0, batch_id='') == 0
+        assert db.new_challenges(UID, BATCH_B, T + 20, _items()) == 0
+        # finish the rest relaxed
+        remaining = [r[0] for r in db.list_active_challenges(UID)]
+        assert db.resolve_challenges(UID, skips=[(_id, Gitgud.NOGUD) for _id in remaining], relaxed=True) == 3
+        assert db.count_active_challenges(UID) == 0
+        assert db.get_current_batch_id(UID) == ''
+        assert db.new_challenges(UID, BATCH_B, T + 40, _items()) == 4
+
+
+# ---------------------------------------------------------------------------
+# Legacy wrappers stay strict; num_* invariants
+# ---------------------------------------------------------------------------
+
+class TestWrappersStayStrictAndNums:
+    # Description: complete_challenge/skip_challenge shims stay strict — a
+    # single resolve on a batch is still batch-atomic.
+    def test_wrappers_remain_strict_on_four_batch(self):
+        """complete_challenge / skip_challenge 1/4 → 0 (still strict)."""
+        db = UserDbConn(':memory:')
+        assert db.new_challenges(UID, BATCH_A, T, _items()) == 4
+        cid = db.list_active_challenges(UID)[0][0]
+        assert db.complete_challenge(UID, cid, T + 10, 5) == 0
+        assert db.skip_challenge(UID, cid, Gitgud.NOGUD) == 0
+        assert db.count_active_challenges(UID) == 4
+        # relaxed explicit call is required for partial
+        assert db.resolve_challenges(UID, completions=[(cid, T + 10, 5)], relaxed=True) == 1
+
+    # Description: legacy counters num_completed/num_skipped must remain 0
+    # across all strict and relaxed resolves; only score aggregates.
+    def test_nums_stay_zero_across_strict_and_relaxed(self):
+        """num_completed/num_skipped stay 0; only score moves."""
+        db = UserDbConn(':memory:')
+        assert db.new_challenges(UID, BATCH_A, T, _items()) == 4
+        cids = [r[0] for r in db.list_active_challenges(UID)]
+        # strict full resolve 2 completes+2 skips
+        assert db.resolve_challenges(
+            UID, completions=[(cids[0], T + 10, 8), (cids[1], T + 11, 12)], skips=[(cids[2], Gitgud.NOGUD), (cids[3], Gitgud.FORCED_NOGUD)]
+        ) == 4
+        assert _nums(db, UID) == (0, 0)
+        assert db.get_gudgitter_score(UID) == 20
+        # second batch relaxed partials also keep 0
+        assert db.new_challenges(UID, BATCH_B, T + 50, _items(prefix='Z')) == 4
+        cids2 = [r[0] for r in db.list_active_challenges(UID)]
+        assert db.resolve_challenges(UID, completions=[(cids2[0], T + 60, 5)], relaxed=True) == 1
+        assert _nums(db, UID) == (0, 0)
+        # finish relaxed
+        rest = [r[0] for r in db.list_active_challenges(UID)]
+        assert db.resolve_challenges(UID, skips=[(_id, Gitgud.NOGUD) for _id in rest], relaxed=True) == 3
+        assert _nums(db, UID) == (0, 0)
+        assert db.get_gudgitter_score(UID) == 25

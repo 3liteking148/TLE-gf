@@ -101,23 +101,43 @@ class GitgudMixin:
         the raw key when the cache can't resolve it."""
         return self._problem_ref(backend, problem_key)[0]
 
-    async def _validate_gitgud_status(self, ctx):
+    async def _validate_gitgud_status(self, ctx, limit=1):
         user_id = ctx.message.author.id
-        active = cf_common.user_db.check_challenge(user_id)
-        if active is not None:
-            _, _, problem_key, contest_id, _, platform, p_index, _ = active
-            backend = self._backend_for_platform(platform)
-            name = self._active_problem_name(backend, problem_key)
-            url = backend.active_url(contest_id, problem_key, p_index)
-            raise CodeforcesCogError(f'You have an active challenge {name} at {url}')
+        actives = cf_common.user_db.list_active_challenges(user_id)
+        if len(actives) >= limit and len(actives) > 0:
+            if len(actives) == 1:
+                _, _, problem_key, contest_id, _, platform, p_index, _, _ = actives[0]
+                backend = self._backend_for_platform(platform)
+                name = self._active_problem_name(backend, problem_key)
+                url = backend.active_url(contest_id, problem_key, p_index)
+                raise CodeforcesCogError(f'You have an active challenge {name} at {url}')
+            # Show all actives; embed order is challenge.id
+            parts = []
+            for active in actives:
+                _, _, problem_key, contest_id, _, platform, p_index, _, _ = active
+                backend = self._backend_for_platform(platform)
+                name = self._active_problem_name(backend, problem_key)
+                url = backend.active_url(contest_id, problem_key, p_index)
+                parts.append(f'{name} at {url}')
+            raise CodeforcesCogError(f'You have {len(actives)} active challenge(s): ' + ', '.join(parts))
+
+    def _batch_id_for_ctx(self, ctx, issue_time):
+        try:
+            return f"snowflake-{ctx.message.id}"
+        except Exception:
+            pass
+
+        # fallback
+        return f"{int(issue_time * 1000)}-{random.randint(0, 999999)}"
 
     async def _gitgud(self, ctx, handle, problem, delta, score, hidden, backend):
         # The caller of this function is responsible for calling `_validate_gitgud_status` first.
         user_id = ctx.author.id
 
         issue_time = datetime.datetime.now().timestamp()
+        batch_id = self._batch_id_for_ctx(ctx, issue_time)
         rc = cf_common.user_db.new_challenge(
-            user_id, issue_time, problem, delta, score, backend.platform)
+            user_id, issue_time, problem, delta, score, backend.platform, batch_id)
         if rc != 1:
             raise CodeforcesCogError('Your challenge has already been added to the database!')
 

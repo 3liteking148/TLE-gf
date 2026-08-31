@@ -119,7 +119,7 @@ class TestGotgudCoinReward:
     def _issue_challenge(self, db, uid, name, delta=0):
         prob = SimpleNamespace(name=name, contestId=1234, index='A', key=name)
         issue_time = int(datetime.datetime.now().timestamp()) - 3600
-        assert db.new_challenge(uid, issue_time, prob, delta) == 1
+        assert db.new_challenge(uid, issue_time, prob, delta, batch_id='snowflake-300001') == 1
         return name
 
     def test_announces_coins_to_bettor_and_never_doubles_them(

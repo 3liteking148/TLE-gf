@@ -157,7 +157,7 @@ class TestAtcoderGitgudFlow:
                        _ac_problem('abc383_b', difficulty=1200,
                                    name='Keep it', index='b'))
         # Nogud abc383_a via a direct challenge row, then both are excluded.
-        db.new_challenge(USER_A, 1, _ac_problem('abc383_a'), 0, platform='ac')
+        db.new_challenge(USER_A, 1, _ac_problem('abc383_a'), 0, platform='ac', batch_id='snowflake-100161')
         cid = db.check_challenge(USER_A)[0]
         db.skip_challenge(USER_A, cid, Gitgud.NOGUD)
         ctx = self._ctx()
@@ -220,7 +220,7 @@ class TestAtcoderGitgudFlow:
     def test_gotgud_requires_submission_link(self, db, cog, monkeypatch):
         self._set_handle(db)
         self._patch_atcoder(monkeypatch)
-        db.new_challenge(USER_A, 1, _ac_problem('abc383_a'), 0, platform='ac')
+        db.new_challenge(USER_A, 1, _ac_problem('abc383_a'), 0, platform='ac', batch_id='snowflake-100162')
         with pytest.raises(CodeforcesCogError,
                            match='Paste your AtCoder submission link'):
             _run(cog._gotgud_impl(self._ctx()))
@@ -228,7 +228,7 @@ class TestAtcoderGitgudFlow:
     def test_gotgud_rejects_foreign_link(self, db, cog, monkeypatch):
         self._set_handle(db)
         self._patch_atcoder(monkeypatch)
-        db.new_challenge(USER_A, 1, _ac_problem('abc383_a'), 0, platform='ac')
+        db.new_challenge(USER_A, 1, _ac_problem('abc383_a'), 0, platform='ac', batch_id='snowflake-100163')
         with pytest.raises(CodeforcesCogError,
                            match='does not look like an AtCoder submission'):
             self._claim(cog, 'https://example.com/submissions/12345678')
@@ -237,7 +237,7 @@ class TestAtcoderGitgudFlow:
         self._set_handle(db)
         self._patch_atcoder(monkeypatch)
         self._patch_submission(monkeypatch)
-        db.new_challenge(USER_A, 1, _ac_problem('abc383_a'), 0, platform='ac')
+        db.new_challenge(USER_A, 1, _ac_problem('abc383_a'), 0, platform='ac', batch_id='snowflake-100164')
         with pytest.raises(CodeforcesCogError,
                            match='Could not read that submission'):
             self._claim(cog)
@@ -248,7 +248,7 @@ class TestAtcoderGitgudFlow:
         self._patch_submission(
             monkeypatch,
             atcoder_api.AtCoderSubmissionPage('tourist', 'abc383_a', 'WJ'))
-        db.new_challenge(USER_A, 1, _ac_problem('abc383_a'), 0, platform='ac')
+        db.new_challenge(USER_A, 1, _ac_problem('abc383_a'), 0, platform='ac', batch_id='snowflake-100165')
         with pytest.raises(CodeforcesCogError, match='still being judged'):
             self._claim(cog)
 
@@ -258,7 +258,7 @@ class TestAtcoderGitgudFlow:
         self._patch_submission(
             monkeypatch,
             atcoder_api.AtCoderSubmissionPage('TOURIST', 'abc383_a', 'AC'))
-        db.new_challenge(USER_A, 1, _ac_problem('abc383_a'), 0, platform='ac')
+        db.new_challenge(USER_A, 1, _ac_problem('abc383_a'), 0, platform='ac', batch_id='snowflake-100166')
         self._claim(cog)
         assert db.check_challenge(USER_A) is None
         assert db.get_gudgitter_score(USER_A) == 8
@@ -270,7 +270,7 @@ class TestAtcoderGitgudFlow:
             monkeypatch,
             atcoder_api.AtCoderSubmissionPage('someone_else', 'abc383_a',
                                               'AC'))
-        db.new_challenge(USER_A, 1, _ac_problem('abc383_a'), 0, platform='ac')
+        db.new_challenge(USER_A, 1, _ac_problem('abc383_a'), 0, platform='ac', batch_id='snowflake-100167')
         with pytest.raises(CodeforcesCogError,
                            match='not from your linked AtCoder account'):
             self._claim(cog)
@@ -281,7 +281,7 @@ class TestAtcoderGitgudFlow:
         self._patch_submission(
             monkeypatch,
             atcoder_api.AtCoderSubmissionPage('tourist', 'abc383_b', 'AC'))
-        db.new_challenge(USER_A, 1, _ac_problem('abc383_a'), 0, platform='ac')
+        db.new_challenge(USER_A, 1, _ac_problem('abc383_a'), 0, platform='ac', batch_id='snowflake-100168')
         with pytest.raises(CodeforcesCogError,
                            match='different problem than your challenge'):
             self._claim(cog)
@@ -289,7 +289,7 @@ class TestAtcoderGitgudFlow:
     def test_gotgud_rejects_wrong_contest(self, db, cog, monkeypatch):
         self._set_handle(db)
         self._patch_atcoder(monkeypatch)
-        db.new_challenge(USER_A, 1, _ac_problem('abc383_a'), 0, platform='ac')
+        db.new_challenge(USER_A, 1, _ac_problem('abc383_a'), 0, platform='ac', batch_id='snowflake-100169')
         # Fails before scraping: the contest in the link is checked against
         # the challenge row.
         with pytest.raises(CodeforcesCogError,
@@ -318,7 +318,7 @@ class TestAtcoderGitgudFlow:
         self._set_handle(db)
         self._patch_atcoder(monkeypatch)
         db.new_challenge(USER_A, 1, _ac_problem('ghost_task'), 0,
-                         platform='ac')
+                         platform='ac', batch_id='snowflake-100170')
         captured = self._run_log(monkeypatch)
         _run(cog._gitlog_impl(self._ctx(), None))
         assert '`ghost_task`' in captured['desc']
@@ -328,7 +328,7 @@ class TestAtcoderGitgudFlow:
         self._set_handle(db)
         self._patch_atcoder(monkeypatch)
         db.new_challenge(USER_A, 1, _ac_problem('ghost_task'), 0,
-                         platform='ac')
+                         platform='ac', batch_id='snowflake-100171')
         captured = self._run_log(monkeypatch)
         _run(cog._nogudlog_impl(self._ctx(), None))
         assert '`ghost_task`' in captured['desc']
@@ -374,7 +374,7 @@ class TestAtcoderGitgudFlow:
         # depended on the cache would blow up here.
         prob = SimpleNamespace(name='Ghost Problem', contestId=1234, index='B2',
                            key='Ghost Problem')
-        assert db.new_challenge(USER_A, 1, prob, 0) == 1
+        assert db.new_challenge(USER_A, 1, prob, 0, batch_id='snowflake-100172') == 1
         with pytest.raises(CodeforcesCogError) as excinfo:
             _run(cog._validate_gitgud_status(self._ctx()))
         assert 'https://codeforces.com/contest/1234/problem/B2' in str(

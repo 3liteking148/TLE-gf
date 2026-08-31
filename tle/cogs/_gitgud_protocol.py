@@ -18,7 +18,8 @@ PIndex: TypeAlias = str | None
 # (challenge_id, issue_time, problem_key, contest_id, rating_delta, platform, p_index, score)
 # contest_id is str|int (AtCoder str, CF int) — keep union, avoid stringifying CF ints
 # so cache (int-keyed) needs no coercion; PIndex is plain str (legacy int dead).
-ActiveChallenge: TypeAlias = Tuple[int, float, str, ContestId, int, str, PIndex, int]
+# batch_id appended as 9th (non-empty str for batched, '' for classic) — keep positional stable.
+ActiveChallenge: TypeAlias = Tuple[int, float, str, ContestId, int, str, PIndex, int, str]
 ChallengeLogEntry: TypeAlias = Tuple[float, Optional[float], str, int, int, str, int]
 
 

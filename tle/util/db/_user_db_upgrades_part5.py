@@ -264,3 +264,83 @@ def upgrade_1_59_0(db):
         logger.info('1.59.0: Added missing active column to complaint')
     db.commit()
     logger.info('1.59.0: Upgrade complete')
+
+
+@registry.register('1.60.0', 'Batch-aware gitgud (batch_id + index)')
+def upgrade_1_60_0(db):
+    """Add batch_id grouping for gitgud challenges — batch_id only in challenge.
+
+    * ``challenge.batch_id TEXT NOT NULL DEFAULT ''`` — ``''`` for history;
+      active singles backfilled to ``CAST(id AS TEXT)`` (id-based batch_of_1),
+      batched groups use shared ``snowflake-<msg id>``.
+    * ``idx_challenge_active`` on ``(user_id, status, batch_id)``.
+    * Drop ``user_challenge.active_challenge_id`` and
+      ``user_challenge.current_batch_id`` — idle is ``COUNT(status=1)==0``
+      from ``challenge``; ``user_challenge`` keeps only ``score``/``issue_time``.
+      Fresh DBs never create those columns.
+
+    Idempotent: fresh DBs have columns via DDL and are stamped at latest.
+    Existing active singles remain completable via id-based batch.
+    """
+    logger.info('1.60.0: Adding challenge batch_id, dropping user_challenge batch pointers')
+    tables = {row[0] for row in db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    has_challenge = 'challenge' in tables
+    has_user_challenge = 'user_challenge' in tables
+    if not has_challenge and not has_user_challenge:
+        logger.info('1.60.0: challenge tables absent; nothing to migrate')
+        return
+
+    if has_challenge:
+        c_cols = {row[1] for row in db.execute('PRAGMA table_info(challenge)').fetchall()}
+        if 'batch_id' not in c_cols:
+            db.execute("ALTER TABLE challenge ADD COLUMN batch_id TEXT NOT NULL DEFAULT ''")
+            logger.info('1.60.0: Added challenge.batch_id')
+        # Backfill active singles to id-based batch — only where still ''.
+        try:
+            backfilled_c = db.execute(
+                "UPDATE challenge SET batch_id=CAST(id AS TEXT) WHERE status=1 AND (batch_id='' OR batch_id IS NULL)"
+            ).rowcount
+            if backfilled_c:
+                logger.info('1.60.0: backfilled %d active challenge.batch_id to id', backfilled_c)
+        except Exception as e:
+            logger.warning('1.60.0: challenge backfill failed: %s', e)
+        db.execute('CREATE INDEX IF NOT EXISTS idx_challenge_active '
+                   'ON challenge(user_id, status, batch_id)')
+
+    if has_user_challenge:
+        # Drop legacy batch pointers if present — keep only score/issue_time
+        for col in ('current_batch_id', 'active_challenge_id'):
+            u_cols = {row[1] for row in db.execute('PRAGMA table_info(user_challenge)').fetchall()}
+            if col not in u_cols:
+                continue
+            try:
+                db.execute(f'ALTER TABLE user_challenge DROP COLUMN {col}')
+                logger.info('1.60.0: dropped user_challenge.%s', col)
+            except Exception as e:
+                logger.info('1.60.0: DROP COLUMN %s failed (%s), rebuilding table', col, e)
+                try:
+                    db.execute('''
+                        CREATE TABLE IF NOT EXISTS user_challenge_new (
+                            "user_id" TEXT,
+                            "issue_time" REAL,
+                            "score" INTEGER NOT NULL,
+                            "num_completed" INTEGER NOT NULL,
+                            "num_skipped" INTEGER NOT NULL,
+                            PRIMARY KEY("user_id")
+                        )
+                    ''')
+                    # Copy only columns that exist in old table to avoid missing-column errors
+                    old_cols = {row[1] for row in db.execute('PRAGMA table_info(user_challenge)').fetchall()}
+                    keep = [c for c in ('user_id', 'issue_time', 'score', 'num_completed', 'num_skipped') if c in old_cols]
+                    keep_str = ', '.join(f'"{c}"' for c in keep)
+                    db.execute(f'INSERT OR REPLACE INTO user_challenge_new ({keep_str}) SELECT {keep_str} FROM user_challenge')
+                    db.execute('DROP TABLE user_challenge')
+                    db.execute('ALTER TABLE user_challenge_new RENAME TO user_challenge')
+                    logger.info('1.60.0: rebuilt user_challenge without %s', col)
+                    break  # rebuilt table has neither col, no need to loop second
+                except Exception as e2:
+                    logger.warning('1.60.0: rebuild failed for %s: %s', col, e2)
+
+    db.commit()
+    logger.info('1.60.0: Upgrade complete')

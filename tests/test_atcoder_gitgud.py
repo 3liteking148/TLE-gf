@@ -209,7 +209,7 @@ class TestMigration1550:
             'SELECT problem_name, p_index, platform FROM challenge'
         ).fetchone()
         assert row == ('Old Problem', 'A', 'cf')
-        assert registry.get_current_version(conn) == '1.59.0'
+        assert registry.get_current_version(conn) == '1.60.0'
         registry.run(conn)  # idempotent
         conn.close()
 
@@ -242,7 +242,7 @@ class TestMigration1550:
         conn.close()
 
         db = UserDbConn(dbfile)
-        assert registry.get_current_version(db.conn) == '1.59.0'
+        assert registry.get_current_version(db.conn) == '1.60.0'
         row = db.conn.execute(
             'SELECT problem_name, p_index, platform FROM challenge'
         ).fetchone()
@@ -250,7 +250,7 @@ class TestMigration1550:
 
         prob = SimpleNamespace(name='New Problem', contestId=5678, index='C1',
                            key='New Problem')
-        assert db.new_challenge('200', 2, prob, 0) == 1
+        assert db.new_challenge('200', 2, prob, 0, batch_id='snowflake-200001') == 1
         active = db.check_challenge('200')
         assert active[2] == 'New Problem'
         assert active[6] == 'C1'  # p_index is written on insert
@@ -265,7 +265,7 @@ class TestChallengeDbPlatform:
         prob = _ac_problem('abc383_a')
         issue_time = int(datetime.datetime.now().timestamp())
         assert db.new_challenge(
-            USER_A, issue_time, prob, 0, platform='ac') == 1
+            USER_A, issue_time, prob, 0, platform='ac', batch_id='snowflake-200002') == 1
         active = db.check_challenge(USER_A)
         assert active[2] == 'abc383_a'  # problem_name holds the problem id
         assert active[3] == 'abc383'
@@ -277,7 +277,7 @@ class TestChallengeDbPlatform:
         prob = SimpleNamespace(name='CF Problem', contestId=1234, index='A',
                            key='CF Problem')
         assert db.new_challenge(
-            USER_A, 1, prob, 0) == 1
+            USER_A, 1, prob, 0, batch_id='snowflake-200003') == 1
         assert db.check_challenge(USER_A)[5] == 'cf'
         # The key is the problem name on Codeforces.
         assert db.check_challenge(USER_A)[2] == 'CF Problem'
@@ -288,8 +288,8 @@ class TestChallengeDbPlatform:
         ac = _ac_problem('abc383_a')
         cf_prob = SimpleNamespace(name='CF Problem', contestId=1234, index='A',
                               key='CF Problem')
-        db.new_challenge(USER_A, 1, ac, 0, platform='ac')
-        db.new_challenge(USER_B, 1, cf_prob, 0)
+        db.new_challenge(USER_A, 1, ac, 0, platform='ac', batch_id='snowflake-200004')
+        db.new_challenge(USER_B, 1, cf_prob, 0, batch_id='snowflake-200006')
         ac_id = db.check_challenge(USER_A)[0]
         cf_id = db.check_challenge(USER_B)[0]
         db.skip_challenge(USER_A, ac_id, Gitgud.NOGUD)
@@ -299,7 +299,7 @@ class TestChallengeDbPlatform:
 
     def test_gitlog_includes_platform(self, db):
         ac = _ac_problem('abc383_a')
-        db.new_challenge(USER_A, 1, ac, 0, platform='ac')
+        db.new_challenge(USER_A, 1, ac, 0, platform='ac', batch_id='snowflake-200005')
         rows = db.gitlog(USER_A)
         assert rows[0][5] == 'ac'
         assert rows[0][2] == 'abc383_a'
