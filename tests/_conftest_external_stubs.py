@@ -71,12 +71,22 @@ _mpl_ticker.MultipleLocator = type('MultipleLocator', (), {'__init__': lambda se
 _commands_mod = sys.modules['discord.ext.commands']
 _commands_mod.CommandError = type('CommandError', (Exception,), {})
 
-# Stub commands.Cog so starboard.py can be imported for pure-function tests
-class _StubCog:
+# Stub commands.Cog so starboard.py can be imported for pure-function tests.
+# Use a distinct metaclass (like real discord.py's CogMeta) so a Protocol
+# mixin combined with a Cog still raises the same metaclass conflict as prod.
+# Without this, TYPE_CHECKING-guard regressions would stay green in tests.
+class _CogMeta(type):
+    pass
+
+
+class _StubCog(metaclass=_CogMeta):
     @staticmethod
     def listener(*args, **kwargs):
         return lambda f: f
+
+
 _commands_mod.Cog = _StubCog
+_commands_mod.CogMeta = _CogMeta  # exposed for completeness
 _commands_mod.has_role = lambda role: (lambda f: f)
 _commands_mod.has_any_role = lambda *roles: (lambda f: f)
 def _stub_command(**kw):
