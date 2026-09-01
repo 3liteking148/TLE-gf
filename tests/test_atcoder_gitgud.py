@@ -65,6 +65,22 @@ class TestGetProblems:
         assert [p.id for p in problems] == ['abc383_a', 'abc383_b']
         assert problems[0].name == 'Insert 1'
 
+    def test_parses_aliased_problems(self):
+        payload = [
+            {'id': 'abc212_a', 'contest_id': 'adt_all_20231206_2', 'problem_index': 'a',
+             'name': 'Alloy'},
+            {'id': 'abc400_b', 'contest_id': 'adt_easy_20260807_1', 'problem_index': 'c',
+             'name': 'Sum of Geometric Series'}
+        ]
+        session = FakeSession([_json_resp(payload)])
+        problems = _run(atcoder_api.get_problems(session=session))
+        by_id = {p.id: p for p in problems}
+        assert by_id['abc212_a'].contestId == 'abc212'
+        assert by_id['abc212_a'].problem_index == 'a'
+        assert by_id['abc212_a'].url == 'https://atcoder.jp/contests/abc212/tasks/abc212_a'
+        assert by_id['abc400_b'].contestId == 'abc400'
+        assert by_id['abc400_b'].problem_index == 'b'
+        assert by_id['abc400_b'].url == 'https://atcoder.jp/contests/abc400/tasks/abc400_b'
     def test_failure_returns_none(self):
         session = FakeSession([(500, b'')])
         assert _run(atcoder_api.get_problems(session=session)) is None

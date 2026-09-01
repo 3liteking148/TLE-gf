@@ -308,8 +308,14 @@ async def get_problems(
     problems: List[AtCoderProblem] = []
     for entry in data:
         assert isinstance(entry, dict)
+        pid = str(entry['id'])
+        cid = str(entry['contest_id'])
+        idx = str(entry['problem_index'])
+        # workaround kenkooo returning adt as contest name instead of abc for some abc problems
+        if pid.startswith('abc') or pid.startswith('arc') or pid.startswith('agc'):
+            cid, idx = pid.split('_')
         problems.append(AtCoderProblem(
-            str(entry['id']), str(entry['contest_id']), '', str(entry['problem_index']),
+            pid, cid, '', idx,
             str(entry['name']),
             ))
     return problems
