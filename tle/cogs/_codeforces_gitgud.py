@@ -15,7 +15,7 @@ from typing import Any, List, Optional, Sequence, Set, Tuple, TYPE_CHECKING
 from tle.util import codeforces_api as cf
 from tle.util import codeforces_common as cf_common
 from tle.cogs._gitgud import GitgudMixin
-from tle.cogs._gitgud_protocol import ActiveChallenge, ContestId, GitgudProblem, PIndex
+from tle.cogs._gitgud_protocol import ActiveChallenge, ContestId, GitgudProblem, PIndex, split_solved_actives
 from tle.cogs._codeforces_helpers import (
     _checkGitgudTags,
     _MULTIWORD_TAG_HINT,
@@ -102,13 +102,27 @@ class _CfBackend:
             return {sub.problem.name for sub in submissions if sub.verdict == 'OK'}
         return {sub.problem.name for sub in submissions}
 
-    async def verify_claim(
-        self, ctx: GitgudCtx, handle: str, active: ActiveChallenge, submission_url: Optional[str] = None
-    ) -> None:
-        """Codeforces claims stay API-based; any pasted link is ignored."""
+    async def _verify_single_claim(self, ctx: GitgudCtx, handle: str, active: ActiveChallenge, submission_url: Optional[str] = None) -> None:
         solved: Set[str] = await self.fetch_solved(handle)
-        if active[2] not in solved:
+        if active.problem_key not in solved:
             raise CodeforcesCogError('You haven\'t completed your challenge.')
+
+    async def verify_claims(
+        self, ctx: GitgudCtx, handle: str, actives: Sequence[ActiveChallenge], submission_url: Optional[str] = None,
+        partial: bool = False
+    ) -> Tuple[List[ActiveChallenge], List[ActiveChallenge]]:
+        """Batch-aware claim check; singletons share the single-claim path (flag inert)."""
+        if len(actives) == 1:
+            await self._verify_single_claim(ctx, handle, actives[0], submission_url)
+            return [actives[0]], []
+        solved: Set[str] = await self.fetch_solved(handle)
+        done, missing = split_solved_actives(actives, solved)
+        if not partial and missing:
+            names = [a.problem_key for a in missing]
+            raise CodeforcesCogError(f"Not all solved — missing {len(names)}: " + ", ".join(names))
+        if partial and not done:
+            raise CodeforcesCogError("You haven't completed your challenge.")
+        return done, missing
 
     def nogud_set(self, user_id: int) -> Set[str]:
         return cf_common.user_db.get_nogud_problem_keys(user_id)

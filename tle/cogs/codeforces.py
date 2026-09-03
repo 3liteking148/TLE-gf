@@ -113,38 +113,55 @@ class Codeforces(AtcoderGitgudMixin, CodeforcesGitgudMixin,
         await self._nogudlog_impl(ctx, member)
 
     @commands.command(brief='Report challenge completion', aliases=['gotbad'],
-                      usage='[submission link (AtCoder only)]')
+                       usage='[submission link (AtCoder only)] [+partial]')
     @cf_common.user_guard(group='gitgud')
-    async def gotgud(self, ctx, submission_url: str = None):
+    async def gotgud(self, ctx, *args):
         """Claim gitgud points for your active challenge once it is solved.
         Codeforces claims check your submission history automatically.
         AtCoder challenges require the URL of your accepted submission, e.g.
         ;gotgud https://atcoder.jp/contests/abc383/submissions/12345678
+        Append +partial to claim a multi-challenge batch with only a subset
+        solved (at least one required; solved slots keep their positional bonus).
         """
-        await self._gotgud_impl(ctx, submission_url)
+        await self._gotgud_impl(ctx, *args)
 
     @commands.command(brief='Skip challenge', aliases=['toobad'])
     @cf_common.user_guard(group='gitgud')
     async def nogud(self, ctx):
         await self._nogud_impl(ctx)
 
+    @commands.command(brief='ThemeCP-style gitgud', usage='<level 1..109> [+tag] [~tag]')
+    @cf_common.user_guard(group='gitgud')
+    async def gitgudprogression(self, ctx, *args):
+        """ThemeCP-style progression batch: 4 problems (slots A-D) at the level's fixed ratings.
+
+        Claim with ;gotgud once all 4 are solved, or append +partial to claim
+        a solved subset (at least one required; the unsolved rest is skipped).
+        Each slot pays base ladder points; solving within the level's time
+        window upgrades the unbroken streak starting at A with mults
+        x1, x1, x1.5, x2 — so A+B+C+D earns the full bonus, but a lone D
+        (or any set with a gap before it) scores base points only.
+        ;nogud after 2h skips the whole batch.
+        """
+        await self._gitgudprogression_impl(ctx, args)
+
     # Undocumented easter-egg aliases for ;gotgud / ;gitgud. Deliberately
     # hidden and absent from every help listing; each mirrors its canonical
     # command's signature so parsing and the gitgud user guard stay identical.
     @commands.command(hidden=True)
     @cf_common.user_guard(group='gitgud')
-    async def gotshit(self, ctx, submission_url: str = None):
-        await self._gotgud_impl(ctx, submission_url)
+    async def gotshit(self, ctx, *args):
+        await self._gotgud_impl(ctx, *args)
 
     @commands.command(hidden=True)
     @cf_common.user_guard(group='gitgud')
-    async def gotfucked(self, ctx, submission_url: str = None):
-        await self._gotgud_impl(ctx, submission_url)
+    async def gotfucked(self, ctx, *args):
+        await self._gotgud_impl(ctx, *args)
 
     @commands.command(hidden=True)
     @cf_common.user_guard(group='gitgud')
-    async def gotfkd(self, ctx, submission_url: str = None):
-        await self._gotgud_impl(ctx, submission_url)
+    async def gotfkd(self, ctx, *args):
+        await self._gotgud_impl(ctx, *args)
 
     @commands.command(hidden=True)
     @cf_common.user_guard(group='gitgud')

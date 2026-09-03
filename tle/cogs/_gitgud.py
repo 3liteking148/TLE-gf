@@ -32,6 +32,27 @@ from tle.cogs._codeforces_helpers import (
     _GITGUD_MORE_POINTS_START_TIME,
     _GITGUD_COIN_MULTIPLIER,
 )
+from tle.util.gitgud_progression import (
+    biased_choice,
+    bonus_scores,
+    compute_bonus_scores,
+)
+from tle.cogs._gitgud_progression import (
+    build_progression_desc_lines,
+    parse_progression_args,
+    select_progression_problems,
+)
+
+
+def _split_gotgud_args(args):
+    """Split ``;gotgud`` args into ``(submission_url, partial)``.
+
+    ``+partial`` applies to any multi-challenge batch and is inert on
+    singletons. The first non-flag arg is the AtCoder submission URL.
+    """
+    partial = '+partial' in args
+    rest = [a for a in args if a != '+partial']
+    return (rest[0] if rest else None), partial
 
 
 class GitgudMixin:
@@ -46,6 +67,13 @@ class GitgudMixin:
         if start_time >= _GITGUD_MORE_POINTS_START_TIME and now_time >= morePointsTime:
             morePointsActive = True
         return morePointsActive
+
+    def _monthly_total(self, base, when):
+        start_time, end_time = cf_common.get_start_and_end_of_month(when)
+        now_time = int(when.timestamp())
+        if self._check_more_points_active(now_time, start_time, end_time):
+            return 2 * base
+        return base
 
     # ------------------------------------------------------------------
     # Backend selection
@@ -70,11 +98,12 @@ class GitgudMixin:
 
     def _award_gitgud_coins(self, ctx, user_id, score):
         """Credit the betting wallet with ``_GITGUD_COIN_MULTIPLIER`` coins per
-        base gitgud point. The rate is the flat 5x base rate scaled by
+        stored gitgud point. The rate is the flat 5x base rate scaled by
         ``constants.GITGUD_COIN_EARN_MULTIPLIER`` (default 10, i.e. 50x) of
-        the *base* score and never gets the end-of-month doubling the monthly
-        ranklist points do. Returns the coins awarded, or None when there's no
-        guild (e.g. a DM) so the caller can omit the wallet line."""
+        the stored score — bonus-included for boosted batches — and never
+        gets the end-of-month doubling the monthly ranklist points do.
+        Returns the coins awarded, or None when there's no guild (e.g. a DM)
+        so the caller can omit the wallet line."""
         guild = ctx.guild
         if guild is None:
             return None
@@ -101,17 +130,17 @@ class GitgudMixin:
         the raw key when the cache can't resolve it."""
         return self._problem_ref(backend, problem_key)[0]
 
-    async def _validate_gitgud_status(self, ctx, limit=1):
+    async def _validate_gitgud_status(self, ctx):
         user_id = ctx.message.author.id
         actives = cf_common.user_db.list_active_challenges(user_id)
-        if len(actives) >= limit and len(actives) > 0:
+        if actives:
             if len(actives) == 1:
                 _, _, problem_key, contest_id, _, platform, p_index, _, _ = actives[0]
                 backend = self._backend_for_platform(platform)
                 name = self._active_problem_name(backend, problem_key)
                 url = backend.active_url(contest_id, problem_key, p_index)
                 raise CodeforcesCogError(f'You have an active challenge {name} at {url}')
-            # Show all actives; embed order is challenge.id
+            # Show all actives; error order is challenge.id
             parts = []
             for active in actives:
                 _, _, problem_key, contest_id, _, platform, p_index, _, _ = active
@@ -121,35 +150,28 @@ class GitgudMixin:
                 parts.append(f'{name} at {url}')
             raise CodeforcesCogError(f'You have {len(actives)} active challenge(s): ' + ', '.join(parts))
 
-    def _batch_id_for_ctx(self, ctx, issue_time):
+    def _batch_id_for_ctx(self, ctx, issue_time, prefix=""):
         try:
-            return f"snowflake-{ctx.message.id}"
+            return f"{prefix}snowflake-{ctx.message.id}"
         except Exception:
             pass
 
         # fallback
-        return f"{int(issue_time * 1000)}-{random.randint(0, 999999)}"
+        return f"{prefix}{int(issue_time * 1000)}-{random.randint(0, 999999)}"
 
-    async def _gitgud(self, ctx, handle, problem, delta, score, hidden, backend):
+    async def _gitgud(self, ctx, handle, problem, delta, score, hidden, backend, now):
         # The caller of this function is responsible for calling `_validate_gitgud_status` first.
         user_id = ctx.author.id
 
-        issue_time = datetime.datetime.now().timestamp()
+        issue_time = now.timestamp()
         batch_id = self._batch_id_for_ctx(ctx, issue_time)
         rc = cf_common.user_db.new_challenge(
             user_id, issue_time, problem, delta, score, backend.platform, batch_id)
         if rc != 1:
             raise CodeforcesCogError('Your challenge has already been added to the database!')
 
-        # Calculate time range of given month (d=) or current month
-        now = datetime.datetime.now()
-        start_time, end_time = cf_common.get_start_and_end_of_month(now)
-        now_time = int(now.timestamp())
-        # more points seasons start at April 1st 2023 (timestamp: 1680300000) and is only active in the last 7 days of the month
-        morePointsActive = self._check_more_points_active(now_time, start_time, end_time)
-
         points = score
-        monthlypoints = 2 * points if morePointsActive else points
+        monthlypoints = self._monthly_total(points, now)
 
         title = f'{problem.index}. {problem.name}'
         desc = problem.contest_name
@@ -163,36 +185,48 @@ class GitgudMixin:
         embed.add_field(name='Monthly points', value=monthlyPointsStr)
         await ctx.send(f'Challenge problem for `{handle}`', embed=embed)
 
-    async def _claim_challenge(self, ctx, handle, active):
-        """Shared completion tail for both platforms: complete the challenge,
-        credit points (with month-end doubling) and award betting coins."""
+    async def _finalize_challenges(self, ctx, handle, actives, now, skips=()):
+        """Resolve the whole batch at once (completions + ``+partial`` skips, atomically).
+
+        Positional bonus math falls out of the single list. Single and batch
+        claims share the challenge message; only a bonus line distinguishes
+        a boosted batch.
+        """
+        cur_ts = now.timestamp()
         user_id = ctx.message.author.id
-        challenge_id, issue_time = active[0], active[1]
-        score = active[7]
-        finish_time = int(datetime.datetime.now().timestamp())
-        rc = cf_common.user_db.complete_challenge(user_id, challenge_id, finish_time, score)
+        base = [a.score for a in actives]
+        issue_time = actives[0].issue_time
+        batch_id = actives[0].batch_id
 
-        now = datetime.datetime.now()
-        start_time, end_time = cf_common.get_start_and_end_of_month(now)
-        now_time = int(now.timestamp())
+        # award progression bonus, if any — prefix-only: mults apply solely
+        # to the unbroken solved streak starting at slot A, so skipping an
+        # early slot voids the bonus for it and every later slot.
+        skip_ids = {cid for cid, _ in skips}
+        solved_mask = [a.challenge_id not in skip_ids for a in actives]
+        scores_all, window, mults = compute_bonus_scores(
+            base, batch_id, cur_ts, issue_time, solved_mask
+        )
+        kept = [i for i, a in enumerate(actives) if a.challenge_id not in skip_ids]
+        scores_to_store = [scores_all[i] for i in kept]
+        stored_base = [base[i] for i in kept]
 
-        morePointsActive = self._check_more_points_active(now_time, start_time, end_time)
-
-        monthlyPoints = 2 * score if morePointsActive else score
-
-        if rc == 1:
+        finish_time = int(cur_ts)
+        completions = [(actives[i].challenge_id, finish_time, scores_all[i]) for i in kept]
+        rc = cf_common.user_db.resolve_challenges(
+            user_id, completions=completions, skips=list(skips))
+        total = sum(scores_to_store)
+        monthlyPoints = self._monthly_total(total, now)
+        if rc == len(actives):
             duration = cf_common.pretty_time_format(finish_time - issue_time)
-            msg = (f'Challenge completed in {duration}. {handle} gained {score} '
+            msg = (f'Challenge completed in {duration}. {handle} gained {total} '
                    f'alltime ranklist points and {monthlyPoints} monthly ranklist points.')
-            # Coins are always credited to the betting wallet, but we only
-            # mention them to users who are already playing the betting game
-            # (have placed at least one bet) — same bar as showing up on the
-            # ;bet leaderboard. Everyone else just banks them silently.
-            coins = self._award_gitgud_coins(ctx, user_id, score)
-            if coins is not None and \
-                    cf_common.user_db.bet_has_wagered(ctx.guild.id, user_id):
+            coins = self._award_gitgud_coins(ctx, user_id, total)
+            if coins is not None and cf_common.user_db.bet_has_wagered(ctx.guild.id, user_id):
                 msg += f' You also earned {coins} 🪙.'
             await ctx.send(msg)
+            if scores_to_store != stored_base:
+                assert mults is not None and window is not None
+                await ctx.send(f"Bonus applied for solving within {window//60} min).")
         else:
             await ctx.send('You have already claimed your points')
 
@@ -200,11 +234,52 @@ class GitgudMixin:
     # Command bodies
     # ------------------------------------------------------------------
 
+    def _progression_embed(self, handle, level, theme, problems, scores, total, now):
+        bonus_total = sum(bonus_scores(scores))
+        desc_lines = build_progression_desc_lines(problems, scores)
+        pub = discord.Embed(title=f"ThemeCP level {level} ({theme.time//60} min, {theme.perf} rating) for `{handle}`", description="\n".join(desc_lines))
+        pub.add_field(name='Alltime points', value=str(total))
+        pub.add_field(name='Monthly points', value=str(self._monthly_total(total, now)))
+        pub.set_footer(text=f"Bonus needs an unbroken streak from A within {theme.time//60} min (bonus total {bonus_total}). ;gotgud checks all 4 at once (+partial claims a solved subset). ;nogud after 2h skips whole batch.")
+        return pub
+
+    async def _gitgudprogression_impl(self, ctx, args):
+        now = datetime.datetime.now()
+        backend = self._backend_for_platform('cf')
+        level, theme, tags, bantags = parse_progression_args(args, backend)
+
+        handle = await backend.resolve_handle(ctx, self.converter)
+        _, delta_base = backend.scale_rating(
+            await backend.fetch_rating(handle))
+        solved = await backend.fetch_solved(handle, only_ac=False)
+        noguds = backend.nogud_set(ctx.message.author.id)
+
+        await self._validate_gitgud_status(ctx)
+
+        problems = select_progression_problems(backend, level, solved, noguds, handle, tags, bantags)
+        deltas: list[int] = []
+        scores: list[int] = []
+        for prob in problems:
+            d, s = backend.score_model.delta_and_score(prob.rating, delta_base)
+            deltas.append(d)
+            scores.append(s)
+
+        issue_time = now.timestamp()
+        batch_id = self._batch_id_for_ctx(ctx, issue_time, prefix=f"prog-{level}-")
+        items = [(prob, d, s, backend.platform) for prob, d, s in zip(problems, deltas, scores)]
+        rc = cf_common.user_db.new_challenges(ctx.message.author.id, batch_id, issue_time, items)
+        if rc != len(items):
+            raise CodeforcesCogError('Your challenge has already been added to the database!')
+
+        await ctx.send(embed=self._progression_embed(
+            handle, level, theme, problems, scores, sum(scores), now))
+
     async def _gitgud_impl(self, ctx, args):
+        now = datetime.datetime.now()
         backend = self._backend_for_args(args)
 
         args = [arg for arg in args if arg != "+atcoder"]
-        
+
         handle = await backend.resolve_handle(ctx, self.converter)
         user_rating, delta_base = backend.scale_rating(
             await backend.fetch_rating(handle))
@@ -221,7 +296,7 @@ class GitgudMixin:
         if not problems:
             raise CodeforcesCogError('No problem to assign')
 
-        choice = max(random.randrange(len(problems)) for _ in range(5))
+        choice = biased_choice(problems)
 
         # Penalised tags divide points by (tag count + 1), rounded up.
         # Hardening division filters such as +div1 and ~div3/~div4/~edu are
@@ -230,45 +305,59 @@ class GitgudMixin:
         # (possibly off-ladder) score goes into its own column.
         problem = problems[choice]
         delta, score = backend.score_model.delta_and_score(problem.rating, delta_base, tags, bantags)
-        await self._gitgud(ctx, handle, problem, delta, score, hidden, backend)
+        await self._gitgud(ctx, handle, problem, delta, score, hidden, backend, now)
 
-    async def _gotgud_impl(self, ctx, submission_url=None):
+    async def _gotgud_impl(self, ctx, *args, **kw):
+        """Claim the active challenge(s) once solved.
+
+        ``args`` are raw command args (AtCoder URL, ``+partial``), parsed
+        here so every entry point shares one path. Keywords are a bug.
+        """
+        if kw:
+            raise TypeError(
+                f"_gotgud_impl takes raw command args, got keywords {sorted(kw)}.")
+        submission_url, partial = _split_gotgud_args(args)
+        now = datetime.datetime.now()
         user_id = ctx.message.author.id
-        active = cf_common.user_db.check_challenge(user_id)
-        if not active:
+        actives = cf_common.user_db.list_active_challenges(user_id)
+        if not actives:
             raise CodeforcesCogError(f'You do not have an active challenge')
-
-        backend = self._backend_for_platform(active[5])
+        backend = self._backend_for_platform(actives[0].platform)
         handle = await backend.resolve_handle(ctx, self.converter)
-        await backend.verify_claim(ctx, handle, active, submission_url)
-
-        await self._claim_challenge(ctx, handle, active)
+        _, missing = await backend.verify_claims(ctx, handle, actives, submission_url, partial)
+        await self._finalize_challenges(
+            ctx, handle, actives, now,
+            skips=[(a.challenge_id, Gitgud.NOGUD) for a in missing])
 
     async def _nogud_impl(self, ctx):
+        now = datetime.datetime.now()
         user_id = ctx.message.author.id
-        active = cf_common.user_db.check_challenge(user_id)
-        if not active:
+        actives = cf_common.user_db.list_active_challenges(user_id)
+        if not actives:
             raise CodeforcesCogError(f'You do not have an active challenge')
-
-        backend = self._backend_for_platform(active[5])
+        backend = self._backend_for_platform(actives[0].platform)
         await backend.validate_handle(ctx, self.converter)
-
-        challenge_id, issue_time = active[0], active[1]
-        finish_time = int(datetime.datetime.now().timestamp())
+        issue_time = actives[0].issue_time
+        finish_time = int(now.timestamp())
         if finish_time - issue_time < _GITGUD_NO_SKIP_TIME:
             skip_time = cf_common.pretty_time_format(issue_time + _GITGUD_NO_SKIP_TIME - finish_time)
             await ctx.send(f'Think more. You can skip your challenge in {skip_time}.')
             return
-        cf_common.user_db.skip_challenge(user_id, challenge_id, Gitgud.NOGUD)
-        await ctx.send(f'Challenge skipped.')
+        cids = [a.challenge_id for a in actives]
+        rc = cf_common.user_db.resolve_challenges(user_id, completions=[], skips=[(cid, Gitgud.NOGUD) for cid in cids])
+        if rc == len(actives):
+            await ctx.send(f'Challenge skipped.')
+        else:
+            await ctx.send(f'Failed to skip challenge.')
 
     async def _force_nogud_impl(self, ctx, member):
-        active = cf_common.user_db.check_challenge(member.id)
-        if not active:
+        actives = cf_common.user_db.list_active_challenges(member.id)
+        if not actives:
             await ctx.send(f'No active challenge found for user `{member.display_name}`.')
             return
-        rc = cf_common.user_db.skip_challenge(member.id, active[0], Gitgud.FORCED_NOGUD)
-        if rc == 1:
+        cids = [a.challenge_id for a in actives]
+        rc = cf_common.user_db.resolve_challenges(member.id, completions=[], skips=[(cid, Gitgud.FORCED_NOGUD) for cid in cids])
+        if rc == len(actives):
             await ctx.send(f'Challenge skip forced.')
         else:
             await ctx.send(f'Failed to force challenge skip.')
@@ -333,6 +422,7 @@ class GitgudMixin:
         paginator.paginate(self.bot, ctx.channel, pages, wait_time=5 * 60, set_pagenum_footers=True, author_id=ctx.author.id)
 
     async def _upsolve_impl(self, ctx, args):
+        now = datetime.datetime.now()
         choice = -1
         platform_args = []
         for arg in args:
@@ -359,7 +449,7 @@ class GitgudMixin:
             problem = problems[choice - 1]
             delta, score = backend.score_model.delta_and_score(problem.rating, delta_base, (), ())
             await self._gitgud(ctx, handle, problem, delta, score,
-                               False, backend)
+                               False, backend, now)
         else:
             problems = problems[:500]
 
@@ -388,7 +478,7 @@ class GitgudMixin:
         if not problems:
             raise CodeforcesCogError('Problems not found within the search parameters')
 
-        choice = max([random.randrange(len(problems)) for _ in range(3)])
+        choice = biased_choice(problems, k=3)
         problem = problems[choice]
 
         title = f'{problem.index}. {problem.name}'

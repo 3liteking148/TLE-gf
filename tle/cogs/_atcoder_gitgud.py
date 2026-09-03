@@ -115,11 +115,20 @@ class _AcBackend:
             return {s.problem_id for s in submissions}
         return {s.problem_id for s in submissions if s.is_ac}
 
-    async def verify_claim(
+    async def verify_claims(
+        self, ctx: GitgudCtx, handle: str, actives: Sequence[ActiveChallenge], submission_url: Optional[str] = None,
+        partial: bool = False
+    ) -> Tuple[List[ActiveChallenge], List[ActiveChallenge]]:
+        """Single-claim check; batches are rejected (AtCoder has no batch solve set)."""
+        if len(actives) != 1:
+            raise CodeforcesCogError('AtCoder only supports single claims')
+        await self._verify_single_claim(ctx, handle, actives[0], submission_url)
+        return [actives[0]], []
+
+    async def _verify_single_claim(
         self, ctx: GitgudCtx, handle: str, active: ActiveChallenge, submission_url: Optional[str] = None
     ) -> None:
-        """Verify the invoker's pasted submission link proves the challenge
-        is solved.
+        """Verify the invoker's pasted submission link proves the challenge is solved.
 
         Scrapes the single submission detail page from atcoder.jp instead of
         polling kenkoooo's lagging per-user API, so a claim works the moment
@@ -149,7 +158,7 @@ class _AcBackend:
                 '`https://atcoder.jp/contests/abc383/submissions/12345678`.')
         # AtCoder problem ids are contest-prefixed (abc383_a), so a contest
         # mismatch is a guaranteed wrong-problem claim; fail before scraping.
-        if parsed[0] != active[3]:
+        if parsed[0] != active.contest_id:
             raise CodeforcesCogError(
                 'That submission is from a different contest than your '
                 'challenge.')
@@ -171,7 +180,7 @@ class _AcBackend:
             raise CodeforcesCogError(
                 'That submission is not from your linked AtCoder account '
                 f'`{handle}`.')
-        if submission.problem_id != active[2]:
+        if submission.problem_id != active.problem_key:
             raise CodeforcesCogError(
                 'That submission is for a different problem than your '
                 'challenge.')

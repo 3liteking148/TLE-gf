@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, List, Optional, Protocol, Sequence, Set, Tuple, TypeAlias, runtime_checkable
 
 from tle.cogs._gitgud_scoring import GitgudScoreModel
+from tle.util.db.challenge_db import ActiveChallenge
 
 if TYPE_CHECKING:
     from discord.ext.commands import Context as DiscordContext
@@ -15,11 +16,9 @@ else:
 
 ContestId: TypeAlias = str | int
 PIndex: TypeAlias = str | None
-# (challenge_id, issue_time, problem_key, contest_id, rating_delta, platform, p_index, score)
-# contest_id is str|int (AtCoder str, CF int) — keep union, avoid stringifying CF ints
-# so cache (int-keyed) needs no coercion; PIndex is plain str (legacy int dead).
-# batch_id appended as 9th (non-empty str for batched, '' for classic) — keep positional stable.
-ActiveChallenge: TypeAlias = Tuple[int, float, str, ContestId, int, str, PIndex, int, str]
+# Re-exported from the DB layer (see ``challenge_db.ActiveChallenge``).
+# contest_id is str|int (AtCoder str, CF int); PIndex is plain str (legacy int dead).
+# Field order is stable so positional indexing/unpacking keeps working for legacy sites.
 ChallengeLogEntry: TypeAlias = Tuple[float, Optional[float], str, int, int, str, int]
 
 
@@ -77,9 +76,17 @@ class GitgudBackend(Protocol):
     async def fetch_solved(self, handle: str, *, only_ac: bool = True) -> Set[str]:
         ...
 
-    async def verify_claim(
-        self, ctx: GitgudCtx, handle: str, active: ActiveChallenge, submission_url: Optional[str] = None
-    ) -> None:
+    async def verify_claims(
+        self, ctx: GitgudCtx, handle: str, actives: Sequence[ActiveChallenge], submission_url: Optional[str] = None,
+        partial: bool = False
+    ) -> Tuple[List[ActiveChallenge], List[ActiveChallenge]]:
+        """Batch-aware claim check; returns done and missing challenges.
+
+        Returns ``(done, missing)`` preserving batch order. On the strict path
+        (``partial=False``) missing is always empty — any unsolved challenge
+        raises instead. Callers resolve ``done`` as completions and ``missing``
+        as skips.
+        """
         ...
 
     def nogud_set(self, user_id: int) -> Set[str]:
@@ -115,3 +122,15 @@ class GitgudBackend(Protocol):
 
     def active_url(self, contest_id: ContestId, problem_key: str, p_index: PIndex = None) -> str:
         ...
+
+
+def split_solved_actives(
+    actives: Sequence[ActiveChallenge], solved: Set[str]
+) -> Tuple[List[ActiveChallenge], List[ActiveChallenge]]:
+    """Partition batch actives into ``(done, missing)`` preserving order.
+
+    ``solved`` is the set of solved problem keys. Pure — no DB, no backend.
+    """
+    done = [a for a in actives if a.problem_key in solved]
+    missing = [a for a in actives if a.problem_key not in solved]
+    return done, missing

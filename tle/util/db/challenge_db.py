@@ -4,8 +4,26 @@ Owns the ``challenge`` and ``user_challenge`` tables. The ``Gitgud`` enum is
 imported lazily from the composing module to avoid an import cycle.
 """
 import logging
+from typing import NamedTuple, Optional, Union
 
 logger = logging.getLogger(__name__)
+
+
+class ActiveChallenge(NamedTuple):
+    """One active challenge row, as returned by ``list_active_challenges``.
+
+    Field order matches the historical 9-tuple layout, so positional
+    indexing and unpacking keep working for legacy call sites.
+    """
+    challenge_id: int
+    issue_time: float
+    problem_key: str
+    contest_id: Union[str, int]
+    rating_delta: int
+    platform: str
+    p_index: Optional[str]
+    score: int
+    batch_id: str
 
 
 class ChallengeDbMixin:
@@ -134,8 +152,8 @@ class ChallengeDbMixin:
     def check_challenge(self, user_id):
         """Return single active for legacy callers; backed by active set.
 
-        Returns None if no active (idle = COUNT==0). Preserves 9-tuple for
-        callers in ``tle/cogs/_gitgud.py`` via ``list_active_challenges``.
+        Returns None if no active (idle = COUNT==0). Same ``ActiveChallenge``
+        object as ``list_active_challenges`` items.
         """
         actives = self.list_active_challenges(user_id)
         if not actives:
@@ -163,10 +181,9 @@ class ChallengeDbMixin:
             f'SELECT id, issue_time, problem_name, contest_id, rating_delta, platform, p_index, score, batch_id '
             f'FROM challenge WHERE user_id = ? AND status = {Gitgud.GITGUD} ORDER BY id',
             (str(user_id),)).fetchall()
-        out = []
-        for r in rows:
-            out.append((r.id, r.issue_time, r.problem_name, r.contest_id, r.rating_delta, r.platform, r.p_index, r.score, r.batch_id))
-        return out
+        return [ActiveChallenge(r.id, r.issue_time, r.problem_name, r.contest_id,
+                                r.rating_delta, r.platform, r.p_index, r.score, r.batch_id)
+                for r in rows]
 
     def get_gudgitters_timerange(self, timestampStart, timestampEnd):
         query = '''
@@ -269,8 +286,8 @@ class ChallengeDbMixin:
             total_score = 0
             for cid, finish_time, score in comps:
                 rc = cur.execute(
-                    f'UPDATE challenge SET finish_time = ?, status = {Gitgud.GOTGUD} WHERE id = ? AND status = {Gitgud.GITGUD}',
-                    (finish_time, cid)).rowcount
+                    f'UPDATE challenge SET finish_time = ?, score = ?, status = {Gitgud.GOTGUD} WHERE id = ? AND status = {Gitgud.GITGUD}',
+                    (finish_time, score, cid)).rowcount
                 if rc != 1:
                     raise RuntimeError('complete failed')
                 total_score += int(score) if score is not None else 0
