@@ -226,7 +226,7 @@ class GitgudMixin:
             await ctx.send(msg)
             if scores_to_store != stored_base:
                 assert mults is not None and window is not None
-                await ctx.send(f"Bonus applied for solving within {window//60} min).")
+                await ctx.send(f"Bonus applied for solving within {window//60} min.")
         else:
             await ctx.send('You have already claimed your points')
 
