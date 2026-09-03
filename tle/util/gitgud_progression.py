@@ -141,10 +141,9 @@ def compute_bonus_scores(
     deadline = issue_time + window
     cand = list(base)
     for i, (s, m) in enumerate(zip(base, mults)):
-        if solved is not None and not solved[i]:
+        if (solved is not None and not solved[i]) or solve_times[i] > deadline:
             break
-        if solve_times[i] <= deadline:
-            cand[i] = round(s * m)
+        cand[i] = round(s * m)
     if cand != base:
         return cand, window, mults
     return base, window, mults
