@@ -240,7 +240,7 @@ class GitgudMixin:
         pub = discord.Embed(title=f"ThemeCP level {level} ({theme.time//60} min, {theme.perf} rating) for `{handle}`", description="\n".join(desc_lines))
         pub.add_field(name='Alltime points', value=str(total))
         pub.add_field(name='Monthly points', value=str(self._monthly_total(total, now)))
-        pub.set_footer(text=f"Bonus needs an unbroken streak from A within {theme.time//60} min (bonus total {bonus_total}). ;gotgud checks all 4 at once (+partial claims a solved subset). ;nogud after 2h skips whole batch.")
+        pub.set_footer(text=f"Bonus applies to an unbroken streak from A within {theme.time//60} min (bonus total {bonus_total}). ;gotgud checks all 4 at once (+partial claims a solved subset). ;nogud after 2h skips whole batch.")
         return pub
 
     async def _gitgudprogression_impl(self, ctx, args):

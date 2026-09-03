@@ -140,7 +140,7 @@ class Codeforces(AtcoderGitgudMixin, CodeforcesGitgudMixin,
         Each slot pays base ladder points; solving within the level's time
         window upgrades the unbroken streak starting at A with mults
         x1, x1, x1.5, x2 — so A+B+C+D earns the full bonus, but a lone D
-        (or any set with a gap before it) scores base points only.
+        (or any solved problem with an unsovled problem before it) scores base points only.
         ;nogud after 2h skips the whole batch.
         """
         await self._gitgudprogression_impl(ctx, args)
