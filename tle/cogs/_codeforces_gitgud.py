@@ -112,7 +112,8 @@ class _CfBackend:
         only ``OK`` verdicts at/after ``issue_time`` minus a margin. ``creationTimeSeconds``
         is a UTC epoch compared directly against the stored epoch
         ``issue_time`` — no timezone conversion needed. Problems match on
-        ``(contestId, index)`` with a name fallback. Any API failure raises
+        ``(contestId, index)`` (normalized to strings, index uppercased), with
+        a name fallback only for legacy rows lacking an id. Any API failure raises
         ``CodeforcesCogError`` so the claim fails closed instead of falling
         back to wall-clock time.
         """
@@ -133,17 +134,26 @@ class _CfBackend:
             ts = sub.creationTimeSeconds
             if ts < cutoff:
                 continue
-            key = (sub.problem.contestId, sub.problem.index)
-            if key not in first_by_id or ts < first_by_id[key]:
-                first_by_id[key] = ts
+            cid = sub.problem.contestId
+            idx = sub.problem.index
+            norm = (None if cid is None else str(cid).strip(),
+                    None if idx is None else str(idx).strip().upper())
+            if norm[0] is not None and norm[1] is not None:
+                if norm not in first_by_id or ts < first_by_id[norm]:
+                    first_by_id[norm] = ts
             name = sub.problem.name
             if name not in first_by_name or ts < first_by_name[name]:
                 first_by_name[name] = ts
         times: Dict[int, float] = {}
         for active in actives:
-            key = (active.contest_id, active.p_index)
-            if key in first_by_id:
-                times[active.challenge_id] = first_by_id[key]
+            norm_active = (None if active.contest_id is None else str(active.contest_id).strip(),
+                           None if active.p_index is None else str(active.p_index).strip().upper())
+            if norm_active[0] is not None and norm_active[1] is not None:
+                if norm_active in first_by_id:
+                    times[active.challenge_id] = first_by_id[norm_active]
+                # Fresh rows must id-match: a same-name solve in another
+                # contest must not credit the assigned problem.
+                continue
             elif active.problem_key in first_by_name:
                 times[active.challenge_id] = first_by_name[active.problem_key]
         return times

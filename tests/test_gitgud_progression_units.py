@@ -352,3 +352,63 @@ class TestVerifyClaimsPartition:
                  ActiveChallenge(2, 100.0, 'd', 'c', 0, 'ac', None, 5, 'b')]
         with pytest.raises(CodeforcesCogError, match='single claims'):
             _run(_AcBackend().verify_claims(None, 'h', batch, partial=True))
+
+
+def _subs(entries):
+    """Build fake CF submissions from ``(name, contestId, index, ts)`` tuples."""
+    from types import SimpleNamespace
+    return [SimpleNamespace(
+        verdict='OK',
+        creationTimeSeconds=ts,
+        problem=SimpleNamespace(name=name, contestId=cid, index=idx),
+    ) for name, cid, idx, ts in entries]
+
+
+def _patch_status(monkeypatch, subs):
+    from types import SimpleNamespace
+    from tle.util import codeforces_api as cf_api
+
+    async def fake_status(*, handle):
+        return subs
+
+    monkeypatch.setattr(cf_api, 'user', SimpleNamespace(status=fake_status), raising=False)
+
+
+class TestFetchSolveTimesMatching:
+    """ID matching must require the (contestId, index) pair; a same-name
+    solve in another contest must not credit the assigned problem."""
+
+    def test_same_name_wrong_contest_does_not_claim(self, monkeypatch):
+        from tle.cogs._codeforces_gitgud import _CfBackend
+        _patch_status(monkeypatch, _subs([
+            ('A', 999, 'Z', 150.0),
+            ('B', 999, 'Z', 150.0),
+            ('C', 999, 'Z', 150.0),
+        ]))
+        assert _run(_CfBackend().fetch_solve_times('h', _actives())) == {}
+        with pytest.raises(CodeforcesCogError, match='missing 3'):
+            _run(_CfBackend().verify_claims(None, 'h', _actives()))
+
+    def test_correct_id_wrong_name_claims(self, monkeypatch):
+        from tle.cogs._codeforces_gitgud import _CfBackend
+        _patch_status(monkeypatch, _subs([
+            ('Renamed A', 1, 'A', 150.0),
+            ('Renamed B', 2, 'B', 150.0),
+            ('Renamed C', 3, 'C', 150.0),
+        ]))
+        assert _run(_CfBackend().fetch_solve_times('h', _actives())) == {
+            1: 150.0, 2: 150.0, 3: 150.0}
+
+    def test_legacy_none_id_falls_back_to_name(self, monkeypatch):
+        from tle.cogs._codeforces_gitgud import _CfBackend
+        from tle.util.db.challenge_db import ActiveChallenge
+        actives = [ActiveChallenge(9, 100.0, 'Legacy', None, 0, 'cf', None, 2, 'prog-1-x')]
+        _patch_status(monkeypatch, _subs([('Legacy', 999, 'Z', 150.0)]))
+        assert _run(_CfBackend().fetch_solve_times('h', actives)) == {9: 150.0}
+
+    def test_str_int_id_normalization(self, monkeypatch):
+        from tle.cogs._codeforces_gitgud import _CfBackend
+        from tle.util.db.challenge_db import ActiveChallenge
+        actives = [ActiveChallenge(9, 100.0, 'A', '1', 0, 'cf', 'a', 2, 'prog-1-x')]
+        _patch_status(monkeypatch, _subs([('A', 1, 'A', 150.0)]))
+        assert _run(_CfBackend().fetch_solve_times('h', actives)) == {9: 150.0}

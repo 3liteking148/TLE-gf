@@ -175,6 +175,28 @@ class TestProgressionClaim:
         assert db.count_active_challenges(USER_A) == 4
         assert db.get_gudgitter_score(USER_A) == 0
 
+    def test_same_name_other_contest_rejected(self, db, cog, monkeypatch):
+        from types import SimpleNamespace
+        from tle.util import codeforces_api as cf_api
+
+        actives = _issue_level1(db, cog, monkeypatch)
+        names = [a.problem_key for a in actives]
+        now = int(time.time())
+        subs = [SimpleNamespace(
+            verdict='OK',
+            creationTimeSeconds=now,
+            problem=SimpleNamespace(name=n, contestId=9999, index='Z'),
+        ) for n in names]
+
+        async def fake_status(*, handle):
+            return subs
+
+        monkeypatch.setattr(cf_api, 'user', SimpleNamespace(status=fake_status), raising=False)
+        with pytest.raises(CodeforcesCogError, match='missing 4'):
+            _run(cog._gotgud_impl(_ctx()))
+        assert db.count_active_challenges(USER_A) == 4
+        assert db.get_gudgitter_score(USER_A) == 0
+
     def test_split_times_bonus_early_only(self, db, cog, monkeypatch):
         actives = _issue_level1(db, cog, monkeypatch)
         names = [a.problem_key for a in actives]
