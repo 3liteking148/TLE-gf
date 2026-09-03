@@ -73,6 +73,13 @@ class TestGotgudCoinReward:
         from tle.cogs._codeforces_gitgud import CodeforcesGitgudMixin
         monkeypatch.setattr(cf_common, 'user_db', db)
         monkeypatch.setattr(constants, 'BET_START_BALANCE', 1000, raising=False)
+        # Minimal cache so the shared CF fake exercises the (contestId, index)
+        # ID-match path; _patch_cf adds the solved problem below.
+        monkeypatch.setattr(cf_common, 'cache2', SimpleNamespace(
+            problem_cache=SimpleNamespace(problems=[], problem_by_name={}),
+            contest_cache=SimpleNamespace(get_contest=lambda cid: SimpleNamespace(startTimeSeconds=1000, name=f'Contest {cid}')),
+            atcoder_problem_cache=SimpleNamespace(problems=[]),
+        ), raising=False)
 
         class _Cog(CodeforcesGitgudMixin):
             pass
@@ -82,20 +89,15 @@ class TestGotgudCoinReward:
         return cog
 
     def _patch_cf(self, monkeypatch, solved_name):
+        from tests.gitgud_test_utils import _patch_cf_handle
         from tle.util import codeforces_common as cf_common
-        from tle.util import codeforces_api as cf
 
-        async def fake_resolve(ctx, converter, handles, **kw):
-            return ['handleA']
-
-        async def fake_status(*, handle):
-            return [SimpleNamespace(
-                verdict='OK', problem=SimpleNamespace(name=solved_name))]
-
-        monkeypatch.setattr(cf_common, 'resolve_handles', fake_resolve)
-        # The test stub of codeforces_api has no `user` API class, so create it.
-        monkeypatch.setattr(
-            cf, 'user', SimpleNamespace(status=fake_status), raising=False)
+        try:
+            cf_common.cache2.problem_cache.problem_by_name[solved_name] = SimpleNamespace(
+                contestId=1234, index='A')
+        except Exception:
+            pass
+        _patch_cf_handle(monkeypatch, solved={solved_name})
 
     def _ctx(self, uid, guild_id=GUILD):
         guild = None if guild_id is None else SimpleNamespace(id=guild_id)

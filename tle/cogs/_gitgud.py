@@ -185,12 +185,15 @@ class GitgudMixin:
         embed.add_field(name='Monthly points', value=monthlyPointsStr)
         await ctx.send(f'Challenge problem for `{handle}`', embed=embed)
 
-    async def _finalize_challenges(self, ctx, handle, actives, now, skips=()):
+    async def _finalize_challenges(self, ctx, handle, actives, solve_times, now, skips=()):
         """Resolve the whole batch at once (completions + ``+partial`` skips, atomically).
 
-        Positional bonus math falls out of the single list. Single and batch
-        claims share the challenge message; only a bonus line distinguishes
-        a boosted batch.
+        ``solve_times`` maps each done ``challenge_id`` to its solve epoch —
+        CF first-AC times from the API, used only for the progression bonus
+        window. ``now`` is the claim receipt time and is the sole source for
+        ``finish_time``, monthly points and duration. Positional bonus math
+        falls out of the single list. Single and batch claims share the
+        challenge message; only a bonus line distinguishes a boosted batch.
         """
         cur_ts = now.timestamp()
         user_id = ctx.message.author.id
@@ -200,11 +203,14 @@ class GitgudMixin:
 
         # award progression bonus, if any — prefix-only: mults apply solely
         # to the unbroken solved streak starting at slot A, so skipping an
-        # early slot voids the bonus for it and every later slot.
+        # early slot voids the bonus for it and every later slot. Each slot
+        # is timed by its own solve epoch, so late slots keep base points
+        # without voiding earlier slots' bonuses.
         skip_ids = {cid for cid, _ in skips}
         solved_mask = [a.challenge_id not in skip_ids for a in actives]
+        slot_times = [solve_times.get(a.challenge_id, float('inf')) for a in actives]
         scores_all, window, mults = compute_bonus_scores(
-            base, batch_id, cur_ts, issue_time, solved_mask
+            base, batch_id, slot_times, issue_time, solved_mask
         )
         kept = [i for i, a in enumerate(actives) if a.challenge_id not in skip_ids]
         scores_to_store = [scores_all[i] for i in kept]
@@ -240,7 +246,7 @@ class GitgudMixin:
         pub = discord.Embed(title=f"ThemeCP level {level} ({theme.time//60} min, {theme.perf} rating) for `{handle}`", description="\n".join(desc_lines))
         pub.add_field(name='Alltime points', value=str(total))
         pub.add_field(name='Monthly points', value=str(self._monthly_total(total, now)))
-        pub.set_footer(text=f"Bonus applies to an unbroken streak from A within {theme.time//60} min (bonus total {bonus_total}). ;gotgud checks all 4 at once (+partial claims a solved subset). ;nogud after 2h skips whole batch.")
+        pub.set_footer(text=f"Bonus applies to an unbroken streak from A solved within {theme.time//60} min (bonus total {bonus_total}). ;gotgud checks all 4 at once (+partial claims a solved subset). ;nogud after 2h skips whole batch.")
         return pub
 
     async def _gitgudprogression_impl(self, ctx, args):
@@ -324,9 +330,9 @@ class GitgudMixin:
             raise CodeforcesCogError(f'You do not have an active challenge')
         backend = self._backend_for_platform(actives[0].platform)
         handle = await backend.resolve_handle(ctx, self.converter)
-        _, missing = await backend.verify_claims(ctx, handle, actives, submission_url, partial)
+        _, missing, solve_times = await backend.verify_claims(ctx, handle, actives, submission_url, partial)
         await self._finalize_challenges(
-            ctx, handle, actives, now,
+            ctx, handle, actives, solve_times, now,
             skips=[(a.challenge_id, Gitgud.NOGUD) for a in missing])
 
     async def _nogud_impl(self, ctx):

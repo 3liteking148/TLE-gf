@@ -41,62 +41,73 @@ class TestBonusScores:
 
 class TestComputeBonusScores:
     def test_single_is_never_bonus(self):
-        assert gp.compute_bonus_scores([8], 'prog-1-x', 200.0, 100.0) == ([8], None, None)
+        assert gp.compute_bonus_scores([8], 'prog-1-x', [200.0], 100.0) == ([8], None, None)
 
     def test_classic_batch_is_never_bonus(self):
         scores, window, mults = gp.compute_bonus_scores(
-            [2, 2, 2, 2], 'snowflake-123', 100.0, 100.0)
+            [2, 2, 2, 2], 'snowflake-123', [100.0] * 4, 100.0)
         assert scores == [2, 2, 2, 2]
         assert (window, mults) == (None, None)
 
     def test_within_window_applies_bonus(self):
         window, _ = gp.get_progression_bonus_context('prog-1-x')
         assert gp.compute_bonus_scores(
-            [2, 2, 2, 2], 'prog-1-x', 100.0 + window - 1, 100.0
+            [2, 2, 2, 2], 'prog-1-x', [100.0 + window - 1] * 4, 100.0
         ) == ([2, 2, 3, 4], window, gp.THEME_MULTS)
 
     def test_exact_deadline_is_bonus_expiry_plus_one_is_not(self):
         window, _ = gp.get_progression_bonus_context('prog-1-x')
-        ok, _, _ = gp.compute_bonus_scores([2, 2, 2, 2], 'prog-1-x', 100.0 + window, 100.0)
+        ok, _, _ = gp.compute_bonus_scores([2, 2, 2, 2], 'prog-1-x', [100.0 + window] * 4, 100.0)
         late, _, _ = gp.compute_bonus_scores(
-            [2, 2, 2, 2], 'prog-1-x', 100.0 + window + 1, 100.0)
+            [2, 2, 2, 2], 'prog-1-x', [100.0 + window + 1] * 4, 100.0)
         assert ok == [2, 2, 3, 4]
         assert late == [2, 2, 2, 2]
 
+    def test_split_times_bonus_early_only(self):
+        window, _ = gp.get_progression_bonus_context('prog-1-x')
+        late = 100.0 + window + 1
+        # A, B, C solved fast keep their mults; late D falls back to base.
+        scores, _, _ = gp.compute_bonus_scores(
+            [2, 2, 2, 2], 'prog-1-x', [100.0, 100.0, 100.0, late], 100.0)
+        assert scores == [2, 2, 3, 2]
+        # late C and D both fall back; early A, B keep theirs.
+        scores, _, _ = gp.compute_bonus_scores(
+            [2, 2, 2, 2], 'prog-1-x', [100.0, 100.0, late, late], 100.0)
+        assert scores == [2, 2, 2, 2]
+
     def test_zero_scores_pass_through_with_context(self):
         scores, window, mults = gp.compute_bonus_scores(
-            [0, 0, 0, 0], 'prog-1-x', 100.0, 100.0)
+            [0, 0, 0, 0], 'prog-1-x', [100.0] * 4, 100.0)
         assert scores == [0, 0, 0, 0]
         assert window is not None and mults is not None
 
     def test_unknown_level_is_never_bonus(self):
         assert gp.compute_bonus_scores(
-            [2, 2, 2, 2], 'prog-9999-x', 100.0, 100.0
+            [2, 2, 2, 2], 'prog-9999-x', [100.0] * 4, 100.0
         ) == ([2, 2, 2, 2], None, None)
 
     def test_prefix_only_bonus(self):
-        window, _ = gp.get_progression_bonus_context('prog-1-x')
         # full streak earns the whole ladder
         scores, _, _ = gp.compute_bonus_scores(
-            [2, 2, 2, 2], 'prog-1-x', 100.0, 100.0, [True, True, True, True])
+            [2, 2, 2, 2], 'prog-1-x', [100.0] * 4, 100.0, [True, True, True, True])
         assert scores == [2, 2, 3, 4]
         # lone D scores base
         scores, _, _ = gp.compute_bonus_scores(
-            [2, 2, 2, 2], 'prog-1-x', 100.0, 100.0, [False, False, False, True])
+            [2, 2, 2, 2], 'prog-1-x', [100.0] * 4, 100.0, [False, False, False, True])
         assert scores == [2, 2, 2, 2]
         # gap voids later slots: A solved, B missing, C+D solved -> only A bonused (x1: unchanged)
         scores, _, _ = gp.compute_bonus_scores(
-            [2, 2, 2, 2], 'prog-1-x', 100.0, 100.0, [True, False, True, True])
+            [2, 2, 2, 2], 'prog-1-x', [100.0] * 4, 100.0, [True, False, True, True])
         assert scores == [2, 2, 2, 2]
         # A+B+C streak keeps C's x1.5; D skipped
         scores, _, _ = gp.compute_bonus_scores(
-            [2, 2, 2, 2], 'prog-1-x', 100.0, 100.0, [True, True, True, False])
+            [2, 2, 2, 2], 'prog-1-x', [100.0] * 4, 100.0, [True, True, True, False])
         assert scores == [2, 2, 3, 2]
         # default (None) preserves legacy full-batch behaviour
         assert gp.compute_bonus_scores(
-            [2, 2, 2, 2], 'prog-1-x', 100.0, 100.0
+            [2, 2, 2, 2], 'prog-1-x', [100.0] * 4, 100.0
         ) == gp.compute_bonus_scores(
-            [2, 2, 2, 2], 'prog-1-x', 100.0, 100.0, [True, True, True, True])
+            [2, 2, 2, 2], 'prog-1-x', [100.0] * 4, 100.0, [True, True, True, True])
 
 
 class TestBatchIdHelpers:
@@ -235,7 +246,7 @@ class TestSelectProgressionProblems:
 
 class TestSplitSolvedActives:
     def test_order_preserving_partition(self):
-        from tle.cogs._gitgud_protocol import split_solved_actives
+        from tests.gitgud_test_utils import split_solved_actives
         from tle.util.db.challenge_db import ActiveChallenge
         actives = [ActiveChallenge(1, 0.0, 'A', 0, 0, 'cf', 'A', 2, 'b'),
                    ActiveChallenge(2, 0.0, 'B', 0, 0, 'cf', 'B', 2, 'b'),
@@ -245,7 +256,7 @@ class TestSplitSolvedActives:
         assert [a.challenge_id for a in missing] == [2]
 
     def test_empty_solved_gives_empty_done(self):
-        from tle.cogs._gitgud_protocol import split_solved_actives
+        from tests.gitgud_test_utils import split_solved_actives
         from tle.util.db.challenge_db import ActiveChallenge
         actives = [ActiveChallenge(1, 0.0, 'A', 0, 0, 'cf', 'A', 2, 'b')]
         done, missing = split_solved_actives(actives, set())
@@ -270,21 +281,22 @@ def _actives():
             ActiveChallenge(3, 100.0, 'C', 3, 0, 'cf', 'C', 2, 'prog-1-x')]
 
 
-def _backend_with_solved(monkeypatch, solved):
+def _backend_with_solved(monkeypatch, solved, ts=150.0):
     from tle.cogs._codeforces_gitgud import _CfBackend
 
-    async def fake_solved(self, handle, *, only_ac=True):
-        return set(solved)
+    async def fake_times(self, handle, actives):
+        return {a.challenge_id: ts for a in actives if a.problem_key in solved}
 
-    monkeypatch.setattr(_CfBackend, 'fetch_solved', fake_solved)
+    monkeypatch.setattr(_CfBackend, 'fetch_solve_times', fake_times)
     return _CfBackend()
 
 
 class TestVerifyClaimsPartition:
     def test_strict_returns_full_on_success(self, monkeypatch):
         backend = _backend_with_solved(monkeypatch, {'A', 'B', 'C'})
-        done, missing = _run(backend.verify_claims(None, 'h', _actives()))
+        done, missing, times = _run(backend.verify_claims(None, 'h', _actives()))
         assert [a.challenge_id for a in done] == [1, 2, 3] and missing == []
+        assert times == {1: 150.0, 2: 150.0, 3: 150.0}
 
     def test_strict_raises_naming_missing(self, monkeypatch):
         backend = _backend_with_solved(monkeypatch, {'A'})
@@ -293,9 +305,10 @@ class TestVerifyClaimsPartition:
 
     def test_partial_returns_ordered_partition(self, monkeypatch):
         backend = _backend_with_solved(monkeypatch, {'C', 'A'})
-        done, missing = _run(backend.verify_claims(None, 'h', _actives(), partial=True))
+        done, missing, times = _run(backend.verify_claims(None, 'h', _actives(), partial=True))
         assert [a.challenge_id for a in done] == [1, 3]
         assert [a.challenge_id for a in missing] == [2]
+        assert times == {1: 150.0, 3: 150.0}
 
     def test_partial_zero_solved_raises(self, monkeypatch):
         backend = _backend_with_solved(monkeypatch, set())
@@ -309,8 +322,9 @@ class TestVerifyClaimsPartition:
 
     def test_singleton_flag_inert(self, monkeypatch):
         backend = _backend_with_solved(monkeypatch, {'A'})
-        done, missing = _run(backend.verify_claims(None, 'h', _actives()[:1], partial=True))
+        done, missing, times = _run(backend.verify_claims(None, 'h', _actives()[:1], partial=True))
         assert [a.challenge_id for a in done] == [1] and missing == []
+        assert times == {1: 150.0}
         with pytest.raises(CodeforcesCogError, match="haven't completed"):
             _run(backend.verify_claims(None, 'h', _actives()[1:], partial=True))
 
@@ -323,11 +337,12 @@ class TestVerifyClaimsPartition:
 
         async def fake_single(ctx, handle, act, url=None):
             calls.append((handle, act, url))
-            return None
+            return 150.0
 
         monkeypatch.setattr(backend, '_verify_single_claim', fake_single)
-        done, missing = _run(backend.verify_claims(None, 'h', active, partial=True))
+        done, missing, times = _run(backend.verify_claims(None, 'h', active, partial=True))
         assert done == active and missing == []
+        assert times == {9: 150.0}
         assert calls == [('h', active[0], None)]
 
     def test_atcoder_still_rejects_batches(self, monkeypatch):

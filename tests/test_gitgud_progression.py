@@ -7,6 +7,7 @@ original ``Challenge completed ...`` message; only a second ``Bonus applied``
 line distinguishes a boosted batch.
 """
 import datetime
+import time
 
 import pytest
 
@@ -21,10 +22,11 @@ from tests.gitgud_test_utils import (  # noqa: F401
     _run,
     _solo_prob,
     _solve_names,
+    _solve_offsets,
     cog,
 )
 from tle import constants
-from tle.cogs._codeforces_helpers import CodeforcesCogError, _GITGUD_COIN_MULTIPLIER
+from tle.cogs._codeforces_helpers import CodeforcesCogError, _GITGUD_CLAIM_MARGIN, _GITGUD_COIN_MULTIPLIER
 
 
 class TestProgressionIssue:
@@ -56,7 +58,7 @@ class TestProgressionIssue:
         assert '(3 with bonus)' in embed.description
         assert '(4 with bonus)' in embed.description
         assert 'bonus total 11' in embed.footer['text']
-        assert embed.footer['text'].startswith('Bonus needs')
+        assert embed.footer['text'].startswith('Bonus applies')
 
     def test_second_issue_while_active_rejected(self, db, cog, monkeypatch):
         _issue_level1(db, cog, monkeypatch)
@@ -125,6 +127,85 @@ class TestProgressionClaim:
         missing = [a.problem_key for a in actives if a.problem_key not in solved][0]
         _solve_names(monkeypatch, solved)
         with pytest.raises(CodeforcesCogError, match=f'missing 1.*{missing}'):
+            _run(cog._gotgud_impl(_ctx()))
+        assert db.count_active_challenges(USER_A) == 4
+        assert db.get_gudgitter_score(USER_A) == 0
+
+    def test_finish_times_use_claim_time(self, db, cog, monkeypatch):
+        actives = _issue_level1(db, cog, monkeypatch)
+        names = [a.problem_key for a in actives]
+        _solve_offsets(db, monkeypatch, {n: 60 * (i + 1) for i, n in enumerate(names)})
+        ctx = _ctx()
+        before = time.time()
+        _run(cog._gotgud_impl(ctx))
+        after = time.time()
+        assert db.list_active_challenges(USER_A) == []
+        rows = db.conn.execute(
+            'SELECT problem_name, finish_time FROM challenge WHERE user_id=?', (USER_A,)).fetchall()
+        # storage uses claim receipt, not CF solve epochs; bonus still used
+        # the solve offsets (all within window, so boosted total).
+        assert db.get_gudgitter_score(USER_A) == 11
+        for r in rows:
+            assert before - 10 <= r[1] <= after + 10
+        # duration uses wall-clock claim time, not the CF solve times
+        # (offsets are future-dated, so a solve-based duration would say minutes).
+        assert 'second' in ctx.sent[0][0]
+
+    def test_ac_within_margin_counts(self, db, cog, monkeypatch):
+        # ACs up to _GITGUD_CLAIM_MARGIN before issue are leniently accepted
+        # (clock skew / solve-then-issue races).
+        actives = _issue_level1(db, cog, monkeypatch)
+        names = [a.problem_key for a in actives]
+        _solve_offsets(db, monkeypatch, {n: -10 for n in names})
+        before = time.time()
+        _run(cog._gotgud_impl(_ctx()))
+        after = time.time()
+        assert db.list_active_challenges(USER_A) == []
+        rows = db.conn.execute(
+            'SELECT problem_name, finish_time FROM challenge WHERE user_id=?', (USER_A,)).fetchall()
+        for r in rows:
+            assert before - 10 <= r[1] <= after + 10
+
+    def test_ac_before_margin_does_not_count(self, db, cog, monkeypatch):
+        actives = _issue_level1(db, cog, monkeypatch)
+        names = [a.problem_key for a in actives]
+        _solve_offsets(db, monkeypatch, {n: -_GITGUD_CLAIM_MARGIN - 100 for n in names})
+        with pytest.raises(CodeforcesCogError, match='missing 4'):
+            _run(cog._gotgud_impl(_ctx()))
+        assert db.count_active_challenges(USER_A) == 4
+        assert db.get_gudgitter_score(USER_A) == 0
+
+    def test_split_times_bonus_early_only(self, db, cog, monkeypatch):
+        actives = _issue_level1(db, cog, monkeypatch)
+        names = [a.problem_key for a in actives]
+        # A, B, C solved fast, D solved past the 120 min window: D keeps
+        # base points while the early slots keep their mults.
+        _solve_offsets(
+            db, monkeypatch, {names[0]: 60, names[1]: 60, names[2]: 60, names[3]: 8000})
+        ctx = _ctx()
+        before = time.time()
+        _run(cog._gotgud_impl(ctx))
+        after = time.time()
+        assert db.get_gudgitter_score(USER_A) == 9  # 2, 2, 3, 2
+        rows = db.conn.execute(
+            'SELECT problem_name, finish_time, score FROM challenge WHERE user_id=?',
+            (USER_A,)).fetchall()
+        by_name = {r[0]: (r[1], r[2]) for r in rows}
+        assert [by_name[n][1] for n in names] == [2, 2, 3, 2]
+        for n in names:
+            assert before - 10 <= by_name[n][0] <= after + 10
+        assert any('Bonus applied' in (m[0] or '') for m in ctx.sent[1:])
+
+    def test_api_error_fails_gotgud(self, db, cog, monkeypatch):
+        from tle.util import codeforces_api as cf_api
+
+        _issue_level1(db, cog, monkeypatch)
+
+        async def boom(*, handle):
+            raise RuntimeError('cf down')
+
+        monkeypatch.setattr(cf_api.user, 'status', boom)
+        with pytest.raises(CodeforcesCogError, match='Could not fetch'):
             _run(cog._gotgud_impl(_ctx()))
         assert db.count_active_challenges(USER_A) == 4
         assert db.get_gudgitter_score(USER_A) == 0

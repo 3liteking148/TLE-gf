@@ -7,13 +7,16 @@ progression test files import one set of fakes via
 import asyncio
 import datetime
 import random
+import time
 from types import SimpleNamespace
+from typing import List, Sequence, Set, Tuple
 
 import pytest
 
 from tests.betting_test_utils import GUILD, USER_A, _make_market  # noqa: F401
 from tle import constants
 from tle.util import codeforces_common as cf_common
+from tle.util.db.challenge_db import ActiveChallenge
 
 
 def _run(coro):
@@ -90,14 +93,25 @@ def cog(db, monkeypatch):
     return c
 
 
-def _patch_cf_handle(monkeypatch, rating=800, solved=None):
+def _patch_cf_handle(monkeypatch, rating=800, solved=None, solved_times=None):
     solved = solved or set()
+    solved_times = solved_times or {}
 
     async def fake_resolve(ctx, converter, handles, **kw):
         return ['handleA']
 
     async def fake_status(*, handle):
-        return [SimpleNamespace(verdict='OK', problem=SimpleNamespace(name=n)) for n in solved]
+        now = int(time.time())
+        subs = []
+        for n in solved:
+            ts = int(solved_times.get(n, now))
+            try:
+                prob = cf_common.cache2.problem_cache.problem_by_name[n]
+                p = SimpleNamespace(name=n, contestId=prob.contestId, index=prob.index)
+            except Exception:
+                p = SimpleNamespace(name=n, contestId=None, index='?')
+            subs.append(SimpleNamespace(verdict='OK', creationTimeSeconds=ts, problem=p))
+        return subs
 
     from tle.util import codeforces_api as cf
     monkeypatch.setattr(cf_common, 'resolve_handles', fake_resolve)
@@ -114,6 +128,19 @@ def _issue_level1(db, cog, monkeypatch, args=('1',)):
 
 def _solve_names(monkeypatch, names):
     _patch_cf_handle(monkeypatch, rating=800, solved=set(names))
+
+
+def _solve_offsets(db, monkeypatch, offsets, uid=USER_A):
+    """Mock solves at ``issue_time + offset`` per problem name.
+
+    ``offsets`` maps problem names to seconds relative to the batch's
+    issue_time. Only the named problems count as solved; ACs older than
+    ``issue_time - _GITGUD_CLAIM_MARGIN`` are filtered by the claim gate."""
+    actives = db.list_active_challenges(uid)
+    issue = actives[0].issue_time
+    mapping = {name: int(issue + off) for name, off in offsets.items()}
+    _patch_cf_handle(monkeypatch, rating=800, solved=set(mapping), solved_times=mapping)
+    return mapping
 
 
 def _backdate(db, seconds):
@@ -133,3 +160,17 @@ def _make_bettor(db, uid=USER_A):
 
 def _more_points_on(cog, monkeypatch):
     monkeypatch.setattr(cog, '_check_more_points_active', lambda *a, **k: True)
+
+
+def split_solved_actives(
+    actives: Sequence[ActiveChallenge], solved: Set[str]
+) -> Tuple[List[ActiveChallenge], List[ActiveChallenge]]:
+    """Partition batch actives into ``(done, missing)`` preserving order.
+
+    Test-only helper (moved from ``tle.cogs._gitgud_protocol`` once the CF
+    backend switched to timestamp-based ``fetch_solve_times``).
+    ``solved`` is the set of solved problem keys. Pure — no DB, no backend.
+    """
+    done = [a for a in actives if a.problem_key in solved]
+    missing = [a for a in actives if a.problem_key not in solved]
+    return done, missing

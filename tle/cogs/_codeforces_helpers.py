@@ -12,6 +12,10 @@ from tle.util._cf_api_types import cf_tag_matches
 
 _GITGUD_NO_SKIP_TIME = 2 * 60 * 60
 
+# Lenient claim window: a CF AC counts when at/after issue_time minus this
+# margin (tolerate server clock desync)
+_GITGUD_CLAIM_MARGIN = 10 * 60
+
 _ONE_WEEK_DURATION = 7 * 24 * 60 * 60
 _GITGUD_MORE_POINTS_START_TIME = 1680300000
 # Completing a gitgud challenge also credits the betting wallet with this many

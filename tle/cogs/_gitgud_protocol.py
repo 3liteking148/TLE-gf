@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, List, Optional, Protocol, Sequence, Set, Tuple, TypeAlias, runtime_checkable
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Protocol, Sequence, Set, Tuple, TypeAlias, runtime_checkable
 
 from tle.cogs._gitgud_scoring import GitgudScoreModel
 from tle.util.db.challenge_db import ActiveChallenge
@@ -79,10 +79,14 @@ class GitgudBackend(Protocol):
     async def verify_claims(
         self, ctx: GitgudCtx, handle: str, actives: Sequence[ActiveChallenge], submission_url: Optional[str] = None,
         partial: bool = False
-    ) -> Tuple[List[ActiveChallenge], List[ActiveChallenge]]:
-        """Batch-aware claim check; returns done and missing challenges.
+    ) -> Tuple[List[ActiveChallenge], List[ActiveChallenge], Dict[int, float]]:
+        """Batch-aware claim check; returns done, missing and solve times.
 
-        Returns ``(done, missing)`` preserving batch order. On the strict path
+        Returns ``(done, missing, solve_times)`` preserving batch order, where
+        ``solve_times`` maps each done ``challenge_id`` to its solve epoch
+        (CF: first AC from the API at/after ``issue_time`` minus the claim
+        margin; AtCoder: claim time, since the submission page timestamp
+        is not parsed). On the strict path
         (``partial=False``) missing is always empty — any unsolved challenge
         raises instead. Callers resolve ``done`` as completions and ``missing``
         as skips.
@@ -122,15 +126,3 @@ class GitgudBackend(Protocol):
 
     def active_url(self, contest_id: ContestId, problem_key: str, p_index: PIndex = None) -> str:
         ...
-
-
-def split_solved_actives(
-    actives: Sequence[ActiveChallenge], solved: Set[str]
-) -> Tuple[List[ActiveChallenge], List[ActiveChallenge]]:
-    """Partition batch actives into ``(done, missing)`` preserving order.
-
-    ``solved`` is the set of solved problem keys. Pure — no DB, no backend.
-    """
-    done = [a for a in actives if a.problem_key in solved]
-    missing = [a for a in actives if a.problem_key not in solved]
-    return done, missing

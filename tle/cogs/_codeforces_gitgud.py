@@ -10,14 +10,15 @@ builds embeds, or writes challenges.
 """
 from __future__ import annotations
 
-from typing import Any, List, Optional, Sequence, Set, Tuple, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, TYPE_CHECKING
 
 from tle.util import codeforces_api as cf
 from tle.util import codeforces_common as cf_common
 from tle.cogs._gitgud import GitgudMixin
-from tle.cogs._gitgud_protocol import ActiveChallenge, ContestId, GitgudProblem, PIndex, split_solved_actives
+from tle.cogs._gitgud_protocol import ActiveChallenge, ContestId, GitgudProblem, PIndex
 from tle.cogs._codeforces_helpers import (
     _checkGitgudTags,
+    _GITGUD_CLAIM_MARGIN,
     _MULTIWORD_TAG_HINT,
     _parseGitgudRatingArgs,
     CodeforcesCogError,
@@ -102,27 +103,78 @@ class _CfBackend:
             return {sub.problem.name for sub in submissions if sub.verdict == 'OK'}
         return {sub.problem.name for sub in submissions}
 
-    async def _verify_single_claim(self, ctx: GitgudCtx, handle: str, active: ActiveChallenge, submission_url: Optional[str] = None) -> None:
-        solved: Set[str] = await self.fetch_solved(handle)
-        if active.problem_key not in solved:
+    async def fetch_solve_times(
+        self, handle: str, actives: Sequence[ActiveChallenge]
+    ) -> Dict[int, float]:
+        """First AC epoch per active ``challenge_id``.
+
+        Single ``user.status`` call per claim:
+        only ``OK`` verdicts at/after ``issue_time`` minus a margin. ``creationTimeSeconds``
+        is a UTC epoch compared directly against the stored epoch
+        ``issue_time`` — no timezone conversion needed. Problems match on
+        ``(contestId, index)`` with a name fallback. Any API failure raises
+        ``CodeforcesCogError`` so the claim fails closed instead of falling
+        back to wall-clock time.
+        """
+        cutoff = actives[0].issue_time - _GITGUD_CLAIM_MARGIN
+        try:
+            submissions = await cf.user.status(handle=handle)
+        except CodeforcesCogError:
+            raise
+        except Exception as exc:
+            raise CodeforcesCogError(
+                'Could not fetch your Codeforces submissions. '
+                'Try again in a moment.') from exc
+        first_by_id: Dict[Tuple[Any, Any], int] = {}
+        first_by_name: Dict[str, int] = {}
+        for sub in submissions:
+            if sub.verdict != 'OK':
+                continue
+            ts = sub.creationTimeSeconds
+            if ts < cutoff:
+                continue
+            key = (sub.problem.contestId, sub.problem.index)
+            if key not in first_by_id or ts < first_by_id[key]:
+                first_by_id[key] = ts
+            name = sub.problem.name
+            if name not in first_by_name or ts < first_by_name[name]:
+                first_by_name[name] = ts
+        times: Dict[int, float] = {}
+        for active in actives:
+            key = (active.contest_id, active.p_index)
+            if key in first_by_id:
+                times[active.challenge_id] = first_by_id[key]
+            elif active.problem_key in first_by_name:
+                times[active.challenge_id] = first_by_name[active.problem_key]
+        return times
+
+    async def _verify_single_claim(self, ctx: GitgudCtx, handle: str, active: ActiveChallenge, submission_url: Optional[str] = None) -> float:
+        times = await self.fetch_solve_times(handle, [active])
+        if active.challenge_id not in times:
             raise CodeforcesCogError('You haven\'t completed your challenge.')
+        return times[active.challenge_id]
 
     async def verify_claims(
         self, ctx: GitgudCtx, handle: str, actives: Sequence[ActiveChallenge], submission_url: Optional[str] = None,
         partial: bool = False
-    ) -> Tuple[List[ActiveChallenge], List[ActiveChallenge]]:
-        """Batch-aware claim check; singletons share the single-claim path (flag inert)."""
+    ) -> Tuple[List[ActiveChallenge], List[ActiveChallenge], Dict[int, float]]:
+        """Batch-aware claim check; singletons share the single-claim path (flag inert).
+
+        Returns ``(done, missing, solve_times)`` preserving batch order, where
+        ``solve_times`` maps done ``challenge_id`` to its first AC
+        epoch. One ``user.status`` call covers the whole batch."""
         if len(actives) == 1:
-            await self._verify_single_claim(ctx, handle, actives[0], submission_url)
-            return [actives[0]], []
-        solved: Set[str] = await self.fetch_solved(handle)
-        done, missing = split_solved_actives(actives, solved)
+            ts = await self._verify_single_claim(ctx, handle, actives[0], submission_url)
+            return [actives[0]], [], {actives[0].challenge_id: ts}
+        times = await self.fetch_solve_times(handle, actives)
+        done = [a for a in actives if a.challenge_id in times]
+        missing = [a for a in actives if a.challenge_id not in times]
         if not partial and missing:
             names = [a.problem_key for a in missing]
             raise CodeforcesCogError(f"Not all solved — missing {len(names)}: " + ", ".join(names))
         if partial and not done:
             raise CodeforcesCogError("You haven't completed your challenge.")
-        return done, missing
+        return done, missing, {a.challenge_id: times[a.challenge_id] for a in done}
 
     def nogud_set(self, user_id: int) -> Set[str]:
         return cf_common.user_db.get_nogud_problem_keys(user_id)

@@ -13,7 +13,8 @@ AtCoder and raise explicitly.
 """
 from __future__ import annotations
 
-from typing import Any, List, Optional, Sequence, Set, Tuple, TYPE_CHECKING
+import time
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, TYPE_CHECKING
 
 from tle.util import atcoder_api
 from tle.util import codeforces_common as cf_common
@@ -118,16 +119,16 @@ class _AcBackend:
     async def verify_claims(
         self, ctx: GitgudCtx, handle: str, actives: Sequence[ActiveChallenge], submission_url: Optional[str] = None,
         partial: bool = False
-    ) -> Tuple[List[ActiveChallenge], List[ActiveChallenge]]:
+    ) -> Tuple[List[ActiveChallenge], List[ActiveChallenge], Dict[int, float]]:
         """Single-claim check; batches are rejected (AtCoder has no batch solve set)."""
         if len(actives) != 1:
             raise CodeforcesCogError('AtCoder only supports single claims')
-        await self._verify_single_claim(ctx, handle, actives[0], submission_url)
-        return [actives[0]], []
+        ts = await self._verify_single_claim(ctx, handle, actives[0], submission_url)
+        return [actives[0]], [], {actives[0].challenge_id: ts}
 
     async def _verify_single_claim(
         self, ctx: GitgudCtx, handle: str, active: ActiveChallenge, submission_url: Optional[str] = None
-    ) -> None:
+    ) -> float:
         """Verify the invoker's pasted submission link proves the challenge is solved.
 
         Scrapes the single submission detail page from atcoder.jp instead of
@@ -184,6 +185,9 @@ class _AcBackend:
             raise CodeforcesCogError(
                 'That submission is for a different problem than your '
                 'challenge.')
+        # submission time not parsed; return claim time for protocol uniformity
+        # (storage uses the caller's now, singleton bonus is inert anyway).
+        return time.time()
 
     def nogud_set(self, user_id: int) -> Set[str]:
         return cf_common.user_db.get_nogud_problem_keys(user_id)

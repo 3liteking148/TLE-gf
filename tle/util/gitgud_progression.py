@@ -4,7 +4,7 @@ Pure utility: stdlib only, no discord, no ``cogs`` imports. ``themecp.csv``
 columns ``P1..P4`` are ThemeCP ratings A-D in order, matching ``THEME_MULTS``
 index 0..3 (1.0, 1.0, 1.5, 2.0). Mults use ``round(score*mult)`` and apply to
 any multi-challenge batch whose id carries a known level (``prog-{level}-…``)
-when claimed within the per-level window. Cog-level concerns (arg parsing,
+when each slot is solved within the per-level window. Cog-level concerns (arg parsing,
 problem selection, embeds — all of which raise ``CodeforcesCogError``) live
 in ``tle/cogs/_gitgud_progression.py``.
 """
@@ -111,23 +111,25 @@ def get_progression_bonus_context(batch_id: str) -> Tuple[int, Tuple[float, floa
 
 
 def compute_bonus_scores(
-    base_scores: Sequence[int], batch_id: str, cur_time: float, issue_time: float,
+    base_scores: Sequence[int], batch_id: str, solve_times: Sequence[float], issue_time: float,
     solved: Sequence[bool] | None = None,
 ) -> tuple[list[int], int | None, Tuple[float, ...] | None]:
     """Bonus decision for ``_finalize_challenges``.
 
     Returns ``(scores, window, mults)``. Mults apply only when the batch has
-    a known level, the claim is within its window, and they change the total;
-    otherwise the base scores pass through with ``(None, None)`` context.
-    Singletons never get a bonus. Callers compare stored vs base scores to
-    decide whether a bonus line is shown, so partial claims of flat slots
-    correctly show none.
+    a known level and they change the total; otherwise the base scores pass
+    through with ``(None, None)`` context. Singletons never get a bonus.
+    Callers compare stored vs base scores to decide whether a bonus line is
+    shown, so partial claims of flat slots correctly show none.
 
-    ``solved`` marks which batch positions were solved, in batch order;
-    ``None`` means all solved (strict claim / legacy callers). Mults apply
-    only to the unbroken solved prefix starting at slot A: the first
-    unsolved position voids the bonus for it and every later slot, so a
-    lone D (or any gapped set) scores base points.
+    ``solve_times`` holds each batch position's solve epoch in batch order
+    (CF first-AC times from the API); a slot is bonused only when solved
+    within ``issue_time + window``. Late slots keep base points without
+    voiding earlier slots' bonuses. ``solved`` marks which batch positions
+    were solved, in batch order; ``None`` means all solved (strict claim /
+    legacy callers). Mults apply only to the unbroken solved streak starting
+    at slot A: the first unsolved position voids the bonus for it and every
+    later slot, so a lone D (or any gapped set) scores base points.
     """
     base = list(base_scores)
     if len(base) <= 1:
@@ -136,14 +138,15 @@ def compute_bonus_scores(
     if bonus_ctx is None:
         return base, None, None
     window, mults = bonus_ctx
-    if cur_time <= issue_time + window:
-        cand = list(base)
-        for i, (s, m) in enumerate(zip(base, mults)):
-            if solved is not None and not solved[i]:
-                break
+    deadline = issue_time + window
+    cand = list(base)
+    for i, (s, m) in enumerate(zip(base, mults)):
+        if solved is not None and not solved[i]:
+            break
+        if solve_times[i] <= deadline:
             cand[i] = round(s * m)
-        if cand != base:
-            return cand, window, mults
+    if cand != base:
+        return cand, window, mults
     return base, window, mults
 
 
