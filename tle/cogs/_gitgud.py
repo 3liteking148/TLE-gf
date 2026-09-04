@@ -266,7 +266,7 @@ class GitgudMixin:
         deltas: list[int] = []
         scores: list[int] = []
         for prob in problems:
-            d, s = backend.score_model.delta_and_score(prob.rating, delta_base)
+            d, s = backend.score_model.delta_and_score(prob.rating, delta_base, tags, bantags)
             deltas.append(d)
             scores.append(s)
 
