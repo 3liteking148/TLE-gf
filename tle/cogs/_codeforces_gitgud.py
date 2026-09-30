@@ -39,6 +39,13 @@ def _rating_sort_key(problem: GitgudProblem) -> int:
     return problem.rating if problem.rating is not None else 0
 
 
+# Rating window for gitgud requests and the step the default-rating pool
+# climbs by when ``hint_climb`` is set.
+_CF_RATING_MIN = 800
+_CF_RATING_MAX = 3500
+_CF_RATING_STEP = 100
+
+
 class CodeforcesGitgudMixin(GitgudMixin):
     """Marker subclass so the ``Codeforces`` cog and the gitgud tests can
     inherit the generic implementation under the original Codeforces name."""
@@ -70,7 +77,7 @@ class _CfBackend:
         error = ('Wrong rating requested. Remember gitgud now uses rating '
                  '(800-3500) instead of delta.')
         srating, erating, hidden = _parseGitgudRatingArgs(
-            args, rating, error, bounds=(800, 3500),
+            args, rating, error, bounds=(_CF_RATING_MIN, _CF_RATING_MAX),
             junk_hint=_MULTIWORD_TAG_HINT)
         _checkGitgudTags(tags, bantags, _cfTagVocabulary())
         return srating, erating, hidden, tags, bantags
@@ -93,7 +100,7 @@ class _CfBackend:
     def scale_rating(self, rating: int) -> Tuple[int, int]:
         # user_rating clamps the search range default; delta_base clamps the
         # rating difference used to award points.
-        user_rating = max(800, min(3500, rating))
+        user_rating = max(_CF_RATING_MIN, min(_CF_RATING_MAX, rating))
         delta_base = max(1100, min(3000, user_rating))
         return user_rating, delta_base
 
@@ -189,7 +196,7 @@ class _CfBackend:
     def nogud_set(self, user_id: int) -> Set[str]:
         return cf_common.user_db.get_nogud_problem_keys(user_id)
 
-    def select_pool(
+    def _filter_pool(
         self,
         srating: int,
         erating: int,
@@ -199,10 +206,9 @@ class _CfBackend:
         bantags: List[str],
         handle: str,
     ) -> List[GitgudProblem]:
-        """Filter the CF problem cache by rating range, solved/nogud sets and
-        tag filters; excludes nonstandard problems and problems the user wrote.
-        Returns a pool sorted by contest start time. Empty when nothing fits —
-        the caller raises 'No problem to assign'."""
+        """One pass over the CF problem cache for ``[srating, erating]``:
+        solved/nogud sets and tag filters applied, nonstandard problems and
+        problems the user wrote excluded, sorted by contest start time."""
         problems: List[GitgudProblem] = [prob for prob in cf_common.cache2.problem_cache.problems
                                           if prob.rating is not None
                                           and prob.rating >= srating and prob.rating <= erating
@@ -217,6 +223,40 @@ class _CfBackend:
         problems.sort(key=lambda problem: cf_common.cache2.contest_cache.get_contest(
             problem.contestId).startTimeSeconds)
         return problems
+
+    def select_pool(
+        self,
+        srating: int,
+        erating: int,
+        solved: Set[str],
+        noguds: Set[str],
+        tags: List[str],
+        bantags: List[str],
+        handle: str,
+        *,
+        hint_climb: bool = False,
+    ) -> List[GitgudProblem]:
+        """Filter the CF problem cache by rating range, solved/nogud sets and
+        tag filters; excludes nonstandard problems and problems the user wrote.
+        Returns a pool sorted by contest start time. Empty when nothing fits —
+        the caller raises 'No problem to assign'.
+
+        ``hint_climb`` lets the caller request the next higher rating when the
+        window came from the default (no rating given): the range is retried
+        in ``_CF_RATING_STEP`` steps up to ``_CF_RATING_MAX`` and the first
+        non-empty pool wins. Callers with a fixed rating window — the
+        progression slots — must leave it unset."""
+        problems = self._filter_pool(
+            srating, erating, solved, noguds, tags, bantags, handle)
+        if problems or not hint_climb:
+            return problems
+        for rating in range(erating + _CF_RATING_STEP,
+                            _CF_RATING_MAX + 1, _CF_RATING_STEP):
+            problems = self._filter_pool(
+                srating, rating, solved, noguds, tags, bantags, handle)
+            if problems:
+                return problems
+        return []
 
     async def fetch_participated(self, handle: str) -> Set[int]:
         resp = await cf.user.rating(handle=handle)

@@ -201,10 +201,14 @@ class _AcBackend:
         tags: List[str],
         bantags: List[str],
         handle: str,
+        *,
+        hint_climb: bool = False,
     ) -> Sequence[GitgudProblem]:
         """Filter the AtCoder problem cache by difficulty range and the
         solved/nogud sets; sorted by contest start. Empty when nothing fits —
-        the caller raises 'No problem to assign'."""
+        the caller raises 'No problem to assign'. ``hint_climb`` is accepted
+        for protocol parity and ignored: AtCoder already widens an exact
+        default rating by ±100 and has no rating ladder."""
         # ``prob.rating`` is forced uniform API (aliases ``difficulty`` on
         # AtCoder).  Filtering uses rating so both platforms share the same
         # attribute name.

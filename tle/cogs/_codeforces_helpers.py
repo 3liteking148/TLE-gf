@@ -91,6 +91,28 @@ def _parseGitgudRatingArgs(args, default_rating, error_message,
     return srating, erating, hidden
 
 
+def gitgud_rating_specified(args) -> bool:
+    """True when any gitgud arg is an explicit ``rating`` or ``lo-hi`` spec.
+
+    Call only after ``_parseGitgudRatingArgs`` has accepted ``args``: every
+    remaining digit-leading token is then a well-formed rating spec, since
+    tags start with ``+``/``~`` and dates with ``d<``/``d>=``. Used to keep
+    the rating climb to requests that fell back to the default range.
+    """
+    return any(arg[:1].isdigit() for arg in args)
+
+
+def _split_gotgud_args(args):
+    """Split ``;gotgud`` args into ``(submission_url, partial)``.
+
+    ``+partial`` applies to any multi-challenge batch and is inert on
+    singletons. The first non-flag arg is the AtCoder submission URL.
+    """
+    partial = '+partial' in args
+    rest = [a for a in args if a != '+partial']
+    return (rest[0] if rest else None), partial
+
+
 def _unknownTagFilters(filters, vocabulary, *, exact=False):
     """Return the filter tokens that match nothing in ``vocabulary``.
 

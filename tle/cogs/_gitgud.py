@@ -31,6 +31,8 @@ from tle.cogs._codeforces_helpers import (
     _ONE_WEEK_DURATION,
     _GITGUD_MORE_POINTS_START_TIME,
     _GITGUD_COIN_MULTIPLIER,
+    _split_gotgud_args,
+    gitgud_rating_specified,
 )
 from tle.util.gitgud_progression import (
     biased_choice,
@@ -42,17 +44,6 @@ from tle.cogs._gitgud_progression import (
     parse_progression_args,
     select_progression_problems,
 )
-
-
-def _split_gotgud_args(args):
-    """Split ``;gotgud`` args into ``(submission_url, partial)``.
-
-    ``+partial`` applies to any multi-challenge batch and is inert on
-    singletons. The first non-flag arg is the AtCoder submission URL.
-    """
-    partial = '+partial' in args
-    rest = [a for a in args if a != '+partial']
-    return (rest[0] if rest else None), partial
 
 
 class GitgudMixin:
@@ -298,7 +289,8 @@ class GitgudMixin:
         await self._validate_gitgud_status(ctx)
 
         problems = backend.select_pool(
-            srating, erating, solved, noguds, tags, bantags, handle)
+            srating, erating, solved, noguds, tags, bantags, handle,
+            hint_climb=not gitgud_rating_specified(args))
         if not problems:
             raise CodeforcesCogError('No problem to assign')
 

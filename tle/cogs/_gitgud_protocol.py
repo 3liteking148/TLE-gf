@@ -105,7 +105,16 @@ class GitgudBackend(Protocol):
         tags: List[str],
         bantags: List[str],
         handle: str,
+        *,
+        hint_climb: bool = False,
     ) -> Sequence[GitgudProblem]:
+        """Pool for ``[srating, erating]``.
+
+        ``hint_climb`` tells the backend the window came from the default
+        rating (no rating argument) so it may climb to higher ratings when
+        the window is empty; backends without a ladder ignore it. Callers
+        with a fixed rating window must leave it unset.
+        """
         ...
 
     async def fetch_participated(self, handle: str) -> Set[int]:
