@@ -87,8 +87,8 @@ class CodeforcesProblemsMixin:
         info = await cf.user.info(handles=handles)
         rating = int(round(sum(user.effective_rating for user in info) / len(handles), -2))
         rating += delta
-        rating = max(800, rating)
-        rating = min(3500, rating)
+        rating = max(cf_common.RATING_MIN, rating)
+        rating = min(cf_common.RATING_MAX, rating)
         problems = [prob for prob in cf_common.cache2.problem_cache.problems
                     if abs(prob.rating - rating) <= 300 and prob.name not in solved
                     and not any(cf_common.is_contest_writer(prob.contestId, handle) for handle in handles)

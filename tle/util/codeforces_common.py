@@ -34,6 +34,12 @@ from tle.util.cf_format import (
 
 logger = logging.getLogger(__name__)
 
+# Codeforces rating bounds — single source of truth for every user-facing CF
+# rating (gitgud/training/duel requests, round problem ranges, search clamps).
+# Mirrors atcoder_api.RATING_MIN/RATING_MAX.
+RATING_MIN = 800
+RATING_MAX = 3500
+
 # Connection to database
 user_db = None
 

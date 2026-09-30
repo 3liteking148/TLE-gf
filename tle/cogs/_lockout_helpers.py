@@ -7,9 +7,11 @@ from collections import namedtuple
 
 from discord.ext import commands
 
+from tle.util import codeforces_common as cf_common
+
 MAX_ROUND_USERS = 5
-LOWER_RATING = 800
-UPPER_RATING = 3500
+LOWER_RATING = cf_common.RATING_MIN
+UPPER_RATING = cf_common.RATING_MAX
 MATCH_DURATION = [5, 600]
 MAX_PROBLEMS = 6
 MAX_ALTS = 5

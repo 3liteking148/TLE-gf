@@ -280,7 +280,7 @@ class DuelImplMixin:
         lowest_rating = min(user.effective_rating or 0 for user in users)
         suggested_rating = round(lowest_rating, -2) + _DUEL_RATING_DELTA
         rating = round(rating, -2) if rating else suggested_rating
-        rating = min(3500, max(rating, 800))
+        rating = min(cf_common.RATING_MAX, max(rating, cf_common.RATING_MIN))
         unofficial = rating > _DUEL_OFFICIAL_CUTOFF #suggested_rating
         dlo,dhi = cf_common.parse_daterange(args)
         if not nohandicap:

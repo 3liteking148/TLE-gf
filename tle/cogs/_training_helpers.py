@@ -18,8 +18,8 @@ from tle.util.ranking_image import (  # noqa: F401
     FONTS, rating_to_color, render_ranking_table_image)
 
 
-_TRAINING_MIN_RATING_VALUE = 800
-_TRAINING_MAX_RATING_VALUE = 3500
+_TRAINING_MIN_RATING_VALUE = cf_common.RATING_MIN
+_TRAINING_MAX_RATING_VALUE = cf_common.RATING_MAX
 
 
 class TrainingMode(IntEnum):
@@ -108,8 +108,8 @@ class Game:
             newRating += 100
         else:
             newRating -= 100
-        newRating = min(newRating, 3500)
-        newRating = max(newRating, 800)
+        newRating = min(newRating, _TRAINING_MAX_RATING_VALUE)
+        newRating = max(newRating, _TRAINING_MIN_RATING_VALUE)
         return newRating
 
     def doSolved(self, rating, duration):

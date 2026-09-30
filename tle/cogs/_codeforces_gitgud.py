@@ -41,8 +41,8 @@ def _rating_sort_key(problem: GitgudProblem) -> int:
 
 # Rating window for gitgud requests and the step the default-rating pool
 # climbs by when ``hint_climb`` is set.
-_CF_RATING_MIN = 800
-_CF_RATING_MAX = 3500
+_CF_RATING_MIN = cf_common.RATING_MIN
+_CF_RATING_MAX = cf_common.RATING_MAX
 _CF_RATING_STEP = 100
 
 
@@ -75,7 +75,7 @@ class _CfBackend:
         tags: List[str] = cf_common.parse_tags(args, prefix='+')
         bantags: List[str] = cf_common.parse_tags(args, prefix='~')
         error = ('Wrong rating requested. Remember gitgud now uses rating '
-                 '(800-3500) instead of delta.')
+                 f'({cf_common.RATING_MIN}-{cf_common.RATING_MAX}) instead of delta.')
         srating, erating, hidden = _parseGitgudRatingArgs(
             args, rating, error, bounds=(_CF_RATING_MIN, _CF_RATING_MAX),
             junk_hint=_MULTIWORD_TAG_HINT)
