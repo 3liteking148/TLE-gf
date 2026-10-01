@@ -20,6 +20,33 @@ from tle.util.gitgud_progression import (
 )
 
 
+# ThemeCP background, shared by ``;help gitgudprogression`` and the
+# no-argument usage error so the links are written down exactly once. Bare URLs
+# rather than ``[label](url)``: Discord does not render markdown link syntax in
+# message bodies or embed descriptions, it just shows the raw text, while a bare
+# URL is auto-linked.
+THEMECP_REFERENCES = (
+    'More about ThemeCP: https://codeforces.com/blog/entry/136704\n'
+    'ThemeCP level sheet: https://docs.google.com/spreadsheets/d/'
+    '1gdD-syEpfy10Vz1f5UAm5eKiV_UAEdG-C4jrouN57bs'
+)
+
+# The full ``;help gitgudprogression`` body. Passed as ``help=`` rather than
+# left as a docstring so it can reuse ``THEMECP_REFERENCES``; discord.py gives
+# an explicit ``help`` precedence over ``__doc__``.
+GITGUD_PROGRESSION_HELP = f"""ThemeCP-style progression batch: 4 problems (slots A-D) at the level's fixed ratings.
+
+Claim with ;gotgud once all 4 are solved, or append +partial to claim
+a solved subset (at least one required; the unsolved rest is skipped).
+Each slot pays base ladder points; solving within the level's time
+window upgrades the unbroken streak starting at A with mults
+x1, x1, x1.5, x2 — so A+B+C+D earns the full bonus, but a lone D
+(or any solved problem with an unsolved problem before it) scores base points only.
+;nogud after 2h skips the whole batch.
+
+{THEMECP_REFERENCES}"""
+
+
 def require_theme(level: int):
     """ThemeLevel for *level* or raise naming the valid range."""
     theme = theme_of(level)
@@ -39,7 +66,7 @@ def parse_progression_args(args: Sequence[str], backend) -> Tuple[int, ThemeLeve
     """
     if not args:
         raise CodeforcesCogError(
-            f"Usage: ;gitgudprogression <level 1..{max_level()}> [+tag] [~tag]")
+            f"Usage: ;gitgudprogression <level 1..{max_level()}> [+tag] [~tag]\n\n{THEMECP_REFERENCES}")
     try:
         level = int(args[0])
     except ValueError:

@@ -19,6 +19,7 @@ from tle.cogs._codeforces_helpers import (
 from tle.cogs._codeforces_gitgud import CodeforcesGitgudMixin
 from tle.cogs._codeforces_problems import CodeforcesProblemsMixin
 from tle.cogs._atcoder_gitgud import AtcoderGitgudMixin
+from tle.cogs._gitgud_progression import GITGUD_PROGRESSION_HELP
 
 
 class Codeforces(AtcoderGitgudMixin, CodeforcesGitgudMixin,
@@ -130,19 +131,10 @@ class Codeforces(AtcoderGitgudMixin, CodeforcesGitgudMixin,
     async def nogud(self, ctx):
         await self._nogud_impl(ctx)
 
-    @commands.command(brief='ThemeCP-style gitgud', usage='<level 1..109> [+tag] [~tag]')
+    @commands.command(brief='ThemeCP-style gitgud', usage='<level 1..109> [+tag] [~tag]',
+                       help=GITGUD_PROGRESSION_HELP)
     @cf_common.user_guard(group='gitgud')
     async def gitgudprogression(self, ctx, *args):
-        """ThemeCP-style progression batch: 4 problems (slots A-D) at the level's fixed ratings.
-
-        Claim with ;gotgud once all 4 are solved, or append +partial to claim
-        a solved subset (at least one required; the unsolved rest is skipped).
-        Each slot pays base ladder points; solving within the level's time
-        window upgrades the unbroken streak starting at A with mults
-        x1, x1, x1.5, x2 — so A+B+C+D earns the full bonus, but a lone D
-        (or any solved problem with an unsovled problem before it) scores base points only.
-        ;nogud after 2h skips the whole batch.
-        """
         await self._gitgudprogression_impl(ctx, args)
 
     # Undocumented easter-egg aliases for ;gotgud / ;gitgud. Deliberately
