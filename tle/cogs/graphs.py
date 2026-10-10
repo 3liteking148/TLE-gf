@@ -14,6 +14,7 @@ from tle.cogs import _graph_render3 as _render3
 # patch targets like `tle.cogs.graphs.cf_common` remain valid.
 from tle.cogs._graph_helpers import (  # noqa: F401
     GraphCogError,
+    _percentile_at_rating,
     _rating_at_percentile,
     nice_sub_type,
     _plot_rating,
@@ -164,6 +165,16 @@ class Graphs(commands.Cog):
         Example: ;ratingfor 99.5 — what rating puts you in the top 0.5%?
         """
         await _render2.ratingfor(self, ctx, percentile)
+
+    @commands.command(brief='Show percentile at a given rating',
+                      aliases=['percentileat', 'percat'],
+                      usage='<rating>')
+    async def percentilefor(self, ctx, rating: float):
+        """Look up the Codeforces percentile at the given rating.
+
+        Example: ;percentilefor 1800 — what percentile is rating 1800?
+        """
+        await _render2.percentilefor(self, ctx, rating)
 
     @discord_common.send_error_if(GraphCogError, cf_common.ResolveHandleError,
                                   cf_common.FilterError)

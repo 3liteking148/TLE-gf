@@ -6,6 +6,7 @@ symbols it needs, so existing imports such as
 ``from tle.cogs.graphs import _rating_at_percentile`` keep working.
 """
 
+import bisect
 import datetime as dt
 
 from discord.ext import commands
@@ -39,6 +40,22 @@ def _rating_at_percentile(ratings, percentile):
     if idx >= n:
         idx = n - 1
     return sorted_ratings[idx]
+
+
+def _percentile_at_rating(ratings, rating):
+    """Return the percentile at the given rating of a sorted-or-unsorted list.
+
+    Percentile is 0–100 inclusive. The convention matches `;plot centile`:
+    a user with rating r sits at percentile 100 * (count below r) / n, i.e.
+    100 * bisect_left(sorted_ratings, r) / n. The top user gets
+    100 * (n-1) / n (only users strictly below are counted). Returns None if
+    ratings is empty.
+    """
+    n = len(ratings)
+    if n == 0:
+        return None
+    sorted_ratings = sorted(ratings)
+    return 100 * bisect.bisect_left(sorted_ratings, rating) / n
 
 
 def nice_sub_type(types):

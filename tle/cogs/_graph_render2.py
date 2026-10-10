@@ -21,7 +21,7 @@ from tle.util import codeforces_common as cf_common
 from tle.util import discord_common
 from tle.util import graph_common as gc
 
-from tle.cogs._graph_helpers import GraphCogError, _rating_at_percentile
+from tle.cogs._graph_helpers import GraphCogError, _percentile_at_rating, _rating_at_percentile
 
 logger = logging.getLogger(__name__)
 
@@ -301,6 +301,35 @@ async def ratingfor(cog, ctx, percentile: float):
     embed = discord.Embed(
         title=f'Rating at {percentile:g} percentile',
         description=f'**{rating}** ({rank.title}) — computed over {len(ratings)} rated users.',
+        color=color,
+    )
+    discord_common.set_author_footer(embed, ctx.author)
+    await ctx.send(embed=embed)
+
+
+async def percentilefor(cog, ctx, rating: float):
+    """Look up the Codeforces percentile at the given rating."""
+    if not getattr(cf_common, '_initialize_done', False):
+        raise GraphCogError(
+            'Bot is still warming up after restart — rating cache is not '
+            'loaded yet. Try again in a few seconds.'
+        )
+
+    ratings = cf_common.cache2.rating_changes_cache.get_all_ratings()
+    percentile = _percentile_at_rating(ratings, rating)
+    if percentile is None:
+        raise GraphCogError(
+            'Rating cache is empty. An admin needs to run '
+            '`;cache ratingchanges missing` to populate it.'
+        )
+
+    percentile = round(percentile, 2)
+    top = round(100 - percentile, 2)
+    rank = cf.rating2rank(rating)
+    color = rank.color_embed if rank.color_embed is not None else 0xffaa10
+    embed = discord.Embed(
+        title=f'Percentile at rating {rating:g} ({rank.title})',
+        description=f'**{percentile:g}** (top {top:g}%) — computed over {len(ratings)} rated users.',
         color=color,
     )
     discord_common.set_author_footer(embed, ctx.author)
