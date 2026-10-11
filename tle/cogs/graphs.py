@@ -166,7 +166,7 @@ class Graphs(commands.Cog):
         """
         await _render2.ratingfor(self, ctx, percentile)
 
-    @commands.command(brief='Show percentile at a given rating',
+    @commands.command(brief='Show percentile at a given rating or username',
                       aliases=['percentileat', 'percat'],
                       usage='<rating|username>')
     async def percentilefor(self, ctx, rating: str):
