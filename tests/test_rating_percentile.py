@@ -1,7 +1,13 @@
 """Tests for the percentile → rating helper in graphs.py."""
+import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 
+from tle.cogs import _graph_helpers, _graph_render2 as _render2
 from tle.cogs.graphs import _percentile_at_rating, _rating_at_percentile
+from tle.cogs._graph_helpers import _parse_rating_argument, _resolve_percentile_argument
+from tle.util.codeforces_api import User
 
 
 class TestRatingAtPercentile:
@@ -134,3 +140,146 @@ class TestPercentileAtRating:
             recovered = _percentile_at_rating(ratings, rating)
             expected = 100 * min(int(p / 100 * n), n - 1) / n
             assert recovered == expected
+
+
+def _make_user(handle, rating):
+    return User(handle=handle,
+                firstName='',
+                lastName='',
+                country='',
+                city='',
+                organization='',
+                contribution=0,
+                rating=rating,
+                maxRating=rating,
+                lastOnlineTimeSeconds=0,
+                registrationTimeSeconds=0,
+                friendOfCount=0,
+                titlePhoto='')
+
+
+class _FakeCtx:
+    def __init__(self):
+        self.author = 'author'
+        self.sent = []
+
+    async def send(self, embed=None, **kwargs):
+        self.sent.append(embed)
+
+
+class TestParseRatingArgument:
+    def test_plain_int(self):
+        assert _parse_rating_argument('1800') == 1800
+
+    def test_signed_int(self):
+        assert _parse_rating_argument('-100') == -100
+        assert _parse_rating_argument('+1800') == 1800
+
+    def test_surrounding_whitespace(self):
+        assert _parse_rating_argument('  1800  ') == 1800
+
+    def test_non_numeric_returns_none(self):
+        assert _parse_rating_argument('tourist') is None
+        assert _parse_rating_argument('1800.5') is None
+        assert _parse_rating_argument('') is None
+        assert _parse_rating_argument('1e3') is None
+
+
+class TestResolvePercentileArgument:
+    def _run(self, coro):
+        return asyncio.run(coro)
+
+    def test_int_argument_skips_lookup(self):
+        class _Cog:
+            converter = None
+
+        with patch('tle.cogs._graph_helpers.cf') as mock_cf, \
+             patch('tle.cogs._graph_helpers.cf_common') as mock_common:
+            mock_common.resolve_handles = AsyncMock(return_value=['tourist'])
+
+            rating, handle = self._run(
+                _resolve_percentile_argument(_Cog(), _FakeCtx(), '1800'))
+
+        assert rating == 1800
+        assert handle is None
+        mock_common.resolve_handles.assert_not_called()
+        mock_cf.user.info.assert_not_called()
+
+    def test_username_resolved_to_rating(self):
+        class _Cog:
+            converter = None
+
+        with patch('tle.cogs._graph_helpers.cf') as mock_cf, \
+             patch('tle.cogs._graph_helpers.cf_common') as mock_common:
+            mock_common.resolve_handles = AsyncMock(return_value=['tourist'])
+            mock_cf.user.info = AsyncMock(
+                return_value=[_make_user('tourist', 3786)])
+
+            rating, handle = self._run(
+                _resolve_percentile_argument(_Cog(), _FakeCtx(), 'tourist'))
+
+        assert rating == 3786
+        assert handle == 'tourist'
+        mock_common.resolve_handles.assert_awaited_once()
+        mock_cf.user.info.assert_awaited_once_with(handles=['tourist'])
+
+    def test_unrated_username_raises(self):
+        class _Cog:
+            converter = None
+
+        with patch('tle.cogs._graph_helpers.cf') as mock_cf, \
+             patch('tle.cogs._graph_helpers.cf_common') as mock_common:
+            mock_common.resolve_handles = AsyncMock(return_value=['some_newbie'])
+            mock_cf.user.info = AsyncMock(
+                return_value=[_make_user('some_newbie', None)])
+
+            with pytest.raises(_graph_helpers.GraphCogError,
+                               match='`some_newbie` is not rated'):
+                self._run(_resolve_percentile_argument(_Cog(), _FakeCtx(),
+                                                       'some_newbie'))
+
+
+class TestPercentileForRender:
+    """The render body wires resolution into the unchanged embed."""
+
+    RATINGS = [100, 200, 300, 400]
+
+    def _render(self, arg, user=None, resolved_handle=None):
+        """Run _render2.percentilefor with resolution stubbed at the helper."""
+        class _Cog:
+            converter = None
+
+        ctx = _FakeCtx()
+        with patch('tle.cogs._graph_helpers.cf') as mock_cf, \
+             patch('tle.cogs._graph_helpers.cf_common') as mock_common, \
+             patch('tle.cogs._graph_render2.cf_common') as mock_render_common, \
+             patch('tle.cogs._graph_render2.cf') as mock_render_cf:
+            mock_common.resolve_handles = AsyncMock(
+                return_value=[resolved_handle])
+            mock_cf.user.info = AsyncMock(return_value=[user])
+            mock_render_common._initialize_done = True
+            mock_render_common.cache2.rating_changes_cache.get_all_ratings.return_value = self.RATINGS
+            rank = MagicMock()
+            rank.color_embed = 0xffaa10
+            rank.title = 'Grandmaster'
+            mock_render_cf.rating2rank.return_value = rank
+
+            asyncio.run(_render2.percentilefor(_Cog(), ctx, arg))
+
+        assert len(ctx.sent) == 1
+        return ctx.sent[0], mock_common.resolve_handles
+
+    def test_rating_argument_produces_embed(self):
+        embed, resolve = self._render('300')
+        assert embed.title.startswith('Percentile at rating 300')
+        # rating 300 sits below exactly 2 of 4 users
+        assert '**50** (top 50%)' in embed.description
+        resolve.assert_not_called()
+
+    def test_username_argument_produces_same_embed(self):
+        user = _make_user('tourist', 300)
+        embed, resolve = self._render('tourist', user=user,
+                                      resolved_handle='tourist')
+        assert embed.title.startswith('Percentile at rating 300')
+        assert '**50** (top 50%)' in embed.description
+        resolve.assert_awaited_once()

@@ -21,7 +21,10 @@ from tle.util import codeforces_common as cf_common
 from tle.util import discord_common
 from tle.util import graph_common as gc
 
-from tle.cogs._graph_helpers import GraphCogError, _percentile_at_rating, _rating_at_percentile
+from tle.cogs._graph_helpers import (GraphCogError,
+                                     _percentile_at_rating,
+                                     _rating_at_percentile,
+                                     _resolve_percentile_argument)
 
 logger = logging.getLogger(__name__)
 
@@ -307,14 +310,15 @@ async def ratingfor(cog, ctx, percentile: float):
     await ctx.send(embed=embed)
 
 
-async def percentilefor(cog, ctx, rating: float):
-    """Look up the Codeforces percentile at the given rating."""
+async def percentilefor(cog, ctx, rating: str):
+    """Look up the Codeforces percentile at the given rating or username."""
     if not getattr(cf_common, '_initialize_done', False):
         raise GraphCogError(
             'Bot is still warming up after restart — rating cache is not '
             'loaded yet. Try again in a few seconds.'
         )
 
+    rating, _handle = await _resolve_percentile_argument(cog, ctx, rating)
     ratings = cf_common.cache2.rating_changes_cache.get_all_ratings()
     percentile = _percentile_at_rating(ratings, rating)
     if percentile is None:

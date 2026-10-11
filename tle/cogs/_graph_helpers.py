@@ -8,6 +8,8 @@ symbols it needs, so existing imports such as
 
 import bisect
 import datetime as dt
+import re
+from typing import Optional, Tuple
 
 from discord.ext import commands
 from matplotlib import pyplot as plt
@@ -20,6 +22,40 @@ from tle.util import graph_common as gc
 
 class GraphCogError(commands.CommandError):
     pass
+
+
+_RATING_ARG_RE = re.compile(r'^[+-]?\d+$')
+
+
+def _parse_rating_argument(arg: str) -> Optional[int]:
+    """Return the signed integer rating in ``arg``, or None to look up a handle."""
+    arg = arg.strip()
+    if _RATING_ARG_RE.match(arg):
+        return int(arg)
+    return None
+
+
+async def _resolve_percentile_argument(cog, ctx, arg: str) -> Tuple[int, Optional[str]]:
+    """Turn a ``;percentilefor`` argument into a Codeforces rating.
+
+    A signed integer is used as the rating directly. Anything else is treated
+    as a username and resolved through the same pipeline as ``;plot centile``
+    (server member, mention, or raw handle), returning the resolved handle
+    alongside the rating. Returns (rating, resolved_handle).
+    """
+    rating = _parse_rating_argument(arg)
+    if rating is not None:
+        return rating, None
+
+    handle, = await cf_common.resolve_handles(ctx,
+                                              cog.converter,
+                                              [arg],
+                                              mincnt=1,
+                                              maxcnt=1)
+    user, = await cf.user.info(handles=[handle])
+    if user.rating is None:
+        raise GraphCogError(f'User `{user.handle}` is not rated')
+    return user.rating, user.handle
 
 
 def _rating_at_percentile(ratings, percentile):

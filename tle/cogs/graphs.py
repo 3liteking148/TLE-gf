@@ -168,11 +168,12 @@ class Graphs(commands.Cog):
 
     @commands.command(brief='Show percentile at a given rating',
                       aliases=['percentileat', 'percat'],
-                      usage='<rating>')
-    async def percentilefor(self, ctx, rating: float):
-        """Look up the Codeforces percentile at the given rating.
+                      usage='<rating|username>')
+    async def percentilefor(self, ctx, rating: str):
+        """Look up the Codeforces percentile at the given rating or username.
 
         Example: ;percentilefor 1800 — what percentile is rating 1800?
+        Example: ;percentilefor tourist — what percentile is a user's rating?
         """
         await _render2.percentilefor(self, ctx, rating)
 
