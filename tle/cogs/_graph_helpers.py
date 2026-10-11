@@ -8,7 +8,6 @@ symbols it needs, so existing imports such as
 
 import bisect
 import datetime as dt
-import re
 from typing import Optional, Tuple
 
 from discord.ext import commands
@@ -18,21 +17,11 @@ from matplotlib import lines as mlines
 from tle.util import codeforces_api as cf
 from tle.util import codeforces_common as cf_common
 from tle.util import graph_common as gc
+from tle.util.cf_format import parse_rating_argument
 
 
 class GraphCogError(commands.CommandError):
     pass
-
-
-_RATING_ARG_RE = re.compile(r'^[+-]?\d+$')
-
-
-def _parse_rating_argument(arg: str) -> Optional[int]:
-    """Return the signed integer rating in ``arg``, or None to look up a handle."""
-    arg = arg.strip()
-    if _RATING_ARG_RE.match(arg):
-        return int(arg)
-    return None
 
 
 async def _resolve_percentile_argument(cog, ctx, arg: str) -> Tuple[int, Optional[str]]:
@@ -43,7 +32,7 @@ async def _resolve_percentile_argument(cog, ctx, arg: str) -> Tuple[int, Optiona
     (server member, mention, or raw handle), returning the resolved handle
     alongside the rating. Returns (rating, resolved_handle).
     """
-    rating = _parse_rating_argument(arg)
+    rating = parse_rating_argument(arg)
     if rating is not None:
         return rating, None
 

@@ -99,6 +99,20 @@ class TestParseFlagsBasic:
         with pytest.raises(ParamParseError):
             f.parse(['r>=12.5'])
 
+    def test_rating_range_underscore_separator_raises(self):
+        """`1_800` parses under bare ``int()``; the strict parser rejects it so
+        the typo surfaces instead of silently becoming 1800."""
+        f = SubFilter()
+        with pytest.raises(ParamParseError):
+            f.parse(['r>=1_800'])
+
+    def test_rating_range_signed_int_accepted(self):
+        """A signed rating still parses (r>=-100 is absorbed by the rlo floor
+        of 500, so assert on the upper bound instead)."""
+        f = SubFilter()
+        f.parse(['r<=-100'])
+        assert f.rhi == -100
+
     def test_rating_range_empty_after_operator_raises(self):
         """r>= with nothing after is already caught (len < 4), but verify."""
         f = SubFilter()

@@ -6,7 +6,8 @@ import pytest
 
 from tle.cogs import _graph_helpers, _graph_render2 as _render2
 from tle.cogs.graphs import _percentile_at_rating, _rating_at_percentile
-from tle.cogs._graph_helpers import _parse_rating_argument, _resolve_percentile_argument
+from tle.cogs._graph_helpers import _resolve_percentile_argument
+from tle.util.cf_format import parse_rating_argument
 from tle.util.codeforces_api import User
 
 
@@ -169,20 +170,20 @@ class _FakeCtx:
 
 class TestParseRatingArgument:
     def test_plain_int(self):
-        assert _parse_rating_argument('1800') == 1800
+        assert parse_rating_argument('1800') == 1800
 
     def test_signed_int(self):
-        assert _parse_rating_argument('-100') == -100
-        assert _parse_rating_argument('+1800') == 1800
+        assert parse_rating_argument('-100') == -100
+        assert parse_rating_argument('+1800') == 1800
 
     def test_surrounding_whitespace(self):
-        assert _parse_rating_argument('  1800  ') == 1800
+        assert parse_rating_argument('  1800  ') == 1800
 
     def test_non_numeric_returns_none(self):
-        assert _parse_rating_argument('tourist') is None
-        assert _parse_rating_argument('1800.5') is None
-        assert _parse_rating_argument('') is None
-        assert _parse_rating_argument('1e3') is None
+        assert parse_rating_argument('tourist') is None
+        assert parse_rating_argument('1800.5') is None
+        assert parse_rating_argument('') is None
+        assert parse_rating_argument('1e3') is None
 
 
 class TestResolvePercentileArgument:

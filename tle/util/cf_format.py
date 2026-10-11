@@ -9,7 +9,9 @@ re-exported from ``codeforces_common`` for backwards compatibility, so existing
 
 import datetime
 import math
+import re
 import time
+from typing import Optional
 
 from discord.ext import commands
 
@@ -122,6 +124,23 @@ def parse_rating(args, default_value=None):
         if arg.isdigit():
             return int(arg)
     return default_value
+
+
+_RATING_ARGUMENT_RE = re.compile(r'^[+-]?\d+$')
+
+
+def parse_rating_argument(arg: str) -> Optional[int]:
+    """Return the signed integer rating in ``arg``, or None if it is not one.
+
+    Unlike ``parse_rating`` (which scans an argument list for the first
+    all-digit token), this validates a single token strictly: a leading sign
+    is allowed, but group separators such as ``1_800`` are rejected so a typo
+    surfaces as an error instead of silently parsing.
+    """
+    arg = arg.strip()
+    if _RATING_ARGUMENT_RE.match(arg):
+        return int(arg)
+    return None
 
 
 def parse_daterange(args):

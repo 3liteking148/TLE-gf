@@ -27,6 +27,7 @@ from tle.util.cf_format import (
     parse_date,
     parse_daterange,
     parse_rating,
+    parse_rating_argument,
     parse_tags,
     pretty_time_format,
     time_format,
@@ -359,9 +360,8 @@ class SubFilter:
             elif arg[0:3] in ['r<=', 'r>=']:
                 if len(arg) < 4:
                     raise ParamParseError(f'{arg} is an invalid rating argument')
-                try:
-                    val = int(arg[3:])
-                except ValueError:
+                val = parse_rating_argument(arg[3:])
+                if val is None:
                     raise ParamParseError(f'{arg} is an invalid rating argument')
                 if arg[1] == '>':
                     self.rlo = max(self.rlo, val)
