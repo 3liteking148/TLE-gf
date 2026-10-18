@@ -71,7 +71,7 @@ class BetSettlementMixin:
             return
         for m in markets:
             result = football_data.find_match_result(
-                m.home_team, m.away_team, m.commence_time, fd_matches)
+                m.home_team, m.away_team, m.closes_at, fd_matches)
             if result is None:
                 continue
             outcome = fd_settle_outcome(result)

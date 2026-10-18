@@ -264,18 +264,25 @@ def upgrade_1_35_0(db):
     except Exception as e:
         logger.debug('1.35.0: fixture_key already exists or unavailable: %s', e)
 
-    rows = db.execute(
-        'SELECT market_id, sport_key, home_team, away_team, commence_time '
-        'FROM bet_market WHERE fixture_key IS NULL OR fixture_key = ""'
-    ).fetchall()
-    for row in rows:
-        db.execute(
-            'UPDATE bet_market SET fixture_key = ? WHERE market_id = ?',
-            (bet_fixture_key(
-                row.sport_key, row.home_team, row.away_team,
-                row.commence_time),
-             row.market_id)
-        )
+    cols = {row[1] for row in db.execute('PRAGMA table_info(bet_market)').fetchall()}
+    if {'sport_key', 'home_team', 'away_team', 'commence_time'} <= cols:
+        rows = db.execute(
+            'SELECT market_id, sport_key, home_team, away_team, commence_time '
+            'FROM bet_market WHERE fixture_key IS NULL OR fixture_key = ""'
+        ).fetchall()
+        for row in rows:
+            db.execute(
+                'UPDATE bet_market SET fixture_key = ? WHERE market_id = ?',
+                (bet_fixture_key(
+                    row.sport_key, row.home_team, row.away_team,
+                    row.commence_time),
+                 row.market_id)
+            )
+    else:
+        # bet_market has no legacy soccer columns to derive a fixture key from
+        # (it is the shared base, created by the schema path, or the table is
+        # absent); markets created later get their fixture key at insert time.
+        logger.debug('1.35.0: no legacy soccer columns; fixture backfill skipped')
 
     duplicates = db.execute('''
         SELECT guild_id, fixture_key, COUNT(*) AS cnt

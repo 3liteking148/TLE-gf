@@ -341,11 +341,11 @@ def _same_match_market_event(market, event, *, window=_DUPLICATE_MATCH_WINDOW):
     the safety-net poller from opening a second thread for the same match.
     """
     try:
-        if abs(float(market.commence_time) - float(event['commence_time'])) > window:
+        if abs(float(market.closes_at) - float(event['commence_time'])) > window:
             return False
     except (KeyError, TypeError, ValueError):
         return False
-    market_key = getattr(market, 'fixture_key', None)
+    market_key = market.fixture_key
     event_key = _event_fixture_key(event)
     if market_key and market_key == event_key:
         return True
@@ -446,6 +446,19 @@ def _role_mentions():
 
 
 _ARCHIVED_CONFIG_KEY = 'bet_archived'
+_CUSTOM_CONFIG_KEY = 'bet_custom'
+
+
+def _is_custom_enabled(guild_id):
+    """True once `;meta config enable bet_custom` was run in the guild: users
+    may open/settle their own parimutuel markets (thread bets included)."""
+    from tle.util import codeforces_common as cf_common
+    try:
+        return bool(guild_id is not None and cf_common.user_db is not None
+                    and cf_common.user_db.get_guild_config(
+                        guild_id, _CUSTOM_CONFIG_KEY) == '1')
+    except Exception:
+        return False
 
 
 def _is_archived(guild_id):

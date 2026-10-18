@@ -84,6 +84,21 @@ def _make_market(db, commence=10_000.0, odds=(2.0, 3.0, 4.0)):
     return mid
 
 
+def _make_custom_market(db, *, guild=GUILD, channel=CH, title='Will it rain?',
+                        choices=(('yes', 'Yes'), ('no', 'No')),
+                        created_by=USER_A, closes=9e12, created_at=0.0):
+    """Open a custom market with choices and return its id."""
+    mid = db.bet_custom_market_create(
+        guild, channel, title, created_by, created_at, closes)
+    db.bet_custom_market_add_choices(mid, list(choices))
+    return mid
+
+
+def _wager(db, market_id, user_id, pick, stake=100):
+    """Place a standard bet (1.0 timestamp, 1000 start balance) in the guild."""
+    return db.bet_place(GUILD, market_id, user_id, pick, stake, 1.0, 1000)
+
+
 class _FakeThread:
     def __init__(self, tid):
         self.id = tid
@@ -196,3 +211,22 @@ class _FakeBetMessage:
 
     async def add_reaction(self, emoji):
         self.reactions.append(emoji)
+
+
+class _Ctx:
+    def __init__(self, channel, author_id, display_name='Alice', roles=()):
+        self.guild = type('G', (), {'id': int(GUILD)})()
+        self.channel = channel
+        self.author = type('A', (), {
+            'id': author_id, 'display_name': display_name,
+            'roles': list(roles)})()
+        self.sent = []
+
+    async def send(self, content=None, embed=None, **kw):
+        msg = await self.channel.send(content=content, embed=embed, **kw)
+        self.sent.append(msg)
+        return msg
+
+
+def _admin_role(name='Admin'):
+    return type('Role', (), {'name': name})()

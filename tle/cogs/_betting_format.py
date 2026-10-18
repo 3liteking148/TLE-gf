@@ -9,42 +9,92 @@ import discord
 
 from tle.util import codeforces_common as cf_common
 from tle.cogs._betting_helpers import (
-    _COIN, pick_is_negative, positive_pick, _odds_allow_draw, _role_mentions,
+    _COIN, _odds_allow_draw, _role_mentions,
 )
 
 _NOTIFY_ROLE_CONFIG_KEY = 'bet_notify_role'
 
 
+def bettor_results_lines(rows, *, limit=20):
+    """Render the shared 'Bettor results (net)' block both settlement embeds use.
+
+    ``rows`` is an iterable of ``(user_id, label, stake, payout, detail)`` where
+    ``detail`` is an optional per-row suffix. Rows sort by net (then payout)
+    descending. Returns ``(lines, total_staked, total_paid)``; ``lines`` is
+    empty when there are no rows.
+    """
+    results = []
+    total_staked = 0
+    total_paid = 0
+    for user_id, label, stake, payout, detail in rows:
+        stake = int(stake or 0)
+        payout = int(payout or 0)
+        total_staked += stake
+        total_paid += payout
+        results.append((user_id, label, stake, payout, payout - stake, detail))
+    results.sort(key=lambda r: (r[4], r[3]), reverse=True)
+    lines = []
+    if not results:
+        return lines, total_staked, total_paid
+    lines.append('**Bettor results (net):**')
+    for user_id, label, stake, payout, net, detail in results[:limit]:
+        sign = '+' if net > 0 else ''
+        lines.append(f'<@{user_id}> **{sign}{net}** {_COIN} — {label} '
+                     f'(staked {stake}{detail})')
+    if len(results) > limit:
+        lines.append(f'…and {len(results) - limit} more.')
+    player_net = total_paid - total_staked
+    sign = '+' if player_net > 0 else ''
+    lines.append(
+        f'\nTotal staked: **{total_staked}** {_COIN} · '
+        f'paid out: **{total_paid}** {_COIN} · '
+        f'player net: **{sign}{player_net}** {_COIN}.')
+    return lines, total_staked, total_paid
+
+
+def discord_ts(ts):
+    """Absolute + relative Discord timestamp (``<t:F> (<t:R>)``), one place
+    for the kickoff/close lines both market kinds render."""
+    return f'<t:{int(ts)}:F> (<t:{int(ts)}:R>)'
+
+
+def final_results_embed(title, head, rows, empty_text, color, footer=None):
+    """Shared settlement-embed shell for both market kinds: pre-rendered
+    headline lines plus the ``bettor_results_lines`` block (or ``empty_text``
+    when there is nothing to show). ``rows=None`` renders the headline alone —
+    a notice with no block, e.g. the full-refund case. Callers pass
+    kind-specific words; no kind logic lives here."""
+    lines = list(head)
+    if rows is None:
+        pass
+    elif rows:
+        block, _staked, _paid = bettor_results_lines(rows)
+        lines.extend(block if block else [empty_text])
+    else:
+        lines.append(empty_text)
+    embed = discord.Embed(title=title, description='\n'.join(lines), color=color)
+    if footer is not None:
+        embed.set_footer(text=footer)
+    return embed
+
+
 class BetFormatMixin:
-    # ── Pick labels / odds ─────────────────────────────────────────────
+    # ── Pick labels / odds (per kind, resolved in the DB layer) ────────
 
     def _pick_label(self, market, pick):
-        base = positive_pick(pick)
-        label = {'home': market.home_team, 'draw': 'Draw',
-                 'away': market.away_team}[base]
-        return f'Not {label}' if pick_is_negative(pick) else label
+        return cf_common.user_db.bet_pick_label(market, pick)
 
     def _pick_odds(self, market, pick):
-        base = positive_pick(pick)
-        odds = {'home': market.odds_home, 'draw': market.odds_draw,
-                'away': market.odds_away}[base]
-        if not pick_is_negative(pick):
-            return odds
-        if odds <= 1:
-            return None
-        base_probability = 1.0 / odds
-        if base_probability >= 1:
-            return None
-        return 1.0 / (1.0 - base_probability)
-
-    def _market_allows_draw(self, market):
-        return (getattr(market, 'odds_draw', 0) or 0) > 1
+        return cf_common.user_db.bet_pick_odds(market, pick)
 
     def _pick_allowed(self, market, pick):
-        base = positive_pick(pick)
-        if base == 'draw':
-            return self._market_allows_draw(market)
-        return base in ('home', 'away')
+        return cf_common.user_db.bet_pick_allowed(market, pick)
+
+    def _market_allows_draw(self, market):
+        return cf_common.user_db.bet_market_allows_draw(market)
+
+    def _remove_allowed(self, market):
+        return cf_common.user_db.bet_market_allows_remove(market)
 
     def _not_odds_line(self, market):
         picks = ['home']
@@ -62,7 +112,7 @@ class BetFormatMixin:
     # ── Pool summary ───────────────────────────────────────────────────
 
     def _pool_summary(self, market):
-        pool = cf_common.user_db.bet_pool(market.market_id)
+        pool = cf_common.user_db.bet_market_pool(market.market_id)
         if not pool:
             return None
         return ' · '.join(
@@ -112,9 +162,8 @@ class BetFormatMixin:
     # ── Embeds ─────────────────────────────────────────────────────────
 
     def _market_embed(self, market, *, current_channel_id=None):
-        kickoff = int(market.commence_time)
         now = time.time()
-        open_now = (market.status == 'open' and now < market.commence_time
+        open_now = (market.status == 'open' and now < market.closes_at
                     and not market.bets_closed)
         if self._market_allows_draw(market):
             lines = [
@@ -130,7 +179,7 @@ class BetFormatMixin:
         not_line = self._not_odds_line(market)
         if not_line:
             lines.extend(['', f'Not bets: {not_line}'])
-        lines.extend(['', f'Kickoff: <t:{kickoff}:F> (<t:{kickoff}:R>)'])
+        lines.extend(['', f'Kickoff: {discord_ts(market.closes_at)}'])
         if open_now:
             if market.thread_id:
                 if str(current_channel_id) == str(market.thread_id):
@@ -145,7 +194,7 @@ class BetFormatMixin:
                              'betting closes at kickoff.')
             color = 0x2ecc71
         elif market.status == 'open':
-            if now < market.commence_time:
+            if now < market.closes_at:
                 lines.append('\n🔒 **Betting ended** — awaiting kickoff.')
             else:
                 lines.append('\n🔒 **Betting ended** — awaiting result.')
@@ -159,7 +208,6 @@ class BetFormatMixin:
         return self._add_pool_field(embed, market)
 
     def _thread_intro_embed(self, market):
-        kickoff = int(market.commence_time)
         if self._market_allows_draw(market):
             odds_line = (f'Odds (fair/no-vig, frozen): **1** {market.odds_home:.2f} · '
                          f'**X** {market.odds_draw:.2f} · **2** {market.odds_away:.2f}')
@@ -188,7 +236,7 @@ class BetFormatMixin:
             f'{odds_line}\n'
             f'Returns = stake × odds. Re-bet a pick to change it; use `0` '
             f'to remove that pick.\n'
-            f'Kickoff: <t:{kickoff}:F> (<t:{kickoff}:R>)\n'
+            f'Kickoff: {discord_ts(market.closes_at)}\n'
             '⏱️ **Betting closes at kickoff.**')
         embed = discord.Embed(title='🎟️ Place your bets', description=desc,
                               color=0x2ecc71)
@@ -203,7 +251,6 @@ class BetFormatMixin:
         can be posted BEFORE the market row exists (send-first, so a failed
         send never orphans a market)."""
         o = event['odds']
-        kickoff = int(event['commence_time'])
         if _odds_allow_draw(o):
             lines = [
                 f'**1** · {event["home_team"]} win — **{o["home"]:.2f}**',
@@ -218,7 +265,7 @@ class BetFormatMixin:
         lines.extend([
             '',
             # <t:..:R> renders as a live countdown on the client ("in 53 minutes").
-            f'Kickoff: <t:{kickoff}:F> (<t:{kickoff}:R>)',
+            f'Kickoff: {discord_ts(event["commence_time"])}',
             '⏱️ **Betting closes at kickoff.**',
             '\n👇 **Place your bets in the thread below.**',
         ])
@@ -235,50 +282,22 @@ class BetFormatMixin:
                         f'{market.away_team}')
         else:
             headline = f'Result: **{label}**'
-        bettor_results = []
-        total_staked = 0
-        total_paid = 0
+        rows = []
         for user_id, pick, stake, odds, pay in outcome_rows:
-            stake = int(stake or 0)
-            pay = int(pay or 0)
-            net = pay - stake
-            total_staked += stake
-            total_paid += pay
-            bettor_results.append((user_id, pick, stake, odds, pay, net))
-        bettor_results.sort(key=lambda r: (r[5], r[4]), reverse=True)
-        lines = [headline, '']
-        if bettor_results:
-            lines.append(f'**Winning pick: {label}**')
-            if total_paid == 0:
-                lines.append(f'Nobody backed **{label}**.')
-            lines.append('')
-            lines.append('**Bettor results (net):**')
-            for user_id, pick, stake, odds, pay, net in bettor_results[:20]:
-                sign = '+' if net > 0 else ''
-                pick_label = self._pick_label(market, pick)
-                odds_text = f' @ {odds:.2f}' if odds is not None else ''
-                paid_text = f', paid {pay}' if pay else ''
-                lines.append(
-                    f'<@{user_id}> **{sign}{net}** {_COIN} — {pick_label} '
-                    f'(staked {stake}{paid_text}{odds_text})')
-            if len(bettor_results) > 20:
-                lines.append(f'…and {len(bettor_results) - 20} more.')
-            player_net = total_paid - total_staked
-            net_sign = '+' if player_net > 0 else ''
-            lines.append(
-                f'\nTotal staked: **{total_staked}** {_COIN} · '
-                f'paid out: **{total_paid}** {_COIN} · '
-                f'player net: **{net_sign}{player_net}** {_COIN}.')
-        else:
-            lines.append(f'**Winning pick: {label}**')
-            lines.append('No bets were placed.')
+            odds_text = f' @ {odds:.2f}' if odds is not None else ''
+            paid_text = f', paid {int(pay or 0)}' if pay else ''
+            rows.append((user_id, self._pick_label(market, pick), stake, pay,
+                         f'{paid_text}{odds_text}'))
+        head = [headline, '', f'**Winning pick: {label}**']
+        if not any(pay for _, _, _, _, pay in outcome_rows):
+            head.append(f'Nobody backed **{label}**.')
+        if rows:
+            head.append('')
         tag = 'auto-settled from final score' if source == 'auto' \
             else 'settled by a moderator'
-        embed = discord.Embed(
-            title=f'✅ {market.home_team} vs {market.away_team} — final',
-            description='\n'.join(lines), color=0x2ecc71)
-        embed.set_footer(text=tag)
-        return embed
+        return final_results_embed(
+            f'✅ {market.home_team} vs {market.away_team} — final', head,
+            rows, 'No bets were placed.', 0x2ecc71, footer=tag)
 
     def _wallet_txn_line(self, row):
         labels = {

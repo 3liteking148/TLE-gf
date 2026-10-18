@@ -94,17 +94,18 @@ class BetSchedulerMixin:
             self._open_timers.pop(fixture_key, None)
 
     async def _arm_close_timers(self):
-        """Arm or catch up kickoff-close timers for every open market."""
+        """Arm or catch up close timers for every open market, both kinds."""
         if cf_common.user_db is None or not self.bot:
             return
         now = time.time()
         for guild in self.bot.guilds:
             if _is_archived(guild.id):
                 continue
-            for market in cf_common.user_db.bet_markets_open(guild.id):
+            for market in cf_common.user_db.bet_markets_open(
+                    guild.id, kind=None):
                 if market.bets_closed:
                     continue
-                if market.commence_time <= now:
+                if market.closes_at <= now:
                     await self._fire_close(market.market_id)
                 else:
                     self._schedule_close(market)
@@ -115,7 +116,7 @@ class BetSchedulerMixin:
         existing = self._close_timers.get(market.market_id)
         if existing is not None and not existing.done():
             return
-        delay = max(0.0, market.commence_time - time.time())
+        delay = max(0.0, market.closes_at - time.time())
         self._close_timers[market.market_id] = asyncio.create_task(
             self._close_timer(market.market_id, delay))
 
@@ -137,7 +138,7 @@ class BetSchedulerMixin:
         market = cf_common.user_db.bet_market_get(market_id)
         if market is None or market.status != 'open':
             return
-        if time.time() < market.commence_time and not market.bets_closed:
+        if (time.time() < market.closes_at and not market.bets_closed):
             self._schedule_close(market)
             return
         changed = cf_common.user_db.bet_market_close_betting(market_id)
@@ -188,7 +189,7 @@ class BetSchedulerMixin:
                 guild_id, fixture_key)
             if market is None:
                 needs_open = True
-            elif not market.thread_id and market.commence_time > now:
+            elif not market.thread_id and market.closes_at > now:
                 # Market exists but lost its thread — no odds fetch needed.
                 await self._ensure_thread(market)
         if not needs_open:

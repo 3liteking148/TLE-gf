@@ -18,7 +18,7 @@ from tle.util import football_data
 from tle.util import odds_api
 from tle.cogs._betting_helpers import (
     is_remove_amount, normalize_event, parse_amount, parse_settle_arg,
-    payout_amount, resolve_pick, _api_key, _event_fixture_key,
+    resolve_bet_pick, resolve_pick, _api_key, _event_fixture_key,
     _football_data_key, _no_mentions, _same_match_market_event,
 )
 
@@ -106,6 +106,32 @@ class BetEngineMixin:
         return football_data.is_after_group_stage(
             event.get('commence_time'), fd_matches)
 
+    # ── Market kinds ───────────────────────────────────────────────────
+
+    def _resolve_market_pick(self, market, text):
+        """Resolve a pick token against a soccer market (team/outcome alias).
+        ``BetCustomMixin`` overrides this for custom markets, delegating back
+        here through ``super()``."""
+        return resolve_bet_pick(
+            text, market.home_team, market.away_team,
+            allow_draw=self._market_allows_draw(market))
+
+    def _is_tle_admin(self, member):
+        names = {getattr(role, 'name', None)
+                 for role in getattr(member, 'roles', []) or []}
+        return any(name in names for name in constants.TLE_ADMIN)
+
+    def _require_market_moderator(self, ctx, market):
+        """Settle/cancel/close permission: TLE admins for every market; the
+        creator may also manage their own custom markets."""
+        if self._is_tle_admin(ctx.author):
+            return
+        if cf_common.user_db.bet_market_owned_by(market, ctx.author.id):
+            return
+        raise BettingCogError(
+            'Only an admin (or the market creator, for their own markets) '
+            'can do that.')
+
     # ── Notify-role validation ─────────────────────────────────────────
 
     def _member_has_role(self, member, role_id):
@@ -143,39 +169,37 @@ class BetEngineMixin:
 
     def _open_markets_for_channel(self, guild_id, channel_id):
         return [
-            market for market in cf_common.user_db.bet_markets_open(guild_id)
+            market for market in cf_common.user_db.bet_markets_open(
+                guild_id, kind=None)
             if str(market.channel_id) == str(channel_id)
         ]
 
-    def _market_accepts_bets(self, market):
-        """True if the market can still take a wager — open, not locked early,
-        and pre-kickoff. Mirrors the closed-check in ``_execute_bet``."""
-        return not market.bets_closed and time.time() < market.commence_time
-
     def _find_market(self, ctx, *, require_unambiguous=False, bettable_only=False):
         """The open market relevant to where the command was run: the betting
-        thread if we're in one, else the channel's market.
+        thread if we're in one, else the channel's market (any market kind).
 
         ``bettable_only`` narrows an ambiguous channel to markets still taking
-        bets — a locked or kicked-off market isn't a real target for a wager,
+        bets — a locked or closed market isn't a real target for a wager,
         so if exactly one market can still take bets it's unambiguous.
         """
         m = cf_common.user_db.bet_market_get_active_by_thread(
-            ctx.guild.id, ctx.channel.id)
+            ctx.guild.id, ctx.channel.id, kind=None)
         if m is not None:
             return m
         if require_unambiguous:
             candidates = self._open_markets_for_channel(ctx.guild.id, ctx.channel.id)
             if len(candidates) > 1 and bettable_only:
-                live = [m for m in candidates if self._market_accepts_bets(m)]
+                live = [m for m in candidates
+                        if cf_common.user_db.bet_market_bettable(m)]
                 if len(live) == 1:
                     return live[0]
             if len(candidates) > 1:
                 raise BettingCogError(
                     'Multiple betting markets are open here. Run this command in '
-                    'the match thread so the target is unambiguous.')
+                    'the market thread so the target is unambiguous.')
             return candidates[0] if candidates else None
-        return cf_common.user_db.bet_market_get_active(ctx.guild.id, ctx.channel.id)
+        return cf_common.user_db.bet_market_get_active(
+            ctx.guild.id, ctx.channel.id, kind=None)
 
     def _find_duplicate_match(self, guild_id, event):
         by_key = cf_common.user_db.bet_market_get_open_for_fixture(
@@ -268,7 +292,7 @@ class BetEngineMixin:
         market = cf_common.user_db.bet_market_get(market_id)
         if market is None or not market.thread_id:
             return
-        intro_id = getattr(market, 'thread_intro_id', None)
+        intro_id = market.thread_intro_id
         if not intro_id:
             return
         thread = self.bot.get_channel(int(market.thread_id))
@@ -290,24 +314,27 @@ class BetEngineMixin:
 
     async def _execute_bet(self, guild_id, market, user, pick, amount_str,
                            *, actor_id=None):
-        """Core bet placement. ``user`` is the bettor whose wallet is charged;
-        ``actor_id`` (default: the bettor) records who placed it in the wallet
-        audit log so an admin betting on someone's behalf is attributable.
+        """Core bet placement, shared by soccer (fixed odds) and custom
+        (parimutuel) markets: the DB supplies bettability (status + deadline),
+        allowed picks, labels and payout estimates. ``user`` is the bettor
+        whose wallet is charged; ``actor_id`` (default: the bettor) records who
+        placed it in the wallet audit log so an admin placing on someone's
+        behalf is attributable.
 
         Returns (status, data):
-          'closed'       — kickoff passed
+          'closed'       — betting closed (kickoff/deadline/early close)
           'invalid'      — amount didn't parse / below minimum
           'insufficient' — not enough balance (data={'balance': N})
           'ok'           — placed (data has stake/odds/label/potential/balance)
           'removed'      — removed one pick (data has stake/label/balance)
           'unchanged'    — same pick already had the requested stake
         """
-        if not self._market_accepts_bets(market):
+        if not cf_common.user_db.bet_market_bettable(market):
             return ('closed', None)
         if not self._pick_allowed(market, pick):
             return ('invalid_pick', None)
         label = self._pick_label(market, pick)
-        if is_remove_amount(amount_str):
+        if is_remove_amount(amount_str) and self._remove_allowed(market):
             ok, reason, new_balance, refunded = cf_common.user_db.bet_remove_wager(
                 guild_id, market.market_id, user.id, pick, time.time(),
                 actor_id=actor_id)
@@ -328,15 +355,13 @@ class BetEngineMixin:
         if stake > available:
             return ('insufficient', {'balance': available})
         odds = self._pick_odds(market, pick)
-        if odds is None:
-            return ('invalid_pick', None)
         ok, reason, new_balance = cf_common.user_db.bet_place(
             guild_id, market.market_id, user.id, pick, stake,
             time.time(), self._bet_start_balance(guild_id), actor_id=actor_id)
         if ok and reason == 'unchanged':
             return ('unchanged', {
                 'stake': stake, 'odds': odds, 'pick': pick, 'label': label,
-                'potential': payout_amount(stake, odds), 'balance': new_balance})
+                'balance': new_balance})
         if not ok:
             if reason == 'closed':
                 return ('closed', None)
@@ -346,7 +371,8 @@ class BetEngineMixin:
         return ('ok', {
             'stake': stake, 'odds': odds, 'pick': pick,
             'label': label,
-            'potential': payout_amount(stake, odds), 'balance': new_balance})
+            'potential': cf_common.user_db.bet_pick_potential(market, pick, stake),
+            'balance': new_balance})
 
     async def _react(self, message, emoji):
         try:
@@ -355,6 +381,20 @@ class BetEngineMixin:
             pass
 
     # ── Settle / archive ───────────────────────────────────────────────
+
+    async def _announce_settlement(self, market, embed, log_message, *args):
+        """Post a settlement embed to the market's parent channel (no pings)
+        and arm the delayed thread lock. Shared by soccer and custom
+        settlement; the thread stays open for post-result chat until then."""
+        channel = self.bot.get_channel(int(market.channel_id)) if self.bot else None
+        if channel is not None:
+            try:
+                await channel.send(embed=embed, allowed_mentions=_no_mentions())
+            except discord.HTTPException:
+                logger.warning('could not post settlement to %s',
+                               market.channel_id)
+        self._schedule_thread_lock(market)
+        logger.info(log_message, *args)
 
     async def _do_settle(self, market, outcome, home_score, away_score, *, source):
         if not self._pick_allowed(market, outcome):
@@ -370,22 +410,10 @@ class BetEngineMixin:
             return
         embed = self._settlement_embed(market, outcome, home_score, away_score,
                                        outcome_rows, source)
-        # The final result is the market's second user-facing message, posted
-        # only in the parent betting channel. Winner mentions in the embed don't
-        # ping, but pin that down explicitly.
-        channel = self.bot.get_channel(int(market.channel_id)) if self.bot else None
-        if channel is not None:
-            try:
-                await channel.send(embed=embed, allowed_mentions=_no_mentions())
-            except discord.HTTPException:
-                logger.warning('could not post settlement to %s',
-                               market.channel_id)
-        # Don't lock the thread now — members keep using it to talk about the
-        # game after full time. Arm a timer to lock it 12h later instead.
-        self._schedule_thread_lock(market)
-        logger.info('Settled bet market %s (%s) source=%s winners=%d',
-                    market.market_id, outcome, source,
-                    sum(1 for r in outcome_rows if r[4] > 0))
+        await self._announce_settlement(
+            market, embed, 'Settled bet market %s (%s) source=%s winners=%d',
+            market.market_id, outcome, source,
+            sum(1 for r in outcome_rows if r[4] > 0))
 
     def _schedule_thread_lock(self, market, *, delay=None):
         """Arm a timer to lock a settled market's thread after ``delay`` seconds

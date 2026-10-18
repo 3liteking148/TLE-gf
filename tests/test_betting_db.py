@@ -324,7 +324,7 @@ class TestPool:
         mid = _make_market(db)
         db.bet_place(GUILD, mid, USER_A, 'home', 100, 1.0, 1000)
         db.bet_place(GUILD, mid, USER_B, 'home', 200, 1.0, 1000)
-        pool = {p.pick: (p.cnt, p.total) for p in db.bet_pool(mid)}
+        pool = {p.pick: (p.cnt, p.total) for p in db.bet_market_pool(mid)}
         assert pool['home'] == (2, 300)
 
     def test_active_wagers_for_user_lists_open_markets(self, db):

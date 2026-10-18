@@ -28,7 +28,9 @@ from tle.util.db.kvs_db import KvsDbMixin
 from tle.util.db.misc_db import MiscDbMixin
 from tle.util.db.betting_wallet_db import BettingWalletDbMixin
 from tle.util.db.betting_market_db import BettingMarketDbMixin
+from tle.util.db.betting_wager_core import BettingWagerCoreMixin
 from tle.util.db.betting_wager_db import BettingWagerDbMixin
+from tle.util.db.betting_custom_db import BettingCustomDbMixin
 from tle.util.db.command_gate_db import CommandGateDbMixin
 from tle.util.db.llm_db import LlmDbMixin
 from tle.util import file_permissions
@@ -169,7 +171,8 @@ def namedtuple_factory(cursor, row):
 class UserDbConn(HandleDbMixin, AtcoderHandleDbMixin, ChallengeDbMixin, DuelDbMixin, TrainingDbMixin,
                  VcDbMixin, LockoutDbMixin, RpollDbMixin, ComplaintDbMixin,
                  GreatdayDbMixin, KvsDbMixin, MiscDbMixin,
-                 BettingWalletDbMixin, BettingMarketDbMixin, BettingWagerDbMixin,
+                 BettingWalletDbMixin, BettingMarketDbMixin,
+                 BettingWagerCoreMixin, BettingWagerDbMixin, BettingCustomDbMixin,
                  CommandGateDbMixin, LlmDbMixin,
                  MinigameDbMixin, StarboardDbMixin, MigrationDbMixin):
     def __init__(self, dbfile):

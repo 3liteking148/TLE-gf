@@ -28,8 +28,10 @@ class TestSettle:
         assert hist[0].action == 'payout' and hist[0].amount == 200
         assert hist[0].market_id == mid
 
-    def test_settlement_embed_reports_net_win_loss(self, db):
+    def test_settlement_embed_reports_net_win_loss(self, db, monkeypatch):
         from tle.cogs.betting import Betting
+        from tle.util import codeforces_common as cf_common
+        monkeypatch.setattr(cf_common, 'user_db', db)
         mid = _make_market(db)
         db.bet_place(GUILD, mid, USER_A, 'home', 100, 1.0, 1000)
         db.bet_place(GUILD, mid, USER_B, 'away', 50, 1.0, 1000)

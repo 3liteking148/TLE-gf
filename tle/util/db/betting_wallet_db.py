@@ -8,7 +8,10 @@ are imported lazily where needed to avoid an import cycle.
 """
 import logging
 import time
-from collections import defaultdict, namedtuple
+from collections import defaultdict
+
+from tle.util.db.betting_schema import create_betting_tables
+from tle.util.db.betting_wager_core import BetProfitRow
 
 logger = logging.getLogger(__name__)
 
@@ -23,111 +26,10 @@ class BettingWalletDbMixin:
     """Mixin providing betting wallet DB methods and table creation."""
 
     def _create_betting_tables(self):
-        # Soccer betting minigame (see tle/cogs/betting.py). Kept in sync with
-        # betting upgrades — fresh DBs get the tables here, existing DBs via
-        # migrations.
-        self.conn.execute('''
-            CREATE TABLE IF NOT EXISTS bet_wallet (
-                guild_id    TEXT NOT NULL,
-                user_id     TEXT NOT NULL,
-                balance     INTEGER NOT NULL,
-                last_daily  TEXT,
-                PRIMARY KEY (guild_id, user_id)
-            )
-        ''')
-        self.conn.execute('''
-            CREATE TABLE IF NOT EXISTS bet_market (
-                market_id      INTEGER PRIMARY KEY AUTOINCREMENT,
-                guild_id       TEXT NOT NULL,
-                channel_id     TEXT NOT NULL,
-                message_id     TEXT,
-                thread_id      TEXT,
-                thread_intro_id TEXT,
-                event_id       TEXT NOT NULL,
-                fixture_key    TEXT NOT NULL,
-                sport_key      TEXT NOT NULL,
-                home_team      TEXT NOT NULL,
-                away_team      TEXT NOT NULL,
-                commence_time  REAL NOT NULL,
-                odds_home      REAL NOT NULL,
-                odds_draw      REAL NOT NULL,
-                odds_away      REAL NOT NULL,
-                status         TEXT NOT NULL DEFAULT 'open',
-                bets_closed    INTEGER NOT NULL DEFAULT 0,
-                result         TEXT,
-                result_home    INTEGER,
-                result_away    INTEGER,
-                created_by     TEXT NOT NULL,
-                created_at     REAL NOT NULL,
-                settled_at     REAL,
-                thread_locked  INTEGER NOT NULL DEFAULT 0
-            )
-        ''')
-        bet_market_cols = [
-            row.name for row in self.conn.execute('PRAGMA table_info(bet_market)')
-        ]
-        if 'fixture_key' not in bet_market_cols:
-            self.conn.execute('ALTER TABLE bet_market ADD COLUMN fixture_key TEXT')
-        if 'thread_intro_id' not in bet_market_cols:
-            self.conn.execute('ALTER TABLE bet_market ADD COLUMN thread_intro_id TEXT')
-        if 'thread_locked' not in bet_market_cols:
-            self.conn.execute('ALTER TABLE bet_market ADD COLUMN '
-                              'thread_locked INTEGER NOT NULL DEFAULT 0')
-        self.conn.execute('''
-            CREATE INDEX IF NOT EXISTS idx_bet_market_active
-                ON bet_market (guild_id, channel_id, status)
-        ''')
-        self.conn.execute('''
-            CREATE INDEX IF NOT EXISTS idx_bet_market_pending
-                ON bet_market (status, commence_time)
-        ''')
-        self.conn.execute('''
-            CREATE INDEX IF NOT EXISTS idx_bet_market_thread
-                ON bet_market (guild_id, thread_id, status)
-        ''')
-        self.conn.execute('''
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_bet_market_open_event
-                ON bet_market (guild_id, event_id)
-                WHERE status = 'open'
-        ''')
-        missing_fixture_key = self.conn.execute(
-            'SELECT 1 FROM bet_market '
-            'WHERE fixture_key IS NULL OR fixture_key = "" LIMIT 1'
-        ).fetchone()
-        if missing_fixture_key is None:
-            self.conn.execute('''
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_bet_market_open_fixture
-                    ON bet_market (guild_id, fixture_key)
-                    WHERE status = 'open'
-            ''')
-        self.conn.execute('''
-            CREATE TABLE IF NOT EXISTS bet_wager (
-                market_id   INTEGER NOT NULL,
-                user_id     TEXT NOT NULL,
-                pick        TEXT NOT NULL,
-                stake       INTEGER NOT NULL,
-                placed_at   REAL NOT NULL,
-                PRIMARY KEY (market_id, user_id, pick)
-            )
-        ''')
-        self.conn.execute('''
-            CREATE TABLE IF NOT EXISTS bet_wallet_txn (
-                txn_id        INTEGER PRIMARY KEY AUTOINCREMENT,
-                guild_id      TEXT NOT NULL,
-                user_id       TEXT NOT NULL,
-                actor_id      TEXT,
-                action        TEXT NOT NULL,
-                amount        INTEGER NOT NULL,
-                balance_after INTEGER NOT NULL,
-                market_id     INTEGER,
-                note          TEXT,
-                created_at    REAL NOT NULL
-            )
-        ''')
-        self.conn.execute('''
-            CREATE INDEX IF NOT EXISTS idx_bet_wallet_txn_user
-                ON bet_wallet_txn (guild_id, user_id, created_at DESC)
-        ''')
+        # Shared betting schema (base + per-kind extensions); see
+        # ``betting_schema.create_betting_tables``. Kept in sync with migration
+        # 1.61.0 — fresh DBs get the tables here, existing DBs via the migration.
+        create_betting_tables(self.conn)
 
     # -- Wallet --
 
@@ -291,32 +193,18 @@ class BettingWalletDbMixin:
         ).fetchall()
 
     def bet_profit_leaderboard(self, guild_id):
-        """Return realized profit per user over settled markets.
-
-        Payout is computed, not stored: for a winning wager it is
-        round(stake × the market's frozen odds for that pick), else 0. Each
-        row: user_id, profit (sum payout − sum stake), bets, wins. Voided/open
-        markets are excluded by the status filter.
-        """
-        from tle.util.db.user_db_conn import _bet_odds_for_pick, _bet_pick_wins
-        rows = self.conn.execute(
-            'SELECT w.user_id, w.pick, w.stake, m.result, '
-            '       m.odds_home, m.odds_draw, m.odds_away '
-            'FROM bet_wager w JOIN bet_market m ON m.market_id = w.market_id '
-            "WHERE m.guild_id = ? AND m.status = 'settled'",
-            (str(guild_id),)
-        ).fetchall()
+        """Return realized profit per user over settled markets, summed across
+        every market kind (soccer fixed-odds + custom parimutuel), plus manual
+        ``;bet profitadd`` ledger entries. Each row: user_id, profit, bets,
+        wins."""
         totals = defaultdict(lambda: {'profit': 0, 'bets': 0, 'wins': 0})
-        for row in rows:
-            odds_map = {'home': row.odds_home, 'draw': row.odds_draw,
-                        'away': row.odds_away}
-            odds = _bet_odds_for_pick(odds_map, row.pick)
-            won = _bet_pick_wins(row.pick, row.result)
-            payout = int(round(row.stake * odds)) if won and odds is not None else 0
-            acc = totals[row.user_id]
-            acc['profit'] += payout - row.stake
-            acc['bets'] += 1
-            acc['wins'] += 1 if won else 0
+        for rows in (self.bet_soccer_profit_rows(guild_id),
+                     self.bet_custom_profit_rows(guild_id)):
+            for row in rows:
+                acc = totals[row.user_id]
+                acc['profit'] += row.profit
+                acc['bets'] += row.bets
+                acc['wins'] += row.wins
         # Manual `;bet profitadd` ledger entries count as profit too — winning
         # bets the bot never recorded (e.g. placed right at close). They don't
         # add to the bets/wins counts.
@@ -327,8 +215,8 @@ class BettingWalletDbMixin:
         ).fetchall()
         for row in adjustments:
             totals[row.user_id]['profit'] += int(row.total or 0)
-        Row = namedtuple('BetProfitRow', 'user_id profit bets wins')
-        out = [Row(user_id, values['profit'], values['bets'], values['wins'])
+        out = [BetProfitRow(user_id, values['profit'], values['bets'],
+                            values['wins'])
                for user_id, values in totals.items()]
         out.sort(key=lambda r: (-r.profit, -r.wins, r.user_id))
         return out

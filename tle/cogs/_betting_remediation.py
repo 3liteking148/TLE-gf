@@ -72,7 +72,7 @@ class BetRemediationMixin:
         return resolved
 
     async def _void_and_reopen(self, guild_id, market):
-        if market.commence_time <= time.time():
+        if market.closes_at <= time.time():
             logger.warning('refixture: %s vs %s already kicked off; leaving '
                            'as-is', market.home_team, market.away_team)
             return True  # can't reopen a started game; never void it either

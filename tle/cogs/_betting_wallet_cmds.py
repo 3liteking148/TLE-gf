@@ -16,7 +16,7 @@ from tle.util import paginator
 from tle.util import ranking
 from tle.cogs._betting_engine import BettingCogError
 from tle.cogs._betting_helpers import (
-    extract_bet_tokens, parse_amount, payout_amount, rank_line,
+    extract_bet_tokens, parse_amount, rank_line,
     resolve_bet_pick, _COIN, _bot_prefix, _no_mentions,
     _utc_today,
 )
@@ -29,18 +29,42 @@ _LB_PER_PAGE = 15
 class BetWalletCmdImplMixin:
     # ── Placing / withdrawing bets ─────────────────────────────────────
 
+    def _bet_result_texts(self, odds, potential=None):
+        """Render the optional `@ odds` / `— returns …` suffixes shared by the
+        bet confirmations (custom markets have no odds)."""
+        odds_text = f' @ **{odds:.2f}**' if odds is not None else ''
+        potential_text = (f' — returns **{potential}** {_COIN} if it hits'
+                          if potential else '')
+        return odds_text, potential_text
+
+    async def _cmd_pick(self, ctx, text):
+        """Bet on a pick of the active market — a choice name for custom
+        markets, a team/outcome for soccer (same command, either kind)."""
+        market = self._find_market(ctx, require_unambiguous=True,
+                                   bettable_only=True)
+        if market is None:
+            raise BettingCogError('No open market here.')
+        tokens = extract_bet_tokens(text)
+        if tokens is None:
+            raise BettingCogError(
+                'Use `;bet pick <choice> <amount>`, e.g. `;bet pick Yes 100`.')
+        pick_text, amount = tokens
+        pick = self._resolve_market_pick(market, pick_text)
+        if pick is None:
+            raise BettingCogError('That choice is not available for this market.')
+        await self._place(ctx, pick, amount)
+
     async def _place(self, ctx, pick, amount_str):
         market = self._find_market(ctx, require_unambiguous=True, bettable_only=True)
         if market is None:
             raise BettingCogError(
-                'No open market here. Bets are placed in the match thread the '
-                'bot opens ~6h before kickoff.')
+                'No open market here. Bets are placed in the market thread.')
         if not self._pick_allowed(market, pick):
             raise BettingCogError('That outcome is not available for this market.')
         status, data = await self._execute_bet(
             ctx.guild.id, market, ctx.author, pick, amount_str)
         if status == 'closed':
-            raise BettingCogError('Betting is closed — kickoff has passed.')
+            raise BettingCogError('Betting is closed — the deadline has passed.')
         if status == 'invalid':
             raise BettingCogError(
                 f'Invalid amount. Use a whole number (min {constants.BET_MIN_STAKE}), '
@@ -61,21 +85,26 @@ class BetWalletCmdImplMixin:
                 f'Balance: **{data["balance"]}** {_COIN}.'))
             return
         if status == 'unchanged':
+            odds_text, _ = self._bet_result_texts(data['odds'])
             await ctx.send(embed=discord_common.embed_neutral(
                 f'Bet unchanged: **{data["stake"]}** {_COIN} on '
-                f'**{data["label"]}** @ **{data["odds"]:.2f}**.\n'
+                f'**{data["label"]}**{odds_text}.\n'
                 f'Balance: **{data["balance"]}** {_COIN}.'))
             return
         self._schedule_pool_refresh(market.market_id)
+        odds_text, potential = self._bet_result_texts(
+            data['odds'], data['potential'])
         await ctx.send(embed=discord_common.embed_success(
-            f'Bet placed: **{data["stake"]}** {_COIN} on **{data["label"]}** @ '
-            f'**{data["odds"]:.2f}** — returns **{data["potential"]}** {_COIN} '
-            f'if it hits.\nBalance: **{data["balance"]}** {_COIN}.'))
+            f'Bet placed: **{data["stake"]}** {_COIN} on '
+            f'**{data["label"]}**{odds_text}{potential}.\n'
+            f'Balance: **{data["balance"]}** {_COIN}.'))
 
     async def _cmd_bet_not(self, ctx, text):
         market = self._find_market(ctx, require_unambiguous=True, bettable_only=True)
         if market is None:
             raise BettingCogError('No open market here.')
+        if not cf_common.user_db.bet_market_has_fixed_odds(market):
+            raise BettingCogError('`;bet not` only works on soccer markets.')
         tokens = extract_bet_tokens(text)
         if tokens is None:
             raise BettingCogError(
@@ -104,14 +133,12 @@ class BetWalletCmdImplMixin:
         tokens = extract_bet_tokens(text)
         if tokens is None:
             raise BettingCogError(
-                'Use `;bet for @user <home|draw|away|team> <amount>`, e.g. '
-                '`;bet for @alice home 100` (or `0` to remove their bet).')
+                'Use `;bet for @user <choice | home|draw|away|team> <amount>`, '
+                'e.g. `;bet for @alice home 100` (or `0` to remove their bet).')
         pick_text, amount = tokens
-        pick = resolve_bet_pick(
-            pick_text, market.home_team, market.away_team,
-            allow_draw=self._market_allows_draw(market))
+        pick = self._resolve_market_pick(market, pick_text)
         if pick is None or not self._pick_allowed(market, pick):
-            raise BettingCogError('That outcome is not available for this market.')
+            raise BettingCogError('That pick is not available for this market.')
         status, data = await self._execute_bet(
             ctx.guild.id, market, member, pick, amount, actor_id=ctx.author.id)
         name = discord.utils.escape_markdown(member.display_name)
@@ -137,16 +164,18 @@ class BetWalletCmdImplMixin:
                 f'`{name}`\'s balance: **{data["balance"]}** {_COIN}.'))
             return
         if status == 'unchanged':
+            odds_text, _ = self._bet_result_texts(data['odds'])
             await ctx.send(embed=discord_common.embed_neutral(
                 f'`{name}` already has **{data["stake"]}** {_COIN} on '
-                f'**{data["label"]}** @ **{data["odds"]:.2f}**.\n'
+                f'**{data["label"]}**{odds_text}.\n'
                 f'`{name}`\'s balance: **{data["balance"]}** {_COIN}.'))
             return
         self._schedule_pool_refresh(market.market_id)
+        odds_text, potential = self._bet_result_texts(
+            data['odds'], data['potential'])
         await ctx.send(embed=discord_common.embed_success(
             f'Placed **{data["stake"]}** {_COIN} for `{name}` on '
-            f'**{data["label"]}** @ **{data["odds"]:.2f}** — returns '
-            f'**{data["potential"]}** {_COIN} if it hits.\n'
+            f'**{data["label"]}**{odds_text}{potential}.\n'
             f'`{name}`\'s balance: **{data["balance"]}** {_COIN}.'))
 
     async def _cmd_mybet(self, ctx):
@@ -157,18 +186,21 @@ class BetWalletCmdImplMixin:
             market.market_id, ctx.author.id)
         if not wagers:
             await ctx.send(embed=discord_common.embed_neutral(
-                "You haven't bet on this match yet."))
+                "You haven't bet on this market yet."))
             return
         lines = []
         total_stake = 0
         for wager in wagers:
             label = self._pick_label(market, wager.pick)
-            odds = self._pick_odds(market, wager.pick)  # frozen on the market
-            potential = payout_amount(wager.stake, odds)
+            odds = self._pick_odds(market, wager.pick)
+            potential = cf_common.user_db.bet_pick_potential(
+                market, wager.pick, wager.stake)
+            potential = potential if potential is not None else 0
+            odds_text = f' @ **{odds:.2f}**' if odds is not None else ''
             total_stake += wager.stake
             lines.append(
-                f'**{wager.stake}** {_COIN} on **{label}** @ '
-                f'**{odds:.2f}** → returns **{potential}** {_COIN}')
+                f'**{wager.stake}** {_COIN} on **{label}**{odds_text} → '
+                f'returns **{potential}** {_COIN}')
         await ctx.send(embed=discord_common.embed_neutral(
             'Your bets:\n' + '\n'.join(lines)
             + f'\n\nTotal staked: **{total_stake}** {_COIN}.'))
@@ -177,24 +209,27 @@ class BetWalletCmdImplMixin:
         market = self._find_market(ctx, require_unambiguous=True, bettable_only=True)
         if market is None:
             raise BettingCogError('No open market here.')
-        if time.time() >= market.commence_time or market.bets_closed:
+        if not cf_common.user_db.bet_market_bettable(market):
             raise BettingCogError('Betting is closed — bets can no longer be withdrawn.')
-        ok, reason, balance, refunded, count = cf_common.user_db.bet_remove_wagers_for_user(
-            ctx.guild.id, market.market_id, ctx.author.id, time.time())
+        if not self._remove_allowed(market):
+            raise BettingCogError('Bets on this market cannot be withdrawn.')
+        ok, reason, balance, refunded, count = \
+            cf_common.user_db.bet_remove_wagers_for_user(
+                ctx.guild.id, market.market_id, ctx.author.id, time.time())
         if not ok:
             if reason == 'closed':
                 raise BettingCogError(
                     'Betting is closed — bets can no longer be withdrawn.')
             if reason == 'missing':
                 await ctx.send(embed=discord_common.embed_neutral(
-                    "You don't have any bets on this match."))
+                    "You don't have any bets on this market."))
                 return
-            raise BettingCogError('Could not withdraw bets from this match.')
+            raise BettingCogError('Could not withdraw bets from this market.')
         self._schedule_pool_refresh(market.market_id)
         await ctx.send(embed=discord_common.embed_success(
-            f'Removed **{count}** bet(s) on **{market.home_team} vs '
-            f'{market.away_team}** and refunded **{refunded}** {_COIN}.\n'
-            f'Balance: **{balance}** {_COIN}.'))
+            f'Removed **{count}** bet(s) on '
+            f'**{cf_common.user_db.bet_market_title(market)}** and refunded '
+            f'**{refunded}** {_COIN}.\nBalance: **{balance}** {_COIN}.'))
 
     # ── Leaderboard ────────────────────────────────────────────────────
 
@@ -286,12 +321,14 @@ class BetWalletCmdImplMixin:
             lines = []
             for row in active:
                 odds = self._pick_odds(row, row.pick)
-                potential = payout_amount(row.stake, odds) if odds is not None else 0
+                potential = cf_common.user_db.bet_pick_potential(
+                    row, row.pick, row.stake)
+                potential = potential if potential is not None else 0
                 odds_text = f'{odds:.2f}' if odds is not None else '?'
                 ref = f'<#{row.thread_id}>' if row.thread_id else f'<#{row.channel_id}>'
                 locked = ' locked' if row.bets_closed else ''
                 lines.append(
-                    f'{ref} **{row.home_team} vs {row.away_team}**{locked}: '
+                    f'{ref} **{cf_common.user_db.bet_market_title(row)}**{locked}: '
                     f'{row.stake} {_COIN} on **{self._pick_label(row, row.pick)}** '
                     f'@ {odds_text} → {potential} {_COIN}')
             embed.add_field(name='Active bets', value='\n'.join(lines),

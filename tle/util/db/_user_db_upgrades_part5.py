@@ -10,6 +10,7 @@ import time
 
 from tle.util.db._user_db_upgrade_registry import registry
 from tle.util.db import _challenge_upgrade_reconstruct as _cur
+from tle.util.db.betting_schema import create_betting_tables, _columns
 
 logger = logging.getLogger(__name__)
 
@@ -344,3 +345,95 @@ def upgrade_1_60_0(db):
 
     db.commit()
     logger.info('1.60.0: Upgrade complete')
+
+
+@registry.register('1.61.0', 'Unified betting markets (shared base + custom markets)')
+def upgrade_1_61_0(db):
+    """Restructure betting into one shared ``bet_market`` base + per-kind
+    extensions and add user-created parimutuel markets.
+
+    Every existing soccer field and value is preserved: the old ``bet_market``
+    shared columns move to the new base (``commence_time`` -> ``closes_at``),
+    soccer-specific columns move to ``bet_market_soccer``, and ``bet_wager`` rows
+    are kept as-is (same columns). Custom markets reuse the base, storing their
+    title in ``bet_market_custom`` and choices in ``bet_custom_choice``;
+    parimutuel payout is recomputed from wagers, never stored.
+
+    Idempotent — a DB already on the new base (it has a ``kind`` column) is left
+    untouched. Fresh DBs are stamped at the latest version and skip this
+    entirely.
+    """
+    logger.info('1.61.0: Unifying betting market schema')
+    cols = _columns(db, 'bet_market')
+    if cols and 'kind' not in cols:
+        _rebuild_soccer_base(db, cols)
+    else:
+        create_betting_tables(db)
+    # Drop the unreleased draft custom tables if a feature branch created them.
+    db.execute('DROP TABLE IF EXISTS bet_custom_market')
+    db.execute('DROP TABLE IF EXISTS bet_custom_wager')
+    db.commit()
+    logger.info('1.61.0: Upgrade complete')
+
+
+def _rebuild_soccer_base(db, cols):
+    """Move a legacy soccer ``bet_market`` into the shared base + soccer ext.
+
+    Transactional (SQLite DDL rolls back): a failure mid-copy restores the
+    original table, so the next boot retries the rebuild instead of stamping
+    1.61.0 over orphaned data.
+    """
+    started_transaction = not db.in_transaction
+    if started_transaction:
+        db.execute('BEGIN IMMEDIATE')
+    try:
+        _copy_soccer_base(db, cols)
+    except Exception:
+        if started_transaction:
+            db.rollback()
+        raise
+
+
+def _copy_soccer_base(db, cols):
+    """The rename + rebuild + copy half of the 1.61.0 migration."""
+    db.execute('ALTER TABLE bet_market RENAME TO bet_market_old_161')
+    # The renamed table keeps its old indexes; drop them so the fresh ones can
+    # reuse the names (otherwise CREATE INDEX IF NOT EXISTS silently no-ops).
+    legacy_idx = db.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'index' "
+        "AND tbl_name = 'bet_market_old_161' AND name NOT LIKE 'sqlite_%'"
+    ).fetchall()
+    for row in legacy_idx:
+        db.execute(f'DROP INDEX IF EXISTS "{row[0]}"')
+    create_betting_tables(db)
+
+    def col(name, default):
+        return name if name in cols else default
+
+    db.execute(f'''
+        INSERT INTO bet_market
+            (market_id, kind, guild_id, channel_id, message_id, thread_id,
+             thread_intro_id, event_id, fixture_key, created_by, created_at,
+             closes_at, status, bets_closed, result, settled_at, thread_locked)
+        SELECT market_id, 'soccer',
+               {col('guild_id', "''")}, {col('channel_id', "''")},
+               {col('message_id', 'NULL')}, {col('thread_id', 'NULL')},
+               {col('thread_intro_id', 'NULL')}, {col('event_id', 'NULL')},
+               {col('fixture_key', 'NULL')}, {col('created_by', "''")},
+               {col('created_at', '0')}, {col('commence_time', '0')},
+               {col('status', "'open'")}, {col('bets_closed', '0')},
+               {col('result', 'NULL')}, {col('settled_at', 'NULL')},
+               {col('thread_locked', '0')}
+        FROM bet_market_old_161
+    ''')
+    db.execute(f'''
+        INSERT INTO bet_market_soccer
+            (market_id, sport_key, home_team, away_team, odds_home, odds_draw,
+             odds_away, result_home, result_away)
+        SELECT market_id, {col('sport_key', "''")}, {col('home_team', "''")},
+               {col('away_team', "''")}, {col('odds_home', '0')},
+               {col('odds_draw', '0')}, {col('odds_away', '0')},
+               {col('result_home', 'NULL')}, {col('result_away', 'NULL')}
+        FROM bet_market_old_161
+    ''')
+    db.execute('DROP TABLE bet_market_old_161')

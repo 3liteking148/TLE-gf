@@ -1,4 +1,4 @@
-"""Betting schema-migration tests (upgrade_1_33_0 .. 1_37_0)."""
+"""Betting schema-migration tests (upgrade_1_33_0 .. 1_61_0)."""
 import sqlite3
 
 import pytest  # noqa: F401
@@ -6,7 +6,7 @@ import pytest  # noqa: F401
 from tle.util.db.user_db_conn import UserDbConn, namedtuple_factory, bet_fixture_key
 from tle.util.db.user_db_upgrades import (
     upgrade_1_33_0, upgrade_1_34_0, upgrade_1_35_0, upgrade_1_36_0,
-    upgrade_1_37_0, upgrade_1_41_0,
+    upgrade_1_37_0, upgrade_1_41_0, upgrade_1_61_0,
 )
 from tests.betting_test_utils import GUILD, CH, THREAD, USER_A, USER_B  # noqa: F401
 
@@ -214,6 +214,56 @@ class TestMigration:
         assert old_table is None
         conn.close()
 
+    def test_upgrade_161_rebuild_rolls_back_on_copy_failure(self):
+        conn = sqlite3.connect(':memory:')
+        conn.row_factory = namedtuple_factory
+        upgrade_1_33_0(conn)
+        conn.execute(
+            'INSERT INTO bet_market (guild_id, channel_id, event_id, sport_key, '
+            'home_team, away_team, commence_time, odds_home, odds_draw, '
+            'odds_away, created_by, created_at) '
+            'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            ('1', '2', 'e', 'soccer_epl', 'Spain', 'Cape Verde', 10_000.0,
+             2.0, 3.0, 4.0, '9', 0.0))
+        conn.commit()
+        before = conn.execute('SELECT * FROM bet_market').fetchall()
+        # Poison the soccer extension with an incompatible schema so the
+        # second copy INSERT fails mid-rebuild (after the rename).
+        conn.execute(
+            'CREATE TABLE bet_market_soccer (market_id INTEGER PRIMARY KEY)')
+        conn.commit()
+
+        with pytest.raises(sqlite3.OperationalError):
+            upgrade_1_61_0(conn)
+
+        # The failed rebuild rolled back: legacy table intact, no leftovers.
+        tables = [r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'")]
+        assert 'bet_market_old_161' not in tables
+        cols = [r[1] for r in conn.execute('PRAGMA table_info(bet_market)')]
+        assert 'kind' not in cols and 'commence_time' in cols
+        assert conn.execute('SELECT * FROM bet_market').fetchall() == before
+
+        # A retry after removing the poison succeeds and preserves the data.
+        conn.execute('DROP TABLE bet_market_soccer')
+        upgrade_1_61_0(conn)
+        base = conn.execute(
+            'SELECT kind, guild_id, closes_at, status FROM bet_market'
+        ).fetchone()
+        assert (base.kind, base.guild_id, base.closes_at, base.status) == \
+            ('soccer', '1', 10_000.0, 'open')
+        ext = conn.execute(
+            'SELECT sport_key, home_team, away_team, odds_home, odds_draw, '
+            'odds_away FROM bet_market_soccer').fetchone()
+        assert (ext.sport_key, ext.home_team, ext.away_team, ext.odds_home,
+                ext.odds_draw, ext.odds_away) == \
+            ('soccer_epl', 'Spain', 'Cape Verde', 2.0, 3.0, 4.0)
+        tables = [r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'")]
+        assert 'bet_market_old_161' not in tables
+        assert 'bet_market_custom' in tables
+        conn.close()
+
     def test_userdb_existing_134_runs_fixture_migration(self, tmp_path):
         from tle.util.db.user_db_upgrades import registry
         path = tmp_path / 'user.db'
@@ -246,6 +296,18 @@ class TestMigration:
                 'soccer_epl', 'Spain', 'Cape Verde', 10_000.0)
             cols = [r.name for r in db.conn.execute('PRAGMA table_info(bet_market)')]
             assert 'thread_intro_id' in cols
+            # 1.61.0 preserves soccer data: shared fields on the base, the rest
+            # in the soccer extension.
+            base = db.conn.execute(
+                'SELECT kind, closes_at FROM bet_market WHERE market_id = 1'
+            ).fetchone()
+            assert base.kind == 'soccer' and base.closes_at == 10_000.0
+            ext = db.conn.execute(
+                'SELECT sport_key, home_team, away_team, odds_home '
+                'FROM bet_market_soccer WHERE market_id = 1').fetchone()
+            assert ext.sport_key == 'soccer_epl'
+            assert ext.home_team == 'Spain' and ext.away_team == 'Cape Verde'
+            assert ext.odds_home == 2.0
             assert self._wager_pk_cols(db.conn) == ['market_id', 'user_id', 'pick']
             assert self._wager_rows(db.conn) == [(1, '10', 'home', 100, 7.0)]
             indexes = [r.name for r in db.conn.execute('PRAGMA index_list(bet_market)')]
