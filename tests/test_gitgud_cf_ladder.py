@@ -15,54 +15,36 @@ from tests.gitgud_test_utils import (  # noqa: F401
     _ctx,
     _patch_cf_handle,
     _run,
+    _set_cf_problems as _set_cache,
+    _tagged_cf_prob as _tagged_prob,
     cog,
 )
 
 from tle.cogs._atcoder_gitgud import _AcBackend
 from tle.cogs._codeforces_gitgud import _CfBackend
-from tle.cogs._codeforces_helpers import (
-    CodeforcesCogError,
-    gitgud_rating_specified,
-)
-from tle.util import codeforces_common as cf_common
-from tle.util._cf_api_types import cf_tag_matches
-
-
-def _set_cache(problems):
-    """Replace the (fixture-installed) CF problem cache contents."""
-    cf_common.cache2.problem_cache.problems = list(problems)
-    cf_common.cache2.problem_cache.problem_by_name = {
-        p.name: p for p in problems
-    }
-
-
-def _tagged_prob(name, cid, rating, tags, index='A'):
-    """``_cf_prob`` that actually matches ``+``/``~`` filters by tag."""
-    prob = _cf_prob(name, cid, rating, index)
-    prob.tags = list(tags)
-    prob.matches_all_tags = lambda filters: all(
-        any(cf_tag_matches(f, t) for t in tags) for f in filters)
-    return prob
+from tle.cogs._codeforces_helpers import CodeforcesCogError
+from tle.cogs._gitgud_args import GITGUD_USAGE
 
 
 def _pool(backend, srating, erating, **kw):
-    return backend.select_pool(
-        srating, erating, set(), set(), [], [], 'handle', **kw)
+    from tle.cogs._gitgud_args import GitgudArgs
+    req = GitgudArgs(srating=srating, erating=erating, hidden=False)
+    return backend.select(req, set(), set(), 'handle', **kw)
 
 
 class TestGitgudRatingSpecified:
     @pytest.mark.parametrize('args,expected', [
-        ([], False),
-        (['+trees'], False),
-        (['~dp'], False),
-        (['d<2020-01-01', 'd>=2019-01-01'], False),
-        ([''], False),
-        (['1400'], True),
-        (['1000-1400'], True),
-        (['+dp', '1500'], True),
+        ((), False),
+        (('+trees',), False),
+        (('~dp',), False),
+        (('',), False),
+        (('1400',), True),
+        (('1000-1400',), True),
+        (('+dp', '1500'), True),
     ])
     def test_detection(self, args, expected):
-        assert gitgud_rating_specified(args) is expected
+        req = _CfBackend().parse_request(list(args), 1500, GITGUD_USAGE)
+        assert req.rating_given is expected
 
 
 class TestSelectPoolHintClimb:
@@ -76,13 +58,14 @@ class TestSelectPoolHintClimb:
         assert [p.name for p in pool] == ['P900']
 
     def test_skips_rung_that_is_fully_solved(self, cog):
+        from tle.cogs._gitgud_args import GitgudArgs
         _set_cache([
             _cf_prob('P900', 10, 900),
             _cf_prob('P1000', 11, 1000),
         ])
-        pool = _CfBackend().select_pool(
-            800, 800, {'P900'}, set(), [], [], 'handle', hint_climb=True)
-        # the 900 rung exists but is fully solved -> 1000 wins
+        pool = _CfBackend().select(
+            GitgudArgs(srating=800, erating=800, hidden=False),
+            {'P900'}, set(), 'handle', hint_climb=True)
         assert [p.name for p in pool] == ['P1000']
 
     def test_climb_reaches_3500(self, cog):
@@ -108,26 +91,27 @@ class TestSelectPoolHintClimb:
         assert _pool(_CfBackend(), 800, 800, hint_climb=True) == []
 
     def test_tag_filters_apply_at_every_rung(self, cog):
+        from tle.cogs._gitgud_args import GitgudArgs
         _set_cache([
             _tagged_prob('Trees1400', 10, 1400, ['trees']),
             _tagged_prob('Dp1500', 11, 1500, ['dp']),
             _tagged_prob('Trees1600', 12, 1600, ['trees']),
         ])
-        pool = _CfBackend().select_pool(
-            1400, 1400, {'Trees1400'}, set(), ['trees'], [], 'handle',
-            hint_climb=True)
+        pool = _CfBackend().select(
+            GitgudArgs(srating=1400, erating=1400, hidden=False,
+                       tags=['trees']),
+            {'Trees1400'}, set(), 'handle', hint_climb=True)
         assert [p.name for p in pool] == ['Trees1600']
 
     def test_atcoder_backend_accepts_and_ignores_hint(self, cog):
-        assert _AcBackend().select_pool(
-            800, 900, set(), set(), [], [], 'handle',
-            hint_climb=True) == []
+        from tle.cogs._gitgud_args import GitgudArgs
+        assert _AcBackend().select(
+            GitgudArgs(srating=800, erating=900, hidden=False),
+            set(), set(), 'handle', hint_climb=True) == []
 
 
 class TestGitgudDefaultClimbEndToEnd:
     def test_default_request_climbs_to_900(self, db, cog, monkeypatch):
-        # fixture cache: four 800s plus two 900s; solving every 800 forces
-        # the default (800,800) window to climb.
         _patch_cf_handle(monkeypatch, rating=800,
                          solved={f'CF800_{i}' for i in range(4)})
         ctx = _ctx()

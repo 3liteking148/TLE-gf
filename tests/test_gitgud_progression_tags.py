@@ -7,8 +7,6 @@ slot's ladder score by ``penalised_count + 1`` (ceiling, min 1) while
 ``~div3/~div4/~edu``) cost nothing. The ThemeCP time bonus then composes on
 the penalized base.
 """
-from types import SimpleNamespace
-
 from tests.betting_test_utils import GUILD, USER_A, db  # noqa: F401
 from tests.gitgud_test_utils import (  # noqa: F401
     _backdate,
@@ -17,34 +15,11 @@ from tests.gitgud_test_utils import (  # noqa: F401
     _patch_cf_handle,
     _run,
     _solve_names,
+    _tagged_cf_prob,
     cog,
 )
 from tle.cogs._codeforces_helpers import _GITGUD_COIN_MULTIPLIER
 from tle.util import codeforces_common as cf_common
-
-
-def _tagged_prob(name, cid, rating, tags, index='A'):
-    lowered = [t.strip().lower() for t in tags]
-
-    def _matches_all(want):
-        return all(w.strip().lower() in lowered for w in want)
-
-    def _matches_any(banned):
-        return any(b.strip().lower() in lowered for b in banned)
-
-    return SimpleNamespace(
-        name=name,
-        contestId=cid,
-        contest_name=f'Round {cid}',
-        index=index,
-        key=name,
-        rating=rating,
-        url=f'https://codeforces.com/contest/{cid}/problem/{index}',
-        tags=list(tags),
-        matches_all_tags=_matches_all,
-        matches_any_tag=_matches_any,
-        get_matched_tags=lambda want: [w for w in want if w.strip().lower() in lowered],
-    )
 
 
 _VOCAB_TAGS = ('dp', 'fft', 'div1', 'div3', 'div4', 'edu')
@@ -55,7 +30,8 @@ def _install_cache(monkeypatch, probs):
     so banned tags not present on the selectable pool still pass the unknown-
     tag check (mirrors the real CF cache, where banned tags exist on *some*
     problem)."""
-    probs = list(probs) + [_tagged_prob('VOCAB_FILLER', 9999, 9999, _VOCAB_TAGS)]
+    probs = list(probs) + [
+        _tagged_cf_prob('VOCAB_FILLER', 9999, 9999, _VOCAB_TAGS)]
     cache = cf_common.cache2
     monkeypatch.setattr(cache.problem_cache, 'problems', probs)
     monkeypatch.setattr(cache.problem_cache, 'problem_by_name', {p.name: p for p in probs})
@@ -63,13 +39,15 @@ def _install_cache(monkeypatch, probs):
 
 def _install_level1(monkeypatch, tags):
     """Replace the ``cog``-fixture cache with 4 tag-carrying 800s (level 1)."""
-    probs = [_tagged_prob(f'CF800_{i}', 1000 + i, 800, tags, chr(ord('A') + i))
+    probs = [_tagged_cf_prob(f'CF800_{i}', 1000 + i, 800, tags,
+                             index=chr(ord('A') + i))
              for i in range(4)]
     _install_cache(monkeypatch, probs)
 
 
 def _install_ratings(monkeypatch, ratings, tags):
-    probs = [_tagged_prob(f'CF{r}_{i}', 1000 + i, r, tags, chr(ord('A') + i))
+    probs = [_tagged_cf_prob(f'CF{r}_{i}', 1000 + i, r, tags,
+                             index=chr(ord('A') + i))
              for i, r in enumerate(ratings)]
     _install_cache(monkeypatch, probs)
 

@@ -7,10 +7,16 @@ protocol.
 """
 from __future__ import annotations
 
-from typing import List, Sequence, Tuple
+from typing import List, Sequence, Set, Tuple
 
 from tle.cogs._codeforces_helpers import CodeforcesCogError
-from tle.cogs._gitgud_protocol import GitgudProblem
+from tle.cogs._gitgud_args import (
+    GitgudArgs,
+    PROGRESSION_USAGE,
+    parse_tag_filters,
+    progression_usage,
+)
+from tle.cogs._gitgud_protocol import GitgudBackend, GitgudProblem
 from tle.util.gitgud_progression import (
     THEME_MULTS,
     ThemeLevel,
@@ -42,6 +48,8 @@ Each slot pays base ladder points; solving within the level's time
 window upgrades the unbroken streak starting at A with mults
 x1, x1, x1.5, x2 — so A+B+C+D earns the full bonus, but a lone D
 (or any solved problem with an unsolved problem before it) scores base points only.
+Optional +tag/~tag filters apply to every slot; ratings are fixed by the
+level, so no rating or date argument is accepted.
 ;nogud after 2h skips the whole batch.
 
 {THEMECP_REFERENCES}"""
@@ -55,18 +63,16 @@ def require_theme(level: int):
     return theme
 
 
-def parse_progression_args(args: Sequence[str], backend) -> Tuple[int, ThemeLevel, list[str], list[str]]:
+def parse_progression_args(args: Sequence[str], backend: GitgudBackend) -> Tuple[int, ThemeLevel, list[str], list[str]]:
     """Parse ``;gitgudprogression <level> [+tag] [~tag]``.
 
     Returns ``(level, theme, tags, bantags)``. Level is positional
-    ``args[0]``; remainder is parsed via ``backend.parse_args`` with
-    sentinel ``-1`` so no rating/range can be supplied — progression
-    ratings are fixed by the CSV. Enforces vocab check through
-    ``backend.parse_args`` (which calls ``_checkGitgudTags``).
+    ``args[0]``; the remainder goes through ``parse_tag_filters``, which
+    accepts tags only — progression ratings are fixed by the CSV, so a
+    rating/range argument is rejected as a non-tag with the usage line.
     """
     if not args:
-        raise CodeforcesCogError(
-            f"Usage: ;gitgudprogression <level 1..{max_level()}> [+tag] [~tag]\n\n{THEMECP_REFERENCES}")
+        raise CodeforcesCogError(f'{progression_usage()}\n\n{THEMECP_REFERENCES}')
     try:
         level = int(args[0])
     except ValueError:
@@ -74,13 +80,9 @@ def parse_progression_args(args: Sequence[str], backend) -> Tuple[int, ThemeLeve
             f"Invalid ThemeCP level `{args[0]}` — use 1..{max_level()}")
 
     theme = require_theme(level)
-    rest = list(args[1:])
-
-    srating, erating, _hidden, tags, bantags = backend.parse_args(rest, -1)
-    if srating != -1 or erating != -1:
-        raise CodeforcesCogError(
-            "ThemeCP level fixes ratings — do not add a rating or range (use `<level> [+tag] [~tag]` only)"
-        )
+    tags, bantags = parse_tag_filters(
+        list(args[1:]), vocabulary=backend.tag_vocabulary(),
+        exact=backend.exact, usage=PROGRESSION_USAGE)
     return level, theme, tags, bantags
 
 
@@ -98,7 +100,15 @@ def build_progression_desc_lines(
     return lines
 
 
-def select_progression_problems(backend, level: int, solved, noguds, handle, tags=(), bantags=()) -> list:
+def select_progression_problems(
+    backend: GitgudBackend,
+    level: int,
+    solved: Set[str],
+    noguds: Set[str],
+    handle: str,
+    tags: Sequence[str] = (),
+    bantags: Sequence[str] = (),
+) -> list:
     """Select 4 problems, one per ThemeCP rating slot, optionally filtered by tags."""
     ratings = require_theme(level).ratings
     chosen: List = []
@@ -106,8 +116,10 @@ def select_progression_problems(backend, level: int, solved, noguds, handle, tag
     # Use a local mutable copy so the caller's ``solved`` set is not mutated
     seen = set(solved)
     for rating in ratings:
+        req = GitgudArgs(srating=rating, erating=rating, hidden=False,
+                         tags=list(tags), bantags=list(bantags))
         pool = [p for p in
-                backend.select_pool(rating, rating, seen, noguds, list(tags), list(bantags), handle)
+                backend.select(req, seen, noguds, handle)
                 if p.key not in chosen_keys and p.name not in chosen_keys]
         if not pool:
             tag_hint = ""

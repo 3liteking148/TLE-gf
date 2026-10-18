@@ -44,10 +44,11 @@ def test_duel_official_cutoff():
 def test_gitgud_error_text_tracks_bounds():
     from tle.cogs._codeforces_gitgud import _CfBackend
     from tle.cogs._codeforces_helpers import CodeforcesCogError
+    from tle.cogs._gitgud_args import GITGUD_USAGE
 
-    expected = ('Wrong rating requested. Remember gitgud now uses rating '
-                f'({cf_common.RATING_MIN}-{cf_common.RATING_MAX}) '
-                'instead of delta.')
     with pytest.raises(CodeforcesCogError) as exc:
-        _CfBackend().parse_args(['3600'], 1500)
-    assert str(exc.value) == expected
+        _CfBackend().parse_request(['3600'], 1500, GITGUD_USAGE)
+    msg = str(exc.value)
+    assert msg.startswith('Invalid rating `3600`')
+    assert f'({cf_common.RATING_MIN}-{cf_common.RATING_MAX})' in msg
+    assert 'delta' not in msg.lower()

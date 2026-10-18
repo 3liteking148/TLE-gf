@@ -23,14 +23,13 @@ from tle.cogs._codeforces_helpers import CodeforcesCogError
 class TestAtcoderGitgudFlow:
     @pytest.fixture
     def cog(self, db, monkeypatch):
-        from tle.cogs._atcoder_gitgud import AtcoderGitgudMixin
-        from tle.cogs._codeforces_gitgud import CodeforcesGitgudMixin
+        from tle.cogs._gitgud import GitgudMixin
         monkeypatch.setattr(cf_common, 'user_db', db)
         monkeypatch.setattr(constants, 'BET_START_BALANCE', 1000, raising=False)
         monkeypatch.setattr(cf_common, 'cache2', SimpleNamespace(
             atcoder_problem_cache=SimpleNamespace(problems=[])))
 
-        class _Cog(AtcoderGitgudMixin, CodeforcesGitgudMixin):
+        class _Cog(GitgudMixin):
             pass
 
         cog = _Cog()

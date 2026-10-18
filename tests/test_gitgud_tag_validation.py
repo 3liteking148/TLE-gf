@@ -11,9 +11,11 @@ from types import SimpleNamespace
 import pytest
 
 import tle.util.codeforces_common as cf_common
+from tests.gitgud_test_utils import _install_caches
 from tle.cogs._atcoder_gitgud import _AcBackend
 from tle.cogs._codeforces_gitgud import _CfBackend
-from tle.cogs._codeforces_helpers import CodeforcesCogError, _unknownTagFilters
+from tle.cogs._codeforces_helpers import CodeforcesCogError
+from tle.cogs._gitgud_args import GITGUD_USAGE
 from tle.util._cf_api_types import Problem, cf_tag_matches
 
 
@@ -47,20 +49,19 @@ class TestAcBackendTagDetection:
 
     def test_unknown_contest_type_raises(self):
         with pytest.raises(CodeforcesCogError) as exc:
-            _AcBackend().parse_args(['+dp'], 1500)
+            _AcBackend().parse_request(['+dp'], 1500, GITGUD_USAGE)
         assert '+dp' in str(exc.value)
 
     def test_known_contest_types_pass(self):
-        _, _, _, tags, bantags = _AcBackend().parse_args(
-            ['+abc', '~arc', '1500'], 1500)
-        assert tags == ['abc']
-        assert bantags == ['arc']
+        req = _AcBackend().parse_request(['+abc', '~arc', '1500'], 1500, GITGUD_USAGE)
+        assert req.tags == ['abc']
+        assert req.bantags == ['arc']
 
     def test_partial_word_not_enough_on_atcoder(self):
         # Exact matching: 'ab' is not an AtCoder contest type even though
         # 'abc' is (unlike Codeforces word-prefix semantics).
         with pytest.raises(CodeforcesCogError):
-            _AcBackend().parse_args(['+ab'], 1500)
+            _AcBackend().parse_request(['+ab'], 1500, GITGUD_USAGE)
 
 
 class TestCfBackendTagDetection:
@@ -71,33 +72,29 @@ class TestCfBackendTagDetection:
                 problems=[SimpleNamespace(tags=['dp', 'data structures']),
                           SimpleNamespace(tags=['div1'])])))
 
-    def test_unknown_filters_raise_naming_offenders(self):
-        with pytest.raises(CodeforcesCogError) as exc:
-            _CfBackend().parse_args(['+a1', '+dp', '~b2'], 1500)
-        msg = str(exc.value)
-        assert '+a1' in msg and '~b2' in msg and '+dp' not in msg
-
     def test_infix_of_word_rejected(self):
-        # 'arc' hides inside 'search' but is not a prefix of any word of
-        # 'binary search' — the motivating case: +arc must be an error,
-        # not a silent binary-search filter.
+        # 'arc' hides inside 'search' but is not a prefix of any word, so
+        # +arc must be an error, not a silent binary-search filter.
         with pytest.raises(CodeforcesCogError) as exc:
-            _CfBackend().parse_args(['+arc'], 1500)
+            _CfBackend().parse_request(['+arc'], 1500, GITGUD_USAGE)
         assert '+arc' in str(exc.value)
 
     def test_known_filters_parse_through(self):
         for arg in ('+data', '+DATA', '+div1', '+data structures'):
-            _, _, _, tags, _ = _CfBackend().parse_args([arg, '1500'], 1500)
-            assert tags == [arg[1:]]
+            req = _CfBackend().parse_request([arg, '1500'], 1500, GITGUD_USAGE)
+            assert req.tags == [arg[1:]]
 
     def test_gimme_unknown_tag_raises(self):
+        # Gimme shares the parser, so the offender is named before the pool
+        # is ever selected.
         with pytest.raises(CodeforcesCogError) as exc:
-            _CfBackend().select_gimme_pool(['+trashproblem'], None, set(),
-                                           1500)
+            _CfBackend().parse_request(['+trashproblem'], 1500, GITGUD_USAGE)
         assert '+trashproblem' in str(exc.value)
 
-    def test_empty_vocabulary_disables_check(self):
-        assert _unknownTagFilters(['anything'], set()) == []
+    def test_cold_cache_disables_check(self, monkeypatch):
+        _install_caches(monkeypatch)
+        req = _CfBackend().parse_request(['+anything'], 1500, GITGUD_USAGE)
+        assert req.tags == ['anything']
 
 
 def _make_cf_problem(tags):

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Protocol, Sequence, Set, Tuple, TypeAlias, runtime_checkable
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Protocol, Sequence, Set, Tuple, TypeAlias
 
+from tle.cogs._gitgud_args import GitgudArgs
 from tle.cogs._gitgud_scoring import GitgudScoreModel
 from tle.util.db.challenge_db import ActiveChallenge
 
@@ -16,17 +17,13 @@ else:
 
 ContestId: TypeAlias = str | int
 PIndex: TypeAlias = str | None
-# Re-exported from the DB layer (see ``challenge_db.ActiveChallenge``).
-# contest_id is str|int (AtCoder str, CF int); PIndex is plain str (legacy int dead).
-# Field order is stable so positional indexing/unpacking keeps working for legacy sites.
-ChallengeLogEntry: TypeAlias = Tuple[float, Optional[float], str, int, int, str, int]
 
 
 class GitgudProblem(Protocol):
     """Minimal surface the generic layer expects from a problem."""
 
     @property
-    def rating(self) -> Optional[int]: ...  # AtCoder difficulty alias
+    def rating(self) -> Optional[int]: ...
 
     @property
     def name(self) -> str: ...
@@ -48,90 +45,59 @@ class GitgudProblem(Protocol):
 
     def get_matched_tags(self, tags: Sequence[str]) -> List[str]: ...
 
+    def matches_all_tags(self, tags: Sequence[str]) -> bool: ...
 
-@runtime_checkable
+    def matches_any_tag(self, tags: Sequence[str]) -> bool: ...
+
+
 class GitgudBackend(Protocol):
-    """Data-only, platform-specific gitgud operations."""
+    """Platform adapter: fetching/selection only, no Discord output."""
 
     platform: str
     score_model: GitgudScoreModel
+    # Filter-word matching: AtCoder contest types are exact, CF tags prefix.
+    exact: bool
 
-    def parse_args(
-        self, args: Sequence[str], rating: int
-    ) -> Tuple[int, int, bool, List[str], List[str]]:
-        ...
+    def tag_vocabulary(self) -> Optional[Set[str]]: ...
 
-    async def resolve_handle(self, ctx: GitgudCtx, converter: Optional[GitgudConverter] = None) -> str:
-        ...
+    def parse_request(self, args: Sequence[str], rating: int,
+                      usage: str) -> GitgudArgs: ...
 
-    async def validate_handle(self, ctx: GitgudCtx, converter: Optional[GitgudConverter] = None) -> None:
-        ...
+    async def resolve_handle(self, ctx: GitgudCtx, converter: Optional[GitgudConverter] = None) -> str: ...
 
-    async def fetch_rating(self, handle: str) -> int:
-        ...
+    async def validate_handle(self, ctx: GitgudCtx, converter: Optional[GitgudConverter] = None) -> None: ...
 
-    def scale_rating(self, rating: int) -> Tuple[int, int]:
-        ...
+    async def fetch_rating(self, handle: str) -> int: ...
 
-    async def fetch_solved(self, handle: str, *, only_ac: bool = True) -> Set[str]:
-        ...
+    def scale_rating(self, rating: int) -> Tuple[int, int]: ...
+
+    async def fetch_solved(self, handle: str, *, only_ac: bool = True) -> Set[str]: ...
 
     async def verify_claims(
         self, ctx: GitgudCtx, handle: str, actives: Sequence[ActiveChallenge], submission_url: Optional[str] = None,
         partial: bool = False
-    ) -> Tuple[List[ActiveChallenge], List[ActiveChallenge], Dict[int, float]]:
-        """Batch-aware claim check; returns done, missing and solve times.
+    ) -> Tuple[List[ActiveChallenge], List[ActiveChallenge], Dict[int, float]]: ...
 
-        Returns ``(done, missing, solve_times)`` preserving batch order, where
-        ``solve_times`` maps each done ``challenge_id`` to its solve epoch
-        (CF: first AC from the API at/after ``issue_time`` minus the claim
-        margin; AtCoder: claim time, since the submission page timestamp
-        is not parsed). On the strict path
-        (``partial=False``) missing is always empty — any unsolved challenge
-        raises instead. Callers resolve ``done`` as completions and ``missing``
-        as skips.
+    def nogud_set(self, user_id: int) -> Set[str]: ...
+
+    def select(self, req: GitgudArgs, solved: Set[str], noguds: Set[str],
+               handle: str, *, hint_climb: bool = False,
+               exclude_nonstandard: bool = True,
+               ) -> Sequence[GitgudProblem]:
+        """Shared ``;gitgud``/``;gimme`` pool for an already-parsed request.
+
+        ``;gimme`` passes ``exclude_nonstandard=False`` so recommendations
+        may fall on nonstandard problems; the nogud/solved/tag/date filters
+        are shared by both commands.
         """
         ...
 
-    def nogud_set(self, user_id: int) -> Set[str]:
-        ...
-
-    def select_pool(
-        self,
-        srating: int,
-        erating: int,
-        solved: Set[str],
-        noguds: Set[str],
-        tags: List[str],
-        bantags: List[str],
-        handle: str,
-        *,
-        hint_climb: bool = False,
-    ) -> Sequence[GitgudProblem]:
-        """Pool for ``[srating, erating]``.
-
-        ``hint_climb`` tells the backend the window came from the default
-        rating (no rating argument) so it may climb to higher ratings when
-        the window is empty; backends without a ladder ignore it. Callers
-        with a fixed rating window must leave it unset.
-        """
-        ...
-
-    async def fetch_participated(self, handle: str) -> Set[int]:
-        ...
+    async def fetch_participated(self, handle: str) -> Set[ContestId]: ...
 
     def select_upsolve_pool(
-        self, solved: Set[str], participated: Set[int]
-    ) -> Sequence[GitgudProblem]:
-        ...
+        self, solved: Set[str], participated: Set[ContestId]
+    ) -> Sequence[GitgudProblem]: ...
 
-    def select_gimme_pool(
-        self, args: Sequence[str], handle: str, solved: Set[str], rating: int
-    ) -> Tuple[Sequence[GitgudProblem], List[str], bool]:
-        ...
+    def lookup_problem(self, problem_key: str) -> GitgudProblem: ...
 
-    def lookup_problem(self, problem_key: str) -> GitgudProblem:
-        ...
-
-    def active_url(self, contest_id: ContestId, problem_key: str, p_index: PIndex = None) -> str:
-        ...
+    def active_url(self, contest_id: ContestId, problem_key: str, p_index: PIndex = None) -> str: ...

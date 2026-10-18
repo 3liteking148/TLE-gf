@@ -1,30 +1,16 @@
-"""AtCoder gitgud backend — problem selection for the ``ac`` platform.
-
-AtCoder has no official API, so problem data comes from the kenkoooo datasets
-(via ``atcoder_api``) and the ``AtcoderProblemCache``. ``_AcBackend`` is a
-data-only backend for ``GitgudMixin`` (``tle/cogs/_gitgud.py``): it resolves
-per-guild handles, fetches ratings/submissions and selects problem pools, then
-returns plain problems for the generic layer to send. It never sends messages,
-builds embeds, or writes challenges. Upsolve/gimme are not implemented for
-AtCoder and raise explicitly.
-
-``AtcoderGitgudMixin`` is re-exported here (from ``_gitgud.py``) so the
-``Codeforces`` cog and the gitgud tests keep their existing imports.
-"""
+"""AtCoder gitgud backend — problem selection for the ``ac`` platform."""
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, TYPE_CHECKING
+from dataclasses import replace
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, TYPE_CHECKING, cast
 
 from tle.util import atcoder_api
 from tle.util import codeforces_common as cf_common
-from tle.cogs._gitgud import GitgudMixin
+from tle.cogs._gitgud_args import GITGUD_USAGE, GitgudArgs, parse_args
+from tle.cogs._gitgud_backend import run_pool
 from tle.cogs._gitgud_protocol import ActiveChallenge, ContestId, GitgudProblem, PIndex
-from tle.cogs._codeforces_helpers import (
-    CodeforcesCogError,
-    _checkGitgudTags,
-    _parseGitgudRatingArgs,
-)
+from tle.cogs._codeforces_helpers import CodeforcesCogError
 from tle.cogs._gitgud_scoring import AC_SCORE_MODEL
 from tle.util._atcoder_api_types import AtCoderProblem
 
@@ -38,10 +24,18 @@ else:
     GitgudConverter = Any
 
 
-class AtcoderGitgudMixin(GitgudMixin):
-    """Marker subclass so the ``Codeforces`` cog and the gitgud tests can
-    inherit the generic implementation under the original AtCoder name."""
-    pass
+def _widen_default(req: GitgudArgs) -> GitgudArgs:
+    """AtCoder ratings are not rounded to hundreds, so a single-valued window
+    asks for exactly one difficulty: widen it by ±100. This covers the bare
+    default, an explicit single rating, and an equal-range spec like
+    ``1200-1200``. A genuine ``lo-hi`` range (distinct ends) passes through
+    untouched."""
+    if req.srating != req.erating:
+        return req
+    return replace(
+        req,
+        srating=max(req.srating - 100, atcoder_api.RATING_MIN),
+        erating=min(req.erating + 100, atcoder_api.RATING_MAX))
 
 
 class _AcBackend:
@@ -49,31 +43,22 @@ class _AcBackend:
 
     platform: str = 'ac'
     score_model = AC_SCORE_MODEL
+    exact: bool = True
 
-    def parse_args(
-        self, args: Sequence[str], rating: int
-    ) -> Tuple[int, int, bool, List[str], List[str]]:
-        """Parse gitgud args: an optional rating or range plus optional
-        ``+``/``~`` contest-type filters. ``rating`` is the 0-4000-clamped
-        user rating used as the default range. Returns
-        ``(srating, erating, hidden, tags, bantags)``."""
-        tags: List[str] = cf_common.parse_tags(args, prefix='+')
-        bantags: List[str] = cf_common.parse_tags(args, prefix='~')
-        error = ('Wrong rating requested. AtCoder gitgud uses rating '
-                 f'({atcoder_api.RATING_MIN}-{atcoder_api.RATING_MAX}).')
-        srating, erating, hidden = _parseGitgudRatingArgs(
-            args, rating, error,
-            bounds=(atcoder_api.RATING_MIN, atcoder_api.RATING_MAX))
+    def tag_vocabulary(self) -> Optional[Set[str]]:
+        try:
+            return {prob.contest_type for prob
+                    in cf_common.cache2.atcoder_problem_cache.problems}
+        except AttributeError:
+            return None
 
-        contest_types: Set[str] = {prob.contest_type for prob
-                                   in cf_common.cache2.atcoder_problem_cache.problems}
-        _checkGitgudTags(tags, bantags, contest_types, exact=True)
-
-        if srating == erating:  # adjust to compensate for lack of rounding in atcoder
-            srating = max(srating - 100, atcoder_api.RATING_MIN)
-            erating = min(erating + 100, atcoder_api.RATING_MAX)
-
-        return srating, erating, hidden, tags, bantags
+    def parse_request(self, args: Sequence[str], rating: int,
+                      usage: str = GITGUD_USAGE) -> GitgudArgs:
+        req = parse_args(
+            args, default_rating=rating,
+            bounds=(atcoder_api.RATING_MIN, atcoder_api.RATING_MAX),
+            vocabulary=self.tag_vocabulary(), exact=True, usage=usage)
+        return _widen_default(req)
 
     async def resolve_handle(self, ctx: GitgudCtx, converter: Optional[GitgudConverter] = None) -> str:
         user_id: int = ctx.message.author.id
@@ -89,7 +74,6 @@ class _AcBackend:
         return handle
 
     async def validate_handle(self, ctx: GitgudCtx, converter: Optional[GitgudConverter] = None) -> None:
-        # AtCoder skips need no handle re-validation.
         return None
 
     async def fetch_rating(self, handle: str) -> int:
@@ -120,7 +104,6 @@ class _AcBackend:
         self, ctx: GitgudCtx, handle: str, actives: Sequence[ActiveChallenge], submission_url: Optional[str] = None,
         partial: bool = False
     ) -> Tuple[List[ActiveChallenge], List[ActiveChallenge], Dict[int, float]]:
-        """Single-claim check; batches are rejected (AtCoder has no batch solve set)."""
         if len(actives) != 1:
             raise CodeforcesCogError('AtCoder only supports single claims')
         ts = await self._verify_single_claim(ctx, handle, actives[0], submission_url)
@@ -129,23 +112,6 @@ class _AcBackend:
     async def _verify_single_claim(
         self, ctx: GitgudCtx, handle: str, active: ActiveChallenge, submission_url: Optional[str] = None
     ) -> float:
-        """Verify the invoker's pasted submission link proves the challenge is solved.
-
-        Scrapes the single submission detail page from atcoder.jp instead of
-        polling kenkoooo's lagging per-user API, so a claim works the moment
-        the verdict is out. Raises ``CodeforcesCogError`` naming the failing
-        check on any mismatch.
-
-        Known gap (deliberate): the page's submission time is not checked
-        against the challenge issue time. kenkoooo's solved-set lags AtCoder,
-        so a problem issued after the user solved it (but before kenkoooo
-        caught up) is legitimately claimable; that same lag window also lets
-        a user solve a problem, get it issued, and claim with a pre-issue AC.
-        If this ever needs closing, parse the ``Submission Time`` row
-        (``<time class='fixtime fixtime-second'>``, JST) and reject
-        submissions earlier than ``active[1]``; the offset needs normalizing
-        to ``+09:00`` for Python <3.11 ``fromisoformat``.
-        """
         if submission_url is None:
             raise CodeforcesCogError(
                 'Paste your AtCoder submission link after the command, e.g. '
@@ -157,8 +123,6 @@ class _AcBackend:
                 'That does not look like an AtCoder submission link. Paste '
                 'the URL of your submission, e.g. '
                 '`https://atcoder.jp/contests/abc383/submissions/12345678`.')
-        # AtCoder problem ids are contest-prefixed (abc383_a), so a contest
-        # mismatch is a guaranteed wrong-problem claim; fail before scraping.
         if parsed[0] != active.contest_id:
             raise CodeforcesCogError(
                 'That submission is from a different contest than your '
@@ -176,7 +140,6 @@ class _AcBackend:
             raise CodeforcesCogError(
                 f'That submission is not accepted (verdict '
                 f'{submission.verdict}).')
-        # AtCoder user URLs are case-insensitive, so compare normalized.
         if submission.handle.lower() != handle.lower():
             raise CodeforcesCogError(
                 'That submission is not from your linked AtCoder account '
@@ -185,65 +148,47 @@ class _AcBackend:
             raise CodeforcesCogError(
                 'That submission is for a different problem than your '
                 'challenge.')
-        # submission time not parsed; return claim time for protocol uniformity
-        # (storage uses the caller's now, singleton bonus is inert anyway).
         return time.time()
 
     def nogud_set(self, user_id: int) -> Set[str]:
         return cf_common.user_db.get_nogud_problem_keys(user_id)
 
-    def select_pool(
-        self,
-        srating: int,
-        erating: int,
-        solved: Set[str],
-        noguds: Set[str],
-        tags: List[str],
-        bantags: List[str],
-        handle: str,
-        *,
-        hint_climb: bool = False,
-    ) -> Sequence[GitgudProblem]:
-        """Filter the AtCoder problem cache by difficulty range and the
-        solved/nogud sets; sorted by contest start. Empty when nothing fits —
-        the caller raises 'No problem to assign'. ``hint_climb`` is accepted
-        for protocol parity and ignored: AtCoder already widens an exact
-        default rating by ±100 and has no rating ladder."""
-        # ``prob.rating`` is forced uniform API (aliases ``difficulty`` on
-        # AtCoder).  Filtering uses rating so both platforms share the same
-        # attribute name.
-        problems: List[AtCoderProblem] = [prob for prob in cf_common.cache2.atcoder_problem_cache.problems
-                                         if prob.rating is not None
-                                         and prob.rating >= srating and prob.rating <= erating
-                                         and prob.id not in solved and prob.id not in noguds
-                                         and ('abc' in prob.contestId or 'arc' in prob.contestId or 'agc' in prob.contestId)
-                                         and set([prob.contest_type]).issuperset(set(tags))
-                                         and set([prob.contest_type]).isdisjoint(set(bantags))]
-        problems.sort(key=lambda problem: problem.contest_start or 0)
-        return problems
+    @staticmethod
+    def _start(prob: GitgudProblem) -> float:
+        return cast(AtCoderProblem, prob).contest_start or 0
 
-    async def fetch_participated(self, handle: str) -> Set[int]:
+    @staticmethod
+    def _family(prob: GitgudProblem) -> bool:
+        contest_id = cast(AtCoderProblem, prob).contestId
+        return ('abc' in contest_id or 'arc' in contest_id
+                or 'agc' in contest_id)
+
+    def select(self, req: GitgudArgs, solved: Set[str], noguds: Set[str],
+               handle: str = '', *, hint_climb: bool = False,
+               exclude_nonstandard: bool = True
+               ) -> Sequence[GitgudProblem]:
+        """Shared ``;gitgud``/``;gimme`` pool.
+
+        ``hint_climb`` and ``exclude_nonstandard`` are accepted for protocol
+        parity and ignored: AtCoder has no rating ladder and its only
+        exclusion is the contest-family gate.
+        """
+        return run_pool(
+            cf_common.cache2.atcoder_problem_cache.problems, req, solved, noguds,
+            start_of=self._start, extra=self._family)
+
+    async def fetch_participated(self, handle: str) -> Set[ContestId]:
         raise CodeforcesCogError(
             ';upsolve is not implemented for AtCoder yet')
 
     def select_upsolve_pool(
-        self, solved: Set[str], participated: Set[int]
-    ) -> List[GitgudProblem]:
+        self, solved: Set[str], participated: Set[ContestId]
+    ) -> Sequence[GitgudProblem]:
         raise CodeforcesCogError(
             ';upsolve is not implemented for AtCoder yet')
 
-    def select_gimme_pool(
-        self, args: Sequence[str], handle: str, solved: Set[str], rating: int
-    ) -> Tuple[List[GitgudProblem], List[str], bool]:
-        raise CodeforcesCogError(
-            ';gimme is not implemented for AtCoder yet')
-
     def lookup_problem(self, problem_key: str) -> GitgudProblem:
-        # Challenge rows are keyed by problem id on AtCoder.
         return cf_common.cache2.atcoder_problem_cache.problem_by_id[problem_key]
 
     def active_url(self, contest_id: ContestId, problem_key: str, p_index: PIndex = None) -> str:
-        # The key is the problem id, so the URL is built from row data alone
-        # with no cache access. p_index (the letter after the underscore) is
-        # unused here — AtCoder task URLs need the full problem id.
         return f'{atcoder_api.BASE_URL}/contests/{contest_id}/tasks/{problem_key}'

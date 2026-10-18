@@ -79,6 +79,14 @@ class AtCoderProblem(NamedTuple):
         ctype = self.contest_type
         return [t for t in tags if t.strip().lower() == ctype.lower()]
 
+    def matches_all_tags(self, tags: Sequence[str]) -> bool:
+        # The contest type (abc/arc/agc) is the only filter dimension, so
+        # every requested tag must be it.
+        return len(self.get_matched_tags(tags)) == len(tags)
+
+    def matches_any_tag(self, tags: Sequence[str]) -> bool:
+        return bool(self.get_matched_tags(tags))
+
 
 class AtCoderSubmission(NamedTuple):
     """One entry from kenkoooo's per-user submission API."""

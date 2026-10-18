@@ -1,26 +1,16 @@
-"""Codeforces gitgud backend — problem selection for the ``cf`` platform.
-
-``_CfBackend`` is a data-only backend for ``GitgudMixin`` (``tle/cogs/_gitgud.py``):
-it resolves handles, fetches ratings/submissions and selects problem pools, then
-returns plain problems for the generic layer to send. It never sends messages,
-builds embeds, or writes challenges.
-
-``CodeforcesGitgudMixin`` is re-exported here (from ``_gitgud.py``) so the
-``Codeforces`` cog and the gitgud tests keep their existing imports.
-"""
+"""Codeforces gitgud backend — problem selection for the ``cf`` platform."""
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, TYPE_CHECKING
 
 from tle.util import codeforces_api as cf
 from tle.util import codeforces_common as cf_common
-from tle.cogs._gitgud import GitgudMixin
+from tle.cogs._gitgud_args import GITGUD_USAGE, GitgudArgs, parse_args
+from tle.cogs._gitgud_backend import run_pool
 from tle.cogs._gitgud_protocol import ActiveChallenge, ContestId, GitgudProblem, PIndex
 from tle.cogs._codeforces_helpers import (
-    _checkGitgudTags,
     _GITGUD_CLAIM_MARGIN,
-    _MULTIWORD_TAG_HINT,
-    _parseGitgudRatingArgs,
     CodeforcesCogError,
 )
 from tle.cogs._gitgud_scoring import CF_SCORE_MODEL
@@ -39,24 +29,9 @@ def _rating_sort_key(problem: GitgudProblem) -> int:
     return problem.rating if problem.rating is not None else 0
 
 
-# Rating window for gitgud requests and the step the default-rating pool
-# climbs by when ``hint_climb`` is set.
 _CF_RATING_MIN = cf_common.RATING_MIN
 _CF_RATING_MAX = cf_common.RATING_MAX
 _CF_RATING_STEP = 100
-
-
-class CodeforcesGitgudMixin(GitgudMixin):
-    """Marker subclass so the ``Codeforces`` cog and the gitgud tests can
-    inherit the generic implementation under the original Codeforces name."""
-    pass
-
-
-def _cfTagVocabulary() -> Set[str]:
-    """Every tag string on any cached Codeforces problem, including the
-    division tags the cache synthesizes (div1..div4, edu)."""
-    return {tag for prob in cf_common.cache2.problem_cache.problems
-            for tag in prob.tags}
 
 
 class _CfBackend:
@@ -64,31 +39,28 @@ class _CfBackend:
 
     platform: str = 'cf'
     score_model = CF_SCORE_MODEL
+    exact: bool = False
 
-    def parse_args(
-        self, args: Sequence[str], rating: int
-    ) -> Tuple[int, int, bool, List[str], List[str]]:
-        """Parse gitgud args: an optional rating or range plus optional
-        ``+``/``~`` tag and division filters. ``rating`` is the 800-3500-clamped
-        user rating used as the default range. Returns
-        ``(srating, erating, hidden, tags, bantags)``."""
-        tags: List[str] = cf_common.parse_tags(args, prefix='+')
-        bantags: List[str] = cf_common.parse_tags(args, prefix='~')
-        error = ('Wrong rating requested. Remember gitgud now uses rating '
-                 f'({cf_common.RATING_MIN}-{cf_common.RATING_MAX}) instead of delta.')
-        srating, erating, hidden = _parseGitgudRatingArgs(
-            args, rating, error, bounds=(_CF_RATING_MIN, _CF_RATING_MAX),
-            junk_hint=_MULTIWORD_TAG_HINT)
-        _checkGitgudTags(tags, bantags, _cfTagVocabulary())
-        return srating, erating, hidden, tags, bantags
+    def tag_vocabulary(self) -> Optional[Set[str]]:
+        try:
+            return {tag for prob in cf_common.cache2.problem_cache.problems
+                    for tag in prob.tags}
+        except AttributeError:
+            return None
 
-    async def resolve_handle(self, ctx: GitgudCtx, converter: GitgudConverter) -> str:
+    def parse_request(self, args: Sequence[str], rating: int,
+                      usage: str = GITGUD_USAGE) -> GitgudArgs:
+        """Parse gitgud/gimme args; runs after the rating fetch it needs."""
+        return parse_args(
+            args, default_rating=rating, bounds=(_CF_RATING_MIN, _CF_RATING_MAX),
+            vocabulary=self.tag_vocabulary(), exact=False, usage=usage)
+
+    async def resolve_handle(self, ctx: GitgudCtx, converter: Optional[GitgudConverter] = None) -> str:
         handle, = await cf_common.resolve_handles(
             ctx, converter, ('!' + str(ctx.message.author.id),))
         return handle
 
-    async def validate_handle(self, ctx: GitgudCtx, converter: GitgudConverter) -> None:
-        # ;nogud re-validates the invoker's CF handle before allowing a skip.
+    async def validate_handle(self, ctx: GitgudCtx, converter: Optional[GitgudConverter] = None) -> None:
         await cf_common.resolve_handles(
             ctx, converter, ('!' + str(ctx.message.author.id),))
 
@@ -98,8 +70,6 @@ class _CfBackend:
         return round(user.effective_rating, -2)
 
     def scale_rating(self, rating: int) -> Tuple[int, int]:
-        # user_rating clamps the search range default; delta_base clamps the
-        # rating difference used to award points.
         user_rating = max(_CF_RATING_MIN, min(_CF_RATING_MAX, rating))
         delta_base = max(1100, min(3000, user_rating))
         return user_rating, delta_base
@@ -113,17 +83,6 @@ class _CfBackend:
     async def fetch_solve_times(
         self, handle: str, actives: Sequence[ActiveChallenge]
     ) -> Dict[int, float]:
-        """First AC epoch per active ``challenge_id``.
-
-        Single ``user.status`` call per claim:
-        only ``OK`` verdicts at/after ``issue_time`` minus a margin. ``creationTimeSeconds``
-        is a UTC epoch compared directly against the stored epoch
-        ``issue_time`` — no timezone conversion needed. Problems match on
-        ``(contestId, index)`` (normalized to strings, index uppercased), with
-        a name fallback only for legacy rows lacking an id. Any API failure raises
-        ``CodeforcesCogError`` so the claim fails closed instead of falling
-        back to wall-clock time.
-        """
         cutoff = actives[0].issue_time - _GITGUD_CLAIM_MARGIN
         try:
             submissions = await cf.user.status(handle=handle)
@@ -158,8 +117,6 @@ class _CfBackend:
             if norm_active[0] is not None and norm_active[1] is not None:
                 if norm_active in first_by_id:
                     times[active.challenge_id] = first_by_id[norm_active]
-                # Fresh rows must id-match: a same-name solve in another
-                # contest must not credit the assigned problem.
                 continue
             elif active.problem_key in first_by_name:
                 times[active.challenge_id] = first_by_name[active.problem_key]
@@ -175,11 +132,6 @@ class _CfBackend:
         self, ctx: GitgudCtx, handle: str, actives: Sequence[ActiveChallenge], submission_url: Optional[str] = None,
         partial: bool = False
     ) -> Tuple[List[ActiveChallenge], List[ActiveChallenge], Dict[int, float]]:
-        """Batch-aware claim check; singletons share the single-claim path (flag inert).
-
-        Returns ``(done, missing, solve_times)`` preserving batch order, where
-        ``solve_times`` maps done ``challenge_id`` to its first AC
-        epoch. One ``user.status`` call covers the whole batch."""
         if len(actives) == 1:
             ts = await self._verify_single_claim(ctx, handle, actives[0], submission_url)
             return [actives[0]], [], {actives[0].challenge_id: ts}
@@ -196,118 +148,67 @@ class _CfBackend:
     def nogud_set(self, user_id: int) -> Set[str]:
         return cf_common.user_db.get_nogud_problem_keys(user_id)
 
-    def _filter_pool(
-        self,
-        srating: int,
-        erating: int,
-        solved: Set[str],
-        noguds: Set[str],
-        tags: List[str],
-        bantags: List[str],
-        handle: str,
-    ) -> List[GitgudProblem]:
-        """One pass over the CF problem cache for ``[srating, erating]``:
-        solved/nogud sets and tag filters applied, nonstandard problems and
-        problems the user wrote excluded, sorted by contest start time."""
-        problems: List[GitgudProblem] = [prob for prob in cf_common.cache2.problem_cache.problems
-                                          if prob.rating is not None
-                                          and prob.rating >= srating and prob.rating <= erating
-                                          and prob.contestId is not None
-                                          and prob.name not in solved
-                                          and prob.name not in noguds
-                                          and prob.matches_all_tags(tags)
-                                          and not prob.matches_any_tag(bantags)]
-        problems = [prob for prob in problems
-                    if (not cf_common.is_nonstandard_problem(prob) and
-                        not cf_common.is_contest_writer(prob.contestId, handle))]
-        problems.sort(key=lambda problem: cf_common.cache2.contest_cache.get_contest(
-            problem.contestId).startTimeSeconds)
-        return problems
+    @staticmethod
+    def _start_of(prob: GitgudProblem) -> float:
+        """Contest start for sort keys and the date window; 0 when unknown."""
+        if prob.contestId is None:
+            return 0
+        contest = cf_common.cache2.contest_cache.get_contest(prob.contestId)
+        return contest.startTimeSeconds
 
-    def select_pool(
-        self,
-        srating: int,
-        erating: int,
-        solved: Set[str],
-        noguds: Set[str],
-        tags: List[str],
-        bantags: List[str],
-        handle: str,
-        *,
-        hint_climb: bool = False,
-    ) -> List[GitgudProblem]:
-        """Filter the CF problem cache by rating range, solved/nogud sets and
-        tag filters; excludes nonstandard problems and problems the user wrote.
-        Returns a pool sorted by contest start time. Empty when nothing fits —
-        the caller raises 'No problem to assign'.
+    def _extra(self, handle: str, *, exclude_nonstandard: bool = True):
+        def predicate(prob: GitgudProblem) -> bool:
+            if prob.contestId is None:
+                return False
+            if exclude_nonstandard and cf_common.is_nonstandard_problem(prob):
+                return False
+            return not cf_common.is_contest_writer(prob.contestId, handle)
+        return predicate
 
-        ``hint_climb`` lets the caller request the next higher rating when the
-        window came from the default (no rating given): the range is retried
-        in ``_CF_RATING_STEP`` steps up to ``_CF_RATING_MAX`` and the first
-        non-empty pool wins. Callers with a fixed rating window — the
-        progression slots — must leave it unset."""
-        problems = self._filter_pool(
-            srating, erating, solved, noguds, tags, bantags, handle)
+    def _pool(self, req: GitgudArgs, solved: Set[str], noguds: Set[str],
+              handle: str, exclude_nonstandard: bool) -> List[GitgudProblem]:
+        return run_pool(
+            cf_common.cache2.problem_cache.problems, req, solved, noguds,
+            start_of=self._start_of,
+            extra=self._extra(handle, exclude_nonstandard=exclude_nonstandard))
+
+    def select(self, req: GitgudArgs, solved: Set[str], noguds: Set[str],
+               handle: str, *, hint_climb: bool = False,
+               exclude_nonstandard: bool = True
+               ) -> Sequence[GitgudProblem]:
+        """Shared ``;gitgud``/``;gimme`` pool; ``hint_climb`` retries higher
+        rungs when a default-window request is empty, preserving
+        ``exclude_nonstandard`` on every rung. ``;gimme`` passes
+        ``exclude_nonstandard=False`` so nonstandard problems stay in its
+        pool while ``;gitgud`` and progression exclude them."""
+        problems = self._pool(req, solved, noguds, handle, exclude_nonstandard)
         if problems or not hint_climb:
             return problems
-        for rating in range(erating + _CF_RATING_STEP,
+        for rating in range(req.erating + _CF_RATING_STEP,
                             _CF_RATING_MAX + 1, _CF_RATING_STEP):
-            problems = self._filter_pool(
-                srating, rating, solved, noguds, tags, bantags, handle)
+            problems = self._pool(
+                replace(req, erating=rating), solved, noguds, handle,
+                exclude_nonstandard)
             if problems:
                 return problems
         return []
 
-    async def fetch_participated(self, handle: str) -> Set[int]:
+    async def fetch_participated(self, handle: str) -> Set[ContestId]:
         resp = await cf.user.rating(handle=handle)
         return {change.contestId for change in resp}
 
     def select_upsolve_pool(
-        self, solved: Set[str], participated: Set[int]
-    ) -> List[GitgudProblem]:
+        self, solved: Set[str], participated: Set[ContestId]
+    ) -> Sequence[GitgudProblem]:
         """Unsolved problems from contests the user took part in, sorted by
         difficulty. Empty when nothing fits — the caller raises."""
         problems: List[GitgudProblem] = [prob for prob in cf_common.cache2.problem_cache.problems
-                                          if prob.name not in solved and prob.contestId in participated]
+                                         if prob.name not in solved and prob.contestId in participated]
         problems.sort(key=_rating_sort_key)
         return problems
 
-    def select_gimme_pool(
-        self, args: Sequence[str], handle: str, solved: Set[str], rating: int
-    ) -> Tuple[List[GitgudProblem], List[str], bool]:
-        """Parse gimme args (tags, bans, date range, optional rating) and
-        return ``(problems, tags, hidden)`` — a pool sorted by contest start,
-        the tags to display, and whether the rating is hidden (a range was
-        requested). ``rating`` is the rounded effective rating used as the
-        default range."""
-        tags: List[str] = cf_common.parse_tags(args, prefix='+')
-        bantags: List[str] = cf_common.parse_tags(args, prefix='~')
-
-        srating, erating, _ = _parseGitgudRatingArgs(
-            args, rating, 'Wrong rating requested.',
-            junk_hint=_MULTIWORD_TAG_HINT)
-        _checkGitgudTags(tags, bantags, _cfTagVocabulary())
-        dlo, dhi = cf_common.parse_daterange(args)
-
-        problems: List[GitgudProblem] = [prob for prob in cf_common.cache2.problem_cache.problems
-                                         if prob.rating is not None
-                                         and prob.rating >= srating and prob.rating <= erating and prob.name not in solved
-                                         and not cf_common.is_contest_writer(prob.contestId, handle)
-                                         and prob.matches_all_tags(tags)
-                                         and not prob.matches_any_tag(bantags)
-                                         and dlo <= cf_common.cache2.contest_cache.get_contest(
-                                             prob.contestId).startTimeSeconds < dhi]
-        problems.sort(key=lambda problem: cf_common.cache2.contest_cache.get_contest(
-            problem.contestId).startTimeSeconds)
-        return problems, tags, srating != erating
-
     def lookup_problem(self, problem_key: str) -> GitgudProblem:
-        # Challenge rows are keyed by problem name on Codeforces.
         return cf_common.cache2.problem_cache.problem_by_name[problem_key]
 
     def active_url(self, contest_id: ContestId, problem_key: str, p_index: PIndex = None) -> str:
-        # The problem index is stored on every row (legacy column, kept
-        # filled), so the URL is built from row data alone with no cache
-        # access — a challenge stays linkable even if the cache misses the
-        # problem.
         return f'{cf.CONTEST_BASE_URL}{contest_id}/problem/{p_index}'

@@ -70,7 +70,7 @@ class TestGotgudCoinReward:
     @pytest.fixture
     def cog(self, db, monkeypatch):
         from tle.util import codeforces_common as cf_common
-        from tle.cogs._codeforces_gitgud import CodeforcesGitgudMixin
+        from tle.cogs._gitgud import GitgudMixin
         monkeypatch.setattr(cf_common, 'user_db', db)
         monkeypatch.setattr(constants, 'BET_START_BALANCE', 1000, raising=False)
         # Minimal cache so the shared CF fake exercises the (contestId, index)
@@ -81,7 +81,7 @@ class TestGotgudCoinReward:
             atcoder_problem_cache=SimpleNamespace(problems=[]),
         ), raising=False)
 
-        class _Cog(CodeforcesGitgudMixin):
+        class _Cog(GitgudMixin):
             pass
 
         cog = _Cog()

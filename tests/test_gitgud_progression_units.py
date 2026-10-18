@@ -2,29 +2,21 @@
 generic batch-claim partitioning — no DB, no discord."""
 import pytest
 
-from tle.cogs._codeforces_helpers import (
-    CodeforcesCogError,
-    _checkGitgudTags,
-    _parseGitgudRatingArgs,
-)
+from tle.cogs._codeforces_helpers import CodeforcesCogError
 from tle.util import gitgud_progression as gp
 from tests.gitgud_test_utils import _cf_prob, _run
 
 
 class _StubBackend:
-    """Mirrors ``_CfBackend.parse_args`` rating/tag handling without the cache."""
+    """Exposes only the tag predicate progression parsing needs."""
+
+    exact = False
 
     def __init__(self, vocab=frozenset({'dp', 'math'})):
         self._vocab = vocab
 
-    def parse_args(self, args, rating):
-        from tle.util import codeforces_common as cf_common
-        tags = cf_common.parse_tags(args, prefix='+')
-        bantags = cf_common.parse_tags(args, prefix='~')
-        srating, erating, hidden = _parseGitgudRatingArgs(
-            args, rating, 'Wrong rating requested.')
-        _checkGitgudTags(tags, bantags, self._vocab)
-        return srating, erating, hidden, tags, bantags
+    def tag_vocabulary(self):
+        return self._vocab
 
 
 class TestBonusScores:
@@ -161,11 +153,11 @@ class TestParseProgressionArgs:
             self._parse(('9999',))
 
     def test_rating_spec_rejected(self):
-        with pytest.raises(CodeforcesCogError, match='fixes ratings'):
+        with pytest.raises(CodeforcesCogError, match='takes only'):
             self._parse(('1', '800'))
 
     def test_range_spec_rejected(self):
-        with pytest.raises(CodeforcesCogError, match='fixes ratings'):
+        with pytest.raises(CodeforcesCogError, match='takes only'):
             self._parse(('1', '800-900'))
 
     def test_tags_pass_through(self):
@@ -175,7 +167,8 @@ class TestParseProgressionArgs:
         assert theme is require_theme(2)
 
     def test_unknown_tag_rejected(self):
-        with pytest.raises(CodeforcesCogError, match=r'Unknown tag\(s\): \+nope'):
+        with pytest.raises(CodeforcesCogError,
+                           match=r'Unexpected argument `\+nope`'):
             self._parse(('1', '+nope'))
 
     def test_invalid_theme_level(self):
@@ -197,13 +190,13 @@ class TestDescLines:
 
 
 class _PoolBackend:
-    """Stub ``select_pool`` with canned per-rating pools."""
+    """Stub ``select`` with canned per-rating pools."""
 
     def __init__(self, pools):
         self._pools = pools
 
-    def select_pool(self, srating, erating, solved, noguds, tags, bantags, handle):
-        return [p for p in self._pools.get(srating, [])
+    def select(self, req, solved, noguds, handle, **kw):
+        return [p for p in self._pools.get(req.srating, [])
                 if p.name not in solved and p.name not in noguds]
 
 
@@ -265,7 +258,7 @@ class TestSplitSolvedActives:
 
 class TestSplitGotgudArgs:
     def test_flag_and_url_split(self):
-        from tle.cogs._gitgud import _split_gotgud_args
+        from tle.cogs._codeforces_helpers import _split_gotgud_args
         assert _split_gotgud_args(()) == (None, False)
         assert _split_gotgud_args(('+partial',)) == (None, True)
         url = 'https://atcoder.jp/contests/abc383/submissions/123'

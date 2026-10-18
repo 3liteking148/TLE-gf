@@ -43,6 +43,92 @@ def _solo_prob(name='Solo'):
     return _cf_prob(name, 9999, 800)
 
 
+CF_VOCAB = {'dp', 'math', 'trees', 'data structures', 'binary search',
+            'div1', 'div2', 'div3', 'div4', 'edu'}
+AC_VOCAB = {'abc', 'arc', 'agc'}
+
+
+def _parse_request(args, base, **kw):
+    """Shared parser; platform wrappers supply bounds and vocabulary."""
+    from tle.cogs._gitgud_args import GIMME_USAGE, parse_args
+    params = dict(default_rating=1500, usage=GIMME_USAGE)
+    params.update(base)
+    params.update(kw)
+    return parse_args(args, **params)
+
+
+def parse_cf_request(args, **kw):
+    """Codeforces bounds and prefix-tag vocabulary."""
+    from tle.cogs._codeforces_gitgud import _CF_RATING_MAX, _CF_RATING_MIN
+    return _parse_request(args, dict(
+        bounds=(_CF_RATING_MIN, _CF_RATING_MAX),
+        vocabulary=CF_VOCAB, exact=False), **kw)
+
+
+def parse_ac_request(args, **kw):
+    """AtCoder bounds and exact contest-type matching."""
+    from tle.util import atcoder_api
+    return _parse_request(args, dict(
+        bounds=(atcoder_api.RATING_MIN, atcoder_api.RATING_MAX),
+        vocabulary=AC_VOCAB, exact=True), **kw)
+
+
+def _install_caches(monkeypatch, cf_problems=(), ac_problems=()):
+    """Both problem caches with the given contents (empty by default, which
+    disables tag-existence checks)."""
+    monkeypatch.setattr(cf_common, 'cache2', SimpleNamespace(
+        problem_cache=SimpleNamespace(problems=list(cf_problems)),
+        atcoder_problem_cache=SimpleNamespace(problems=list(ac_problems))))
+
+
+def _set_cf_problems(problems):
+    """Replace the (fixture-installed) CF problem cache contents."""
+    cf_common.cache2.problem_cache.problems = list(problems)
+    cf_common.cache2.problem_cache.problem_by_name = {
+        p.name: p for p in problems
+    }
+
+
+def _add_cf_problem(prob):
+    """Append one problem to the (fixture-installed) CF problem cache."""
+    cf_common.cache2.problem_cache.problems.append(prob)
+    cf_common.cache2.problem_cache.problem_by_name[prob.name] = prob
+
+
+def _tagged_cf_prob(name, cid, rating, tags=(), start=1000, index='A'):
+    """``_cf_prob`` with real tag matching and a contest start time."""
+    from tle.util._cf_api_types import cf_tag_matches
+    prob = _cf_prob(name, cid, rating, index)
+    prob.tags = list(tags)
+    prob.start = start
+    prob.matches_all_tags = lambda filters: all(
+        any(cf_tag_matches(f, t) for t in tags) for f in filters)
+    prob.matches_any_tag = lambda filters: any(
+        any(cf_tag_matches(f, t) for t in tags) for f in filters)
+    return prob
+
+
+def _ac_prob(pid, start, rating=1500):
+    """A real ``AtCoderProblem``; the id prefix (``abc``/``arc``/``agc``)
+    determines the contest type."""
+    from tle.util._atcoder_api_types import AtCoderProblem
+    return AtCoderProblem(
+        id=pid, contestId=pid.split('_', 1)[0],
+        contest_name=f'Contest {pid.split("_")[0]}',
+        problem_index=pid[-1].upper(), name=pid, difficulty=rating,
+        contest_start=start)
+
+
+def select_cf_pool(req, backend=None, *, solved=None, noguds=None,
+                   handle='handle', **kw):
+    """``select`` for an already-parsed request (defaults included)."""
+    if backend is None:
+        from tle.cogs._codeforces_gitgud import _CfBackend
+        backend = _CfBackend()
+    return backend.select(
+        req, solved or set(), noguds or set(), handle, **kw)
+
+
 def _ctx(uid=USER_A):
     guild = SimpleNamespace(id=GUILD)
 

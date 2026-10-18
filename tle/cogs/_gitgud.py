@@ -10,10 +10,10 @@ Platform differences are behind two data-only backends (``_CfBackend`` in
 fetch and select problems and return them, but never build a Discord object.
 
 This is a plain mixin (NOT a ``commands.Cog``); ``Codeforces`` inherits from it
-alongside ``commands.Cog``. ``_codeforces_gitgud.py`` and ``_atcoder_gitgud.py``
-re-export this class as ``CodeforcesGitgudMixin`` / ``AtcoderGitgudMixin`` so
-existing imports (the ``Codeforces`` cog and the gitgud tests) keep working.
+alongside ``commands.Cog``.
 """
+from __future__ import annotations
+
 import datetime
 import random
 
@@ -32,8 +32,14 @@ from tle.cogs._codeforces_helpers import (
     _GITGUD_MORE_POINTS_START_TIME,
     _GITGUD_COIN_MULTIPLIER,
     _split_gotgud_args,
-    gitgud_rating_specified,
 )
+from tle.cogs._gitgud_args import (
+    GIMME_USAGE,
+    GITGUD_USAGE,
+    split_platform,
+)
+from tle.cogs._atcoder_gitgud import _AcBackend
+from tle.cogs._codeforces_gitgud import _CfBackend
 from tle.util.gitgud_progression import (
     biased_choice,
     bonus_scores,
@@ -70,18 +76,17 @@ class GitgudMixin:
     # Backend selection
     # ------------------------------------------------------------------
 
-    def _backend_for_args(self, args, marker='+atcoder'):
-        return self._backend_for_platform('ac' if marker in args else 'cf')
+    def _backend_for(self, args):
+        """The backend for a raw argument list, plus the flag-free arguments.
+
+        ``+atcoder`` (any casing) is stripped before any parsing so a backend
+        only ever sees filter tokens.
+        """
+        platform, rest = split_platform(args)
+        return self._backend_for_platform(platform), rest
 
     def _backend_for_platform(self, platform):
-        # Lazy imports keep the re-export cycle (the platform files re-export
-        # this class) and the 500-line rule both happy; by command time all
-        # modules are fully loaded.
-        if platform == 'ac':
-            from tle.cogs._atcoder_gitgud import _AcBackend
-            return _AcBackend()
-        from tle.cogs._codeforces_gitgud import _CfBackend
-        return _CfBackend()
+        return _AcBackend() if platform == 'ac' else _CfBackend()
 
     # ------------------------------------------------------------------
     # Shared gitgud helpers
@@ -150,6 +155,18 @@ class GitgudMixin:
         # fallback
         return f"{prefix}{int(issue_time * 1000)}-{random.randint(0, 999999)}"
 
+    def _problem_embed(self, problem, hidden):
+        """The shared problem embed: title link, contest name and the rating
+        field, spoiler-wrapped when ``hidden``. Callers append their own
+        fields (points, matched tags) on top."""
+        title = f'{problem.index}. {problem.name}'
+        desc = problem.contest_name
+        rating = problem.rating
+        ratingStr = rating if not hidden else '||' + str(rating) + '||'
+        embed = discord.Embed(title=title, url=problem.url, description=desc)
+        embed.add_field(name='Rating', value=ratingStr)
+        return embed
+
     async def _gitgud(self, ctx, handle, problem, delta, score, hidden, backend, now):
         # The caller of this function is responsible for calling `_validate_gitgud_status` first.
         user_id = ctx.author.id
@@ -164,14 +181,9 @@ class GitgudMixin:
         points = score
         monthlypoints = self._monthly_total(points, now)
 
-        title = f'{problem.index}. {problem.name}'
-        desc = problem.contest_name
-        rating = problem.rating
-        ratingStr = rating if not hidden else '||' + str(rating) + '||'
+        embed = self._problem_embed(problem, hidden)
         pointsStr = points if not hidden else '||' + str(points) + '||'
         monthlyPointsStr = monthlypoints if not hidden else '||' + str(monthlypoints) + '||'
-        embed = discord.Embed(title=title, url=problem.url, description=desc)
-        embed.add_field(name='Rating', value=ratingStr)
         embed.add_field(name='Alltime points', value=pointsStr)
         embed.add_field(name='Monthly points', value=monthlyPointsStr)
         await ctx.send(f'Challenge problem for `{handle}`', embed=embed)
@@ -273,24 +285,22 @@ class GitgudMixin:
 
     async def _gitgud_impl(self, ctx, args):
         now = datetime.datetime.now()
-        backend = self._backend_for_args(args)
-
-        args = [arg for arg in args if arg != "+atcoder"]
+        backend, args = self._backend_for(args)
 
         handle = await backend.resolve_handle(ctx, self.converter)
         user_rating, delta_base = backend.scale_rating(
             await backend.fetch_rating(handle))
+
+        # Parse before any submissions fetch so bad args cost no quota.
+        req = backend.parse_request(args, user_rating, GITGUD_USAGE)
+
         solved = await backend.fetch_solved(handle, only_ac=False)
         noguds = backend.nogud_set(ctx.message.author.id)
 
-        srating, erating, hidden, tags, bantags = backend.parse_args(
-            args, user_rating)
-
         await self._validate_gitgud_status(ctx)
 
-        problems = backend.select_pool(
-            srating, erating, solved, noguds, tags, bantags, handle,
-            hint_climb=not gitgud_rating_specified(args))
+        problems = backend.select(
+            req, solved, noguds, handle, hint_climb=not req.rating_given)
         if not problems:
             raise CodeforcesCogError('No problem to assign')
 
@@ -302,8 +312,9 @@ class GitgudMixin:
         # abc) are the free filters. The raw delta is stored untouched; the
         # (possibly off-ladder) score goes into its own column.
         problem = problems[choice]
-        delta, score = backend.score_model.delta_and_score(problem.rating, delta_base, tags, bantags)
-        await self._gitgud(ctx, handle, problem, delta, score, hidden, backend, now)
+        delta, score = backend.score_model.delta_and_score(
+            problem.rating, delta_base, req.tags, req.bantags)
+        await self._gitgud(ctx, handle, problem, delta, score, req.hidden, backend, now)
 
     async def _gotgud_impl(self, ctx, *args, **kw):
         """Claim the active challenge(s) once solved.
@@ -432,7 +443,7 @@ class GitgudMixin:
             except ValueError:
                 raise CodeforcesCogError(f'Invalid choice `{arg}`.')
 
-        backend = self._backend_for_args(platform_args)
+        backend = self._backend_for_platform(split_platform(platform_args)[0])
         handle = await backend.resolve_handle(ctx, self.converter)
         _, delta_base = backend.scale_rating(await backend.fetch_rating(handle))
         participated = await backend.fetch_participated(handle)
@@ -452,8 +463,7 @@ class GitgudMixin:
             problems = problems[:500]
 
             def make_line(i, prob):
-                data = (f'{i + 1}: [{prob.name}]({prob.url}) [{prob.rating}]')
-                return data
+                return f'{i + 1}: [{prob.name}]({prob.url}) [{prob.rating}]'
 
             def make_page(chunk, pi, num):
                 title = f'Select a problem to upsolve (1-{num}):'
@@ -465,27 +475,24 @@ class GitgudMixin:
             paginator.paginate(self.bot, ctx.channel, pages, wait_time=5 * 60, set_pagenum_footers=True, author_id=ctx.author.id)
 
     async def _gimme_impl(self, ctx, args):
-        backend = self._backend_for_args(args)
-        args = [arg for arg in args if arg != '+atcoder']
+        backend, args = self._backend_for(args)
+
         handle = await backend.resolve_handle(ctx, self.converter)
         rating = await backend.fetch_rating(handle)
+        req = backend.parse_request(args, rating, GIMME_USAGE)
         solved = await backend.fetch_solved(handle)
+        noguds = backend.nogud_set(ctx.message.author.id)
 
-        problems, tags, hidden = backend.select_gimme_pool(
-            args, handle, solved, rating)
+        problems = backend.select(req, solved, noguds, handle,
+                                  exclude_nonstandard=False)
         if not problems:
             raise CodeforcesCogError('Problems not found within the search parameters')
 
-        choice = biased_choice(problems, k=3)
+        choice = biased_choice(problems)
         problem = problems[choice]
 
-        title = f'{problem.index}. {problem.name}'
-        desc = problem.contest_name
-        embed = discord.Embed(title=title, url=problem.url, description=desc)
-        rating = problem.rating
-        ratingStr = rating if not hidden else '||' + str(rating) + '||'
-        embed.add_field(name='Rating', value=ratingStr)
-        if tags:
-            tagslist = ', '.join(problem.get_matched_tags(tags))
+        embed = self._problem_embed(problem, req.hidden)
+        if req.tags:
+            tagslist = ', '.join(problem.get_matched_tags(req.tags))
             embed.add_field(name='Matched tags', value=tagslist)
         await ctx.send(f'Recommended problem for `{handle}`', embed=embed)

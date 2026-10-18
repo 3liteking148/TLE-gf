@@ -84,7 +84,7 @@ class TestProgressionIssue:
 
     def test_rating_arg_rejected(self, db, cog, monkeypatch):
         _patch_cf_handle(monkeypatch, rating=800, solved=set())
-        with pytest.raises(CodeforcesCogError, match='fixes ratings'):
+        with pytest.raises(CodeforcesCogError, match='takes only'):
             _run(cog._gitgudprogression_impl(_ctx(), ('1', '900')))
         assert db.count_active_challenges(USER_A) == 0
 
